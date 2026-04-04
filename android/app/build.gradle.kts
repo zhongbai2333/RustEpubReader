@@ -12,8 +12,10 @@ android {
         applicationId = "com.zhongbai233.epub.reader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = (project.findProperty("APP_VERSION_CODE") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("APP_VERSION_NAME") as String?) ?: "1.0.0"
+        // Expose version to Kotlin code via BuildConfig
+        buildConfigField("String", "APP_VERSION_NAME", "\"${versionName}\"")
     }
 
     signingConfigs {
@@ -55,6 +57,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

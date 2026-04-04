@@ -47,15 +47,10 @@ fun SharingDialog(
     onStartDiscovery: () -> Unit,
     onRefreshPeers: () -> Unit,
     onRemovePaired: (deviceId: String) -> Unit = {},
-    onExportLogs: () -> String? = { null },
     onOpenGithubFeedback: () -> Unit = {},
 ) {
     @Suppress("UNUSED_VARIABLE")
     val langVersion = I18n.version
-
-    var showGithubPrompt by remember { mutableStateOf(false) }
-    var exportedPath by remember { mutableStateOf<String?>(null) }
-    var exportStatus by remember { mutableStateOf<String?>(null) }
 
     if (!showDialog) return
 
@@ -296,33 +291,6 @@ fun SharingDialog(
                     }
                 }
 
-                // ── Export feedback logs ──
-                item {
-                    OutlinedButton(
-                        onClick = {
-                            val path = onExportLogs()
-                            if (path != null) {
-                                exportedPath = path
-                                exportStatus = I18n.tf1("feedback.export_success", path)
-                                showGithubPrompt = true
-                            } else {
-                                exportStatus = I18n.tf1("feedback.export_failed", "unknown")
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(I18n.t("feedback.export_logs"), fontSize = 12.sp)
-                    }
-                    if (!exportStatus.isNullOrBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            exportStatus!!,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
                 // ── Advanced Options (collapsed) ──
                 item {
                     var expanded by remember { mutableStateOf(false) }
@@ -409,37 +377,4 @@ fun SharingDialog(
             }
         }
     )
-
-    if (showGithubPrompt) {
-        AlertDialog(
-            onDismissRequest = { showGithubPrompt = false },
-            title = { Text(I18n.t("feedback.open_github")) },
-            text = {
-                Column {
-                    Text(I18n.t("feedback.ask_open_github"))
-                    if (!exportedPath.isNullOrBlank()) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            exportedPath!!,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onOpenGithubFeedback()
-                    showGithubPrompt = false
-                }) {
-                    Text(I18n.t("feedback.open_github"))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGithubPrompt = false }) {
-                    Text(I18n.t("feedback.not_now"))
-                }
-            }
-        )
-    }
 }

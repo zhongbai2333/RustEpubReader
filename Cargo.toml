@@ -1,3 +1,8 @@
 [workspace]
 members = ["core", "desktop", "android-bridge"]
 resolver = "2"
+
+# ── Unified app version (edit here to update globally) ──
+[workspace.package]
+version = "1.0.0"
+authors = ["zhongbai233"]

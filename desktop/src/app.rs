@@ -363,6 +363,8 @@ pub struct ReaderApp {
     pub feedback_logs: Arc<Mutex<Vec<String>>>,
     pub show_feedback_github_prompt: bool,
     pub last_exported_feedback_log: Option<String>,
+    pub show_about: bool,
+    pub about_icon_texture: Option<egui::TextureHandle>,
 }
 
 #[derive(Clone)]
@@ -463,6 +465,8 @@ impl Default for ReaderApp {
             feedback_logs: Arc::new(Mutex::new(Vec::new())),
             show_feedback_github_prompt: false,
             last_exported_feedback_log: None,
+            show_about: false,
+            about_icon_texture: None,
         };
 
         if let Some(settings) = AppSettings::load(&app.data_dir) {
@@ -1472,6 +1476,11 @@ impl eframe::App for ReaderApp {
         // ── Sharing Panel ──
         if self.show_sharing_panel {
             self.render_sharing(ctx);
+        }
+
+        // ── About Window ──
+        if self.show_about {
+            self.render_about(ctx);
         }
 
         let settings = AppSettings::from_app(self);

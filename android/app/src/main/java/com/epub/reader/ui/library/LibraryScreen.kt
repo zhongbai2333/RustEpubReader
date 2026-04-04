@@ -12,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
@@ -50,7 +51,8 @@ fun LibraryScreen(
     onRemoveBook: (String) -> Unit,
     onUpdateLanguage: (String) -> Unit = {},
     onOpenSharing: () -> Unit = {},
-    onRefreshLibrary: () -> Unit = {}
+    onRefreshLibrary: () -> Unit = {},
+    onOpenAbout: () -> Unit = {}
 ) {
     // 读取 I18n.version 以确保语言切换时触发重组
     @Suppress("UNUSED_VARIABLE")
@@ -85,6 +87,9 @@ fun LibraryScreen(
                     }
                     IconButton(onClick = { showLanguageDialog = true }) {
                         Icon(Icons.Default.Language, contentDescription = I18n.t("settings.language"))
+                    }
+                    IconButton(onClick = onOpenAbout) {
+                        Icon(Icons.Default.Info, contentDescription = I18n.t("about.title"))
                     }
                     FilledTonalButton(
                         onClick = onOpenFilePicker,

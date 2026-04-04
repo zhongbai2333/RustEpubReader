@@ -102,6 +102,13 @@ impl ReaderApp {
                     self.show_sharing_panel = !self.show_sharing_panel;
                 }
                 ui.add_space(8.0);
+                if ui
+                    .button(egui::RichText::new(self.i18n.t("about.title")).size(14.0))
+                    .clicked()
+                {
+                    self.show_about = true;
+                }
+                ui.add_space(8.0);
                 let current_label = self.i18n.language().label().to_string();
                 egui::ComboBox::from_id_salt("library_language_combo")
                     .selected_text(&current_label)

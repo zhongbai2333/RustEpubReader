@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.animation.core.tween
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.platform.LocalUriHandler
+import com.zhongbai233.epub.reader.ui.library.AboutScreen
 import com.zhongbai233.epub.reader.ui.library.LibraryScreen
 import com.zhongbai233.epub.reader.ui.library.SharingDialog
 import com.zhongbai233.epub.reader.ui.reader.ReaderScreen
@@ -76,6 +77,9 @@ private fun MainContent(vm: ReaderViewModel) {
     // 共享对话框状态
     var showSharingDialog by remember { mutableStateOf(false) }
 
+    // 关于界面状态
+    var showAboutScreen by remember { mutableStateOf(false) }
+
     // 错误提示
     vm.errorMessage?.let { msg ->
         AlertDialog(
@@ -95,6 +99,13 @@ private fun MainContent(vm: ReaderViewModel) {
             val book = vm.currentBook
 
             if (book == null) {
+                if (showAboutScreen) {
+                    // ---- 关于界面 ----
+                    AboutScreen(
+                        onNavigateBack = { showAboutScreen = false },
+                        onExportLogs = { vm.exportFeedbackLogs() }
+                    )
+                } else {
                 // ---- 书库界面 ----
                 LibraryScreen(
                     books = vm.books,
@@ -121,7 +132,8 @@ private fun MainContent(vm: ReaderViewModel) {
                     },
                     onRefreshLibrary = {
                         vm.refreshLibrary()
-                    }
+                    },
+                    onOpenAbout = { showAboutScreen = true }
                 )
 
                 // ── 共享对话框 ──
@@ -148,13 +160,13 @@ private fun MainContent(vm: ReaderViewModel) {
                     onStartDiscovery = { vm.startDiscovery() },
                     onRefreshPeers = { vm.refreshDiscoveredPeers() },
                     onRemovePaired = { vm.removePairedDevice(it) },
-                    onExportLogs = { vm.exportFeedbackLogs() },
                     onOpenGithubFeedback = {
                         runCatching {
                             uriHandler.openUri("https://github.com/zhongbai233/RustEpubReader/issues/new/choose")
                         }
                     },
                 )
+                } // end else (showAboutScreen)
             } else {
                 // ---- 阅读器界面（包裹在目录抽屉中）----
                 ModalNavigationDrawer(
