@@ -116,10 +116,13 @@ fun LibraryScreen(
             onRefresh = {
                 scope.launch {
                     isRefreshing = true
-                    withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        onRefreshLibrary()
+                    try {
+                        withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            onRefreshLibrary()
+                        }
+                    } finally {
+                        isRefreshing = false
                     }
-                    isRefreshing = false
                 }
             },
             state = pullToRefreshState,

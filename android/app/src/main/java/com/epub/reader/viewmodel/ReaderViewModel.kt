@@ -128,12 +128,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     init {
         loadSettings()
         if (autoStartSharing) {
-            startSharingServer()
+            try { startSharingServer() } catch (_: Exception) { }
         }
         loadLibrary()
         scanBooksDir()
-        loadPairedDevices()
-        startDiscovery()
+        try { loadPairedDevices() } catch (_: Exception) { }
+        try { startDiscovery() } catch (_: Exception) { }
         viewModelScope.launch(Dispatchers.IO) {
             val fonts = FontDiscovery.discoverFonts()
             withContext(Dispatchers.Main) {

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -49,6 +49,23 @@ pub struct BookConfig {
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Library {
     pub books: Vec<BookEntry>,
+    /// O(1) lookup: path → index in `books`. Rebuilt on load/mutation.
+    #[serde(skip)]
+    path_index: HashMap<String, usize>,
+}
+
+impl Library {
+    /// Rebuild the path_index from the current books vec.
+    fn rebuild_index(&mut self) {
+        self.path_index.clear();
+        for (i, b) in self.books.iter().enumerate() {
+            self.path_index.insert(b.path.clone(), i);
+        }
+    }
+
+    fn find_by_path(&self, path: &str) -> Option<usize> {
+        self.path_index.get(path).copied()
+    }
 }
 
 fn library_path(data_dir: &str) -> PathBuf {
@@ -105,6 +122,7 @@ impl Library {
         };
 
         library.migrate_to_uuid_storage(data_dir);
+        library.rebuild_index();
         library
     }
 
@@ -139,17 +157,13 @@ impl Library {
         let now = now_secs();
 
         let incoming_hash = file_hash(&source_path);
-        let existing_idx = self
-            .books
-            .iter()
-            .position(|b| b.path == source_path)
-            .or_else(|| {
-                incoming_hash.as_ref().and_then(|h| {
-                    self.books
-                        .iter()
-                        .position(|b| file_hash(&b.path).as_ref() == Some(h))
-                })
-            });
+        let existing_idx = self.find_by_path(&source_path).or_else(|| {
+            incoming_hash.as_ref().and_then(|h| {
+                self.books
+                    .iter()
+                    .position(|b| file_hash(&b.path).as_ref() == Some(h))
+            })
+        });
 
         let mut id = existing_idx
             .and_then(|idx| {
@@ -210,6 +224,7 @@ impl Library {
         let idx = existing_idx.unwrap_or(idx);
         let entry = self.books[idx].clone();
         self.write_book_config(data_dir, &entry, Some(now));
+        self.rebuild_index();
         self.save_to(data_dir);
         entry
     }
@@ -275,6 +290,7 @@ impl Library {
         let idx = existing_idx.unwrap_or(idx);
         let entry = self.books[idx].clone();
         self.write_book_config(data_dir, &entry, Some(now));
+        self.rebuild_index();
         self.save_to(data_dir);
         entry
     }
@@ -283,14 +299,16 @@ impl Library {
         if idx < self.books.len() {
             let entry = self.books.remove(idx);
             self.remove_entry_files(data_dir, &entry);
+            self.rebuild_index();
             self.save_to(data_dir);
         }
     }
 
     pub fn remove_by_path(&mut self, data_dir: &str, path: &str) {
-        if let Some(idx) = self.books.iter().position(|b| b.path == path) {
+        if let Some(idx) = self.find_by_path(path) {
             let entry = self.books.remove(idx);
             self.remove_entry_files(data_dir, &entry);
+            self.rebuild_index();
             self.save_to(data_dir);
         }
     }
@@ -302,7 +320,8 @@ impl Library {
         chapter: usize,
         chapter_title: Option<String>,
     ) {
-        if let Some(entry) = self.books.iter_mut().find(|b| b.path == path) {
+        if let Some(idx) = self.find_by_path(path) {
+            let entry = &mut self.books[idx];
             entry.last_chapter = chapter;
             if chapter_title.is_some() {
                 entry.last_chapter_title = chapter_title;

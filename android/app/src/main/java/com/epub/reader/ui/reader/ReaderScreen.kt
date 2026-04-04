@@ -57,7 +57,8 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
+import java.util.LinkedHashMap
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,6 +78,17 @@ import kotlinx.coroutines.launch
 import java.net.URI
 import kotlin.math.absoluteValue
 import kotlin.math.ceil
+
+// ─── 页面交互常量 ───
+
+/** 上下留白区域占屏幕高度的比例，点击此区域时不触发翻页 */
+private const val CHROME_INSET_RATIO = 0.12f
+/** 左右点击翻页区域占屏幕宽度的比例（1/3） */
+private const val TAP_ZONE_RATIO = 1f / 3f
+/** 连续翻页最小间隔（毫秒） */
+private const val FLIP_COOLDOWN_MS = 300L
+/** 分页缓存最大章节数 */
+private const val PAGINATION_CACHE_MAX_SIZE = 10
 
 // ─── CJK 标点禁则 ───
 
@@ -534,8 +546,8 @@ private fun PageModeContent(
     val spToPx = density.fontScale * density.density
     val showChapterTitle = remember(chapter) { shouldRenderChapterTitle(chapter) }
 
-    // 预加载缓存（以章节索引为 key，布局参数变化时清空）
-    val paginationCache = remember { ConcurrentHashMap<Int, List<List<ContentBlock>>>() }
+    // 预加载缓存（以章节索引为 key，布局参数变化时清空，LRU 限制最多 10 章防止 OOM）
+    val paginationCache = remember { lruCache<Int, List<List<ContentBlock>>>(PAGINATION_CACHE_MAX_SIZE) }
     val layoutTag = "$fontSize-${availableHeightDp.value}-${contentWidthDp.value}"
     val prevLayoutTag = remember { mutableStateOf(layoutTag) }
     if (prevLayoutTag.value != layoutTag) {
@@ -545,7 +557,7 @@ private fun PageModeContent(
 
     // 将内容分页（优先从缓存取，避免主线程重复计算）
     val pages = remember(currentChapter, fontSize, availableHeightDp, contentWidthDp, showChapterTitle) {
-        paginationCache.computeIfAbsent(currentChapter) {
+        paginationCache.getOrPut(currentChapter) {
             paginateContent(chapter, fontSize, availableHeightDp, contentWidthDp, density, showChapterTitle, titleVPaddingDp)
         }
     }
@@ -559,7 +571,7 @@ private fun PageModeContent(
         withContext(Dispatchers.Default) {
             for (adjIdx in listOf(currentChapter - 1, currentChapter + 1)) {
                 val adjChapter = allChapters.getOrNull(adjIdx) ?: continue
-                paginationCache.computeIfAbsent(adjIdx) {
+                paginationCache.getOrPut(adjIdx) {
                     val adjShowTitle = shouldRenderChapterTitle(adjChapter)
                     paginateContent(adjChapter, fontSize, availableHeightDp, contentWidthDp, density, adjShowTitle, titleVPaddingDp)
                 }
@@ -588,7 +600,6 @@ private fun PageModeContent(
     var flipJob by remember { mutableStateOf<Job?>(null) }
     // 强制限制连续翻页间隔，防止过快卡死
     val lastFlipTime = remember { mutableLongStateOf(0L) }
-    val flipCooldownMs = 300L
 
 
     // 保持回调引用最新 (用于 pointerInput 内部)
@@ -606,12 +617,15 @@ private fun PageModeContent(
 
     val pageCurlConfig = rememberPageCurlConfig(
         backPageColor = bgColor,
+        dragInteraction = PageCurlConfig.GestureDragInteraction(
+            pointerBehavior = PageCurlConfig.DragInteraction.PointerBehavior.PageEdge
+        ),
         onCustomTap = { size, position ->
             if (currentSettingsVisible) {
                 return@rememberPageCurlConfig true
             }
 
-            val chromeInset = size.height * 0.12f
+            val chromeInset = size.height * CHROME_INSET_RATIO
             if (currentControlsVisible) {
                 if (position.y < chromeInset || position.y > size.height - chromeInset) {
                     return@rememberPageCurlConfig true
@@ -620,13 +634,13 @@ private fun PageModeContent(
                 return@rememberPageCurlConfig true
             }
 
-            val tapZone = size.width / 3f
+            val tapZone = size.width * TAP_ZONE_RATIO
             val firstReadableSlot = currentLeadingVirtual
             val lastReadableSlot = currentLeadingVirtual + currentPairedPages.lastIndex
             when {
                 position.x < tapZone -> {
                     val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < flipCooldownMs) return@rememberPageCurlConfig true
+                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
                     lastFlipTime.longValue = now
 
                     if (pageCurlState.current <= firstReadableSlot) {
@@ -644,7 +658,7 @@ private fun PageModeContent(
                 }
                 position.x > size.width - tapZone -> {
                     val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < flipCooldownMs) return@rememberPageCurlConfig true
+                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
                     lastFlipTime.longValue = now
 
                     if (pageCurlState.current >= lastReadableSlot) {
@@ -683,7 +697,7 @@ private fun PageModeContent(
         ),
         onCustomTap = { size, position ->
             if (currentSettingsVisible) return@rememberPageCurlConfig true
-            val chromeInset = size.height * 0.12f
+            val chromeInset = size.height * CHROME_INSET_RATIO
             if (currentControlsVisible) {
                 if (position.y < chromeInset || position.y > size.height - chromeInset) {
                     return@rememberPageCurlConfig true
@@ -691,12 +705,12 @@ private fun PageModeContent(
                 currentOnToggleControls()
                 return@rememberPageCurlConfig true
             }
-            val tapZone = size.width / 3f
+            val tapZone = size.width * TAP_ZONE_RATIO
             val spineCenter = size.width / 2f
             when {
                 position.x < tapZone -> {
                     val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < flipCooldownMs) return@rememberPageCurlConfig true
+                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
                     lastFlipTime.longValue = now
                     if (bookSpreadPageCurlState.current > 0) {
                         flipJob?.cancel()
@@ -707,7 +721,7 @@ private fun PageModeContent(
                 position.x > spineCenter -> {
                     // Tap anywhere on the right page (past spine) → forward
                     val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < flipCooldownMs) return@rememberPageCurlConfig true
+                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
                     lastFlipTime.longValue = now
                     if (bookSpreadPageCurlState.current < totalSlots - 1) {
                         flipJob?.cancel()
@@ -853,11 +867,11 @@ private fun PageModeContent(
                     }
 
                     val screenWidth = size.width
-                    val tapZone = screenWidth / 3
+                    val tapZone = screenWidth * TAP_ZONE_RATIO
                     val now = System.currentTimeMillis()
                     when {
                         offset.x < tapZone -> {
-                            if (now - lastFlipTime.longValue < flipCooldownMs) return@detectTapGestures
+                            if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@detectTapGestures
                             lastFlipTime.longValue = now
                             // 左侧点击 — 上一页
                             flipJob?.cancel()
@@ -874,7 +888,7 @@ private fun PageModeContent(
                             }
                         }
                         offset.x > screenWidth - tapZone -> {
-                            if (now - lastFlipTime.longValue < flipCooldownMs) return@detectTapGestures
+                            if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@detectTapGestures
                             lastFlipTime.longValue = now
                             // 右侧点击 — 下一页
                             flipJob?.cancel()
@@ -2098,3 +2112,12 @@ private fun PageRenderLayer(
         }
     }
 }
+
+/** Thread-safe LRU cache backed by [LinkedHashMap] with access-order eviction. */
+private fun <K, V> lruCache(maxSize: Int): MutableMap<K, V> =
+    Collections.synchronizedMap(
+        object : LinkedHashMap<K, V>(maxSize, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean =
+                size > maxSize
+        }
+    )

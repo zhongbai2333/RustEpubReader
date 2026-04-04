@@ -2,9 +2,10 @@ package eu.wewox.pagecurl.page
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector4D
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.TwoWayConverter
 import androidx.compose.animation.core.VisibilityThreshold
-import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.spring
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -299,63 +300,48 @@ public data class Edge(val top: Offset, val bottom: Offset) {
     }
 }
 
+// Fling-based tap flip: snap to start position, then spring with initial velocity for natural deceleration.
 private val DefaultNext: suspend Animatable<Edge, AnimationVector4D>.(Size) -> Unit = { size ->
+    val startX = size.width * FLIP_START_RATIO
+    snapTo(Edge(Offset(startX, 0f), Offset(startX, size.height)))
     animateTo(
-        targetValue = size.start,
-        animationSpec = keyframes {
-            durationMillis = DefaultAnimDuration
-            size.end at 0
-            size.middle at DefaultMidPointDuration
-        }
+        targetValue = Edge(Offset(0f, 0f), Offset(0f, size.height)),
+        animationSpec = flingSpring,
+        initialVelocity = Edge(Offset(-FLING_VELOCITY, 0f), Offset(-FLING_VELOCITY, 0f))
     )
 }
 
 private val DefaultPrev: suspend Animatable<Edge, AnimationVector4D>.(Size) -> Unit = { size ->
+    val startX = size.width * (1f - FLIP_START_RATIO)
+    snapTo(Edge(Offset(startX, 0f), Offset(startX, size.height)))
     animateTo(
-        targetValue = size.end,
-        animationSpec = keyframes {
-            durationMillis = DefaultAnimDuration
-            size.start at 0
-            size.middle at DefaultAnimDuration - DefaultMidPointDuration
-        }
+        targetValue = Edge(Offset(size.width, 0f), Offset(size.width, size.height)),
+        animationSpec = flingSpring,
+        initialVelocity = Edge(Offset(FLING_VELOCITY, 0f), Offset(FLING_VELOCITY, 0f))
     )
 }
 
-// BookSpread: both forward and backward use the same animation path (right edge → spine).
-// Visual direction difference is handled by scaleX=-1 in the rendering layer.
-// Animation starts from 2/3 height on the right edge and sweeps horizontally (parallel to bottom).
+// BookSpread: same fling spring, constrained to the right-page half (spine → right edge).
 private val BookSpreadDefaultAnim: suspend Animatable<Edge, AnimationVector4D>.(Size) -> Unit = { size ->
+    val halfW = size.width / 2f
+    val startX = halfW + halfW * (1f - FLIP_START_RATIO)
+    snapTo(Edge(Offset(startX, 0f), Offset(startX, size.height)))
     animateTo(
-        targetValue = size.spine,
-        animationSpec = keyframes {
-            durationMillis = BookSpreadAnimDuration
-            size.bookSpreadEdgeStart at 0
-            size.bookSpreadMiddle at BookSpreadMidPointDuration
-        }
+        targetValue = Edge(Offset(halfW, 0f), Offset(halfW, size.height)),
+        animationSpec = flingSpring,
+        initialVelocity = Edge(Offset(-FLING_VELOCITY, 0f), Offset(-FLING_VELOCITY, 0f))
     )
 }
 
-private const val DefaultAnimDuration: Int = 450
-private const val DefaultMidPointDuration: Int = 150
-private const val BookSpreadAnimDuration: Int = 250
-private const val BookSpreadMidPointDuration: Int = 80
+private val flingSpring = spring<Edge>(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = FLING_STIFFNESS,
+    visibilityThreshold = Edge.VisibilityThreshold
+)
 
-private val Size.start: Edge
-    get() = Edge(Offset(0f, 0f), Offset(0f, height))
-
-private val Size.middle: Edge
-    get() = Edge(Offset(width, height / 2f), Offset(width / 2f, height))
-
-private val Size.end: Edge
-    get() = Edge(Offset(width, height), Offset(width, height))
-
-private val Size.spine: Edge
-    get() = Edge(Offset(width / 2f, 0f), Offset(width / 2f, height))
-
-// Start: vertical line segment at right edge, centered around 2/3 height
-private val Size.bookSpreadEdgeStart: Edge
-    get() = Edge(Offset(width, height * 0.5f), Offset(width, height * 0.83f))
-
-// Mid-point: near-vertical, sweeping horizontally toward spine (parallel to bottom edge)
-private val Size.bookSpreadMiddle: Edge
-    get() = Edge(Offset(width * 0.8f, height * 0.05f), Offset(width * 0.75f, height * 0.95f))
+/** Ratio of the screen (or half-page) width where the tap-flip animation begins. */
+private const val FLIP_START_RATIO = 0.6f
+/** Spring stiffness — between Medium and MediumLow for a brisk but visible page turn. */
+private const val FLING_STIFFNESS = 800f
+/** Initial velocity in px/s, simulating a real finger fling. */
+private const val FLING_VELOCITY = 4000f

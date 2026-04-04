@@ -1,6 +1,7 @@
 package eu.wewox.pagecurl.utils
 
 import androidx.compose.ui.geometry.Offset
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -10,6 +11,8 @@ internal fun Offset.rotate(angle: Float): Offset {
     return Offset(x * cos - y * sin, x * sin + y * cos)
 }
 
+private const val EPSILON = 1e-6f
+
 internal fun lineLineIntersection(
     line1a: Offset,
     line1b: Offset,
@@ -17,7 +20,7 @@ internal fun lineLineIntersection(
     line2b: Offset,
 ): Offset? {
     val denominator = (line1a.x - line1b.x) * (line2a.y - line2b.y) - (line1a.y - line1b.y) * (line2a.x - line2b.x)
-    if (denominator == 0f) return null
+    if (abs(denominator) < EPSILON) return null
 
     val x1 = (line1a.x * line1b.y - line1a.y * line1b.x) * (line2a.x - line2b.x)
     val x2 = (line1a.x - line1b.x) * (line2a.x * line2b.y - line2a.y * line2b.x)
