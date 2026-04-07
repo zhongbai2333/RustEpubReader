@@ -81,27 +81,28 @@ fun SelectionFloatingMenu(
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn() + scaleIn(initialScale = 0.8f),
-        exit = fadeOut() + scaleOut(targetScale = 0.8f)
+        exit = fadeOut() + scaleOut(targetScale = 0.8f),
+        modifier = Modifier.fillMaxSize()
     ) {
         val menuBg = if (isDarkMode) Color(0xFF2C2C30) else Color(0xFFFAFAFA)
         val textClr = if (isDarkMode) Color(0xFFE0E0E0) else Color(0xFF333333)
         val iconClr = if (isDarkMode) Color(0xFFB0B0B0) else Color(0xFF555555)
 
-        // 计算偏移：菜单显示在选区上方
-        // rect.top 是像素坐标，减去大约 72dp 的像素值作为高度和边距
         val yOffset = with(androidx.compose.ui.platform.LocalDensity.current) {
             (selectionRect.top - 76.dp.toPx()).coerceAtLeast(8.dp.toPx())
         }
 
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .offset { IntOffset(0, yOffset.toInt()) }
-                .padding(horizontal = 24.dp),
+            modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
-            Surface(
-                modifier = Modifier.shadow(8.dp, RoundedCornerShape(12.dp)),
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(0, yOffset.toInt()) }
+                    .padding(horizontal = 24.dp)
+            ) {
+                Surface(
+                    modifier = Modifier.shadow(8.dp, RoundedCornerShape(12.dp)),
                 shape = RoundedCornerShape(12.dp),
                 color = menuBg,
                 tonalElevation = 4.dp
@@ -154,6 +155,7 @@ fun SelectionFloatingMenu(
                         onClick = { onAction(SelectionAction.CORRECT) }
                     )
                 }
+            }
             }
         }
     }

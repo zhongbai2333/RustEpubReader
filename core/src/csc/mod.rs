@@ -3,6 +3,7 @@ pub mod model;
 pub mod tokenizer;
 
 use crate::epub::CorrectionInfo;
+#[cfg(feature = "csc")]
 use crate::epub::CorrectionStatus;
 
 /// Correction mode for the reading experience.

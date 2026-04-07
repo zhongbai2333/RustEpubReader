@@ -314,7 +314,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build release binary (macOS amd64)
-        run: cargo build --release -p rust_epub_reader --target x86_64-apple-darwin --features vendored-openssl
+        run: cargo build --release -p rust_epub_reader --target x86_64-apple-darwin --no-default-features --features vendored-openssl
 
       - name: Bundle artifacts
         shell: bash

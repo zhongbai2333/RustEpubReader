@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// (device_code, user_code, interval, expires_in)
+pub type DeviceCodeResult = Result<(String, String, u64, u64), String>;
+
 use eframe::egui;
 use egui::Color32;
 use serde::{Deserialize, Serialize};
@@ -356,8 +359,8 @@ impl AppSettings {
             text_indent: app.text_indent,
             auto_scroll_speed: app.auto_scroll_speed,
             tts_voice_name: app.tts_voice_name.clone(),
-            tts_rate: app.tts_rate.clone(),
-            tts_volume: app.tts_volume.clone(),
+            tts_rate: app.tts_rate,
+            tts_volume: app.tts_volume,
             translate_api_url: app.translate_api_url.clone(),
             translate_api_key: app.translate_api_key.clone(),
             dictionary_api_url: app.dictionary_api_url.clone(),
@@ -638,7 +641,7 @@ pub struct ReaderApp {
     pub github_oauth_status: String,
     // GitHub OAuth Device Flow async channels
     pub github_pending_device_code:
-        Option<std::sync::mpsc::Receiver<Result<(String, String, u64, u64), String>>>,
+        Option<std::sync::mpsc::Receiver<DeviceCodeResult>>,
     pub github_pending_token_poll:
         Option<std::sync::mpsc::Receiver<Result<crate::ui::github_oauth::PollResult, String>>>,
     pub github_last_poll: Option<std::time::Instant>,
@@ -930,6 +933,7 @@ impl Default for ReaderApp {
         // 检查CSC模型状态
         app.csc_check_model_status();
         // Auto-load CSC model if downloaded and correction mode enabled
+        #[cfg(feature = "csc")]
         if app.csc_model_status == reader_core::csc::ModelStatus::Downloaded
             && app.csc_mode != reader_core::csc::CorrectionMode::None
         {

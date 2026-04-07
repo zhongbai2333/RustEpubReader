@@ -104,8 +104,13 @@ impl ReaderApp {
                         ui.label("✓");
                         ui.label(self.i18n.t("csc.model_downloaded"));
                     });
+                    #[cfg(feature = "csc")]
                     if ui.button(self.i18n.t("csc.load_model")).clicked() {
                         self.csc_load_model();
+                    }
+                    #[cfg(not(feature = "csc"))]
+                    {
+                        ui.label(self.i18n.t("csc.model_downloaded"));
                     }
                 }
                 ModelStatus::Loading => {
@@ -182,10 +187,8 @@ impl ReaderApp {
                 self.github_user_code = None;
                 self.github_oauth_status.clear();
             }
-        } else {
-            if ui.button(self.i18n.t("csc.login_github")).clicked() {
-                self.github_start_device_flow();
-            }
+        } else if ui.button(self.i18n.t("csc.login_github")).clicked() {
+            self.github_start_device_flow();
         }
     }
 
@@ -357,6 +360,7 @@ impl ReaderApp {
     }
 
     /// Load the CSC model (blocking — call from UI thread for now, will be moved to bg thread).
+    #[cfg(feature = "csc")]
     pub fn csc_load_model(&mut self) {
         self.push_feedback_log("[CSC] load_model: begin");
         self.csc_model_status = ModelStatus::Loading;

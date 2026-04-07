@@ -21,10 +21,10 @@ impl ReaderApp {
 
         let ctx = self.last_egui_ctx.clone();
         let logs = self.feedback_logs.clone();
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String, u64, u64), String>>();
+        let (tx, rx) = std::sync::mpsc::channel::<crate::app::DeviceCodeResult>();
 
         std::thread::spawn(move || {
-            let result = (|| -> Result<(String, String, u64, u64), String> {
+            let result: crate::app::DeviceCodeResult = (|| {
                 let client = reqwest::blocking::Client::new();
                 crate::app::dbg_log(&logs, "[GitHub] POST https://github.com/login/device/code");
                 let resp = client

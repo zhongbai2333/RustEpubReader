@@ -48,7 +48,7 @@ thread_local! {
     /// Whether ReadWrite mode is active (enables click-on-correction popups).
     static CSC_READWRITE: Cell<bool> = const { Cell::new(false) };
     /// Correction rects collected during render_block, consumed in render_reader for click detection.
-    static CSC_RECTS: RefCell<Vec<CscRect>> = RefCell::new(Vec::new());
+    static CSC_RECTS: RefCell<Vec<CscRect>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A clickable correction rect collected during rendering.
@@ -1362,21 +1362,19 @@ impl ReaderApp {
                                     } else {
                                         self.prev_page();
                                     }
-                                } else {
-                                    if is_dual_column {
-                                        if self.current_page + 2 < self.total_pages {
-                                            self.trigger_page_animation_to(
-                                                self.current_page + 2,
-                                                1.0,
-                                            );
-                                        } else {
-                                            self.capture_cross_chapter_snapshot();
-                                            self.next_chapter();
-                                            self.start_cross_chapter_animation(1.0);
-                                        }
+                                } else if is_dual_column {
+                                    if self.current_page + 2 < self.total_pages {
+                                        self.trigger_page_animation_to(
+                                            self.current_page + 2,
+                                            1.0,
+                                        );
                                     } else {
-                                        self.next_page();
+                                        self.capture_cross_chapter_snapshot();
+                                        self.next_chapter();
+                                        self.start_cross_chapter_animation(1.0);
                                     }
+                                } else {
+                                    self.next_page();
                                 }
                             }
                         }
@@ -2536,11 +2534,10 @@ fn show_selection_toolbar(
                         result = SelToolbarResult::Close;
                     }
                     // Custom Replace (only in ReadWrite CSC mode)
-                    if is_csc_readwrite {
-                        if ui.small_button(i18n.t("csc.custom_replace")).clicked() {
+                    if is_csc_readwrite
+                        && ui.small_button(i18n.t("csc.custom_replace")).clicked() {
                             result = SelToolbarResult::CustomReplace;
                         }
-                    }
                 });
             });
         });

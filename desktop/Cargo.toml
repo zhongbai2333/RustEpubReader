@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-reader_core = { path = "../core", features = ["keychain", "csc"] }
+reader_core = { path = "../core", features = ["keychain"] }
 eframe = "0.31"
 rfd = "0.15"
 image = "0.25"
@@ -26,7 +26,8 @@ rodio = "0.20"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 [features]
-default = []
+default = ["csc"]
+csc = ["reader_core/csc"]
 vendored-openssl = ["openssl/vendored"]
 
 [target.'cfg(windows)'.build-dependencies]
