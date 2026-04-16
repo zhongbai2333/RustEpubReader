@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "desktop", "android-bridge"]
+members = ["core", "desktop"]
 resolver = "2"
 
 # ── Unified app version (edit here to update globally) ──
