@@ -43,6 +43,7 @@
   "settings.paging": "Paging",
   "settings.visual": "Visual",
   "settings.bg_color": "Background:",
+  "settings.bg_opacity": "Background Opacity: {}%",
   "settings.font_color": "Font Color:",
   "settings.auto": "Auto",
   "settings.custom": "Custom",

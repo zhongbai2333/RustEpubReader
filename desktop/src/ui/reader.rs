@@ -114,6 +114,7 @@ impl ReaderApp {
         };
 
         let full_rect = ui.available_rect_before_wrap();
+        let reader_bg_fill = self.reader_bg_fill_color();
         if let Some(tex) = &self.reader_bg_texture {
             ui.painter().image(
                 tex.id(),
@@ -299,7 +300,7 @@ impl ReaderApp {
                                             ui.painter().rect_filled(
                                                 clip,
                                                 0.0,
-                                                self.reader_bg_color,
+                                                reader_bg_fill,
                                             );
                                             render_content_layout(
                                                 ui,
@@ -345,7 +346,7 @@ impl ReaderApp {
                                                 ui.painter().rect_filled(
                                                     clip,
                                                     0.0,
-                                                    self.reader_bg_color,
+                                                    reader_bg_fill,
                                                 );
                                                 render_content_layout(
                                                     ui,
@@ -393,7 +394,7 @@ impl ReaderApp {
                                             ui.painter().rect_filled(
                                                 clip,
                                                 0.0,
-                                                self.reader_bg_color,
+                                                reader_bg_fill,
                                             );
                                             render_content_layout(
                                                 ui,
@@ -440,7 +441,7 @@ impl ReaderApp {
                                                 ui.painter().rect_filled(
                                                     clip,
                                                     0.0,
-                                                    self.reader_bg_color,
+                                                    reader_bg_fill,
                                                 );
                                                 render_content_layout(
                                                     ui,
@@ -516,7 +517,7 @@ impl ReaderApp {
                             ui.allocate_new_ui(UiBuilder::new().max_rect(left_to_rect), |ui| {
                                 let clip = left_to_rect.intersect(page_rect);
                                 ui.set_clip_rect(clip);
-                                ui.painter().rect_filled(clip, 0.0, self.reader_bg_color);
+                                ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                 render_content_layout(
                                     ui,
                                     h_margin,
@@ -556,7 +557,7 @@ impl ReaderApp {
                                     |ui| {
                                         let clip = right_to_rect.intersect(page_rect);
                                         ui.set_clip_rect(clip);
-                                        ui.painter().rect_filled(clip, 0.0, self.reader_bg_color);
+                                        ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                         render_content_layout(
                                             ui,
                                             h_margin,
@@ -729,7 +730,7 @@ impl ReaderApp {
                                             ui.painter().rect_filled(
                                                 clip,
                                                 0.0,
-                                                self.reader_bg_color,
+                                                reader_bg_fill,
                                             );
                                             render_content_layout(
                                                 ui,
@@ -774,7 +775,7 @@ impl ReaderApp {
                                             ui.painter().rect_filled(
                                                 clip,
                                                 0.0,
-                                                self.reader_bg_color,
+                                                reader_bg_fill,
                                             );
                                             render_content_layout(
                                                 ui,
@@ -840,7 +841,7 @@ impl ReaderApp {
                             ui.allocate_new_ui(UiBuilder::new().max_rect(to_rect), |ui| {
                                 let clip = to_rect.intersect(page_rect);
                                 ui.set_clip_rect(clip);
-                                ui.painter().rect_filled(clip, 0.0, self.reader_bg_color);
+                                ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                 render_content_layout(
                                     ui,
                                     h_margin,

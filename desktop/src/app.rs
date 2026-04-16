@@ -248,6 +248,10 @@ fn default_text_indent() -> u8 {
     2
 }
 
+fn default_bg_opacity() -> f32 {
+    1.0
+}
+
 fn generate_pin() -> String {
     use rand::RngCore;
     let val = rand::rngs::OsRng.next_u32() % 10000;
@@ -259,6 +263,8 @@ struct AppSettings {
     font_size: f32,
     dark_mode: bool,
     reader_bg_color: [u8; 4],
+    #[serde(default = "default_bg_opacity")]
+    reader_bg_opacity: f32,
     reader_font_color: Option<[u8; 4]>,
     reader_font_family: String,
     reader_page_animation: String,
@@ -343,6 +349,7 @@ impl AppSettings {
             font_size: app.font_size,
             dark_mode: app.dark_mode,
             reader_bg_color: Self::from_color(app.reader_bg_color),
+            reader_bg_opacity: app.reader_bg_opacity,
             reader_font_color: app.reader_font_color.map(Self::from_color),
             reader_font_family: app.reader_font_family.clone(),
             reader_page_animation: app.reader_page_animation.clone(),
@@ -376,6 +383,7 @@ impl AppSettings {
         app.font_size = self.font_size.clamp(12.0, 40.0);
         app.dark_mode = self.dark_mode;
         app.reader_bg_color = Self::to_color(self.reader_bg_color);
+        app.reader_bg_opacity = self.reader_bg_opacity.clamp(0.0, 1.0);
         app.reader_font_color = self.reader_font_color.map(Self::to_color);
         app.reader_font_family = self.reader_font_family.clone();
         app.reader_page_animation = self.reader_page_animation.clone();
@@ -475,6 +483,7 @@ pub struct ReaderApp {
     pub font_size: f32,
     pub dark_mode: bool,
     pub reader_bg_color: Color32,
+    pub reader_bg_opacity: f32,
     pub reader_font_color: Option<Color32>,
     pub reader_font_family: String,
     pub reader_page_animation: String,
@@ -748,6 +757,7 @@ impl Default for ReaderApp {
             font_size: 16.0,
             dark_mode: true,
             reader_bg_color: Color32::from_rgb(250, 246, 238),
+            reader_bg_opacity: default_bg_opacity(),
             reader_font_color: None,
             reader_font_family: "Sans".to_string(),
             reader_page_animation: "Slide".to_string(),
@@ -1599,6 +1609,14 @@ impl ReaderApp {
     }
 }
 
+impl ReaderApp {
+    pub fn reader_bg_fill_color(&self) -> Color32 {
+        let [r, g, b, _] = self.reader_bg_color.to_array();
+        let alpha = (self.reader_bg_opacity * 255.0).round() as u8;
+        Color32::from_rgba_unmultiplied(r, g, b, alpha)
+    }
+}
+
 impl eframe::App for ReaderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.last_egui_ctx = Some(ctx.clone());
@@ -2066,7 +2084,7 @@ impl eframe::App for ReaderApp {
         }
 
         let reader_fill = if self.view == AppView::Reader {
-            self.reader_bg_color
+            self.reader_bg_fill_color()
         } else if self.dark_mode {
             egui::Color32::from_rgb(26, 26, 28)
         } else {

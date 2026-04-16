@@ -43,6 +43,7 @@
   "settings.paging": "翻页",
   "settings.visual": "视觉",
   "settings.bg_color": "背景颜色:",
+  "settings.bg_opacity": "背景透明度: {}%",
   "settings.font_color": "字体颜色:",
   "settings.auto": "自动",
   "settings.custom": "自定义",

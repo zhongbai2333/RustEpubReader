@@ -343,6 +343,14 @@ impl ReaderApp {
                 egui::color_picker::Alpha::Opaque,
             );
         });
+        ui.label(self.i18n.tf1(
+            "settings.bg_opacity",
+            &format!("{}", (self.reader_bg_opacity * 100.0) as i32),
+        ));
+        ui.add_sized(
+            [ui.available_width().min(250.0), 18.0],
+            egui::Slider::new(&mut self.reader_bg_opacity, 0.0..=1.0),
+        );
 
         // Font color
         ui.horizontal_wrapped(|ui| {
