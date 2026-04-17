@@ -4,7 +4,7 @@ use crate::self_update;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
-const GITHUB_URL: &str = "https://github.com/zhongbai2333/RustEpubReader";
+const GITHUB_URL: &str = "https://github.com/756066377/RustEpubReader";
 const ICON_BYTES: &[u8] = include_bytes!("../../../icon/ReaderIcon2.png");
 
 impl ReaderApp {
