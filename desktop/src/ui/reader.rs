@@ -215,7 +215,11 @@ impl ReaderApp {
                     .unwrap_or_default();
 
                 if self.scroll_mode {
-                    let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
+                    let mut scroll_area = egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                        );
                     if self.scroll_to_top {
                         scroll_area = scroll_area.vertical_scroll_offset(0.0);
                         self.scroll_to_top = false;

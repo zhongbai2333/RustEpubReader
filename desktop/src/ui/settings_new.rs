@@ -425,7 +425,7 @@ impl ReaderApp {
                 .clicked()
                 && self.reader_font_color.is_none()
             {
-                self.reader_font_color = Some(Color32::from_gray(30));
+                self.reader_font_color = Some(self.default_custom_font_color());
             }
             if let Some(ref mut color) = self.reader_font_color {
                 egui::color_picker::color_edit_button_srgba(

@@ -306,10 +306,6 @@ impl ReaderApp {
                     }
 
                     ui.separator();
-
-                    if ui.button("→").clicked() {
-                        self.next_chapter();
-                    }
                     let hint_color = if self.dark_mode {
                         egui::Color32::from_gray(140)
                     } else {
@@ -323,9 +319,6 @@ impl ReaderApp {
                         ))
                         .color(hint_color),
                     );
-                    if ui.button("←").clicked() {
-                        self.prev_chapter();
-                    }
                 });
             }
         });

@@ -2045,6 +2045,14 @@ impl ReaderApp {
 }
 
 impl ReaderApp {
+    pub(crate) fn default_custom_font_color(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_gray(220)
+        } else {
+            Color32::from_gray(30)
+        }
+    }
+
     pub(crate) fn set_reader_chrome_visible(&mut self, visible: bool) {
         self.reader_toolbar_visible = visible;
         self.show_toc = visible;
@@ -2680,8 +2688,14 @@ impl eframe::App for ReaderApp {
             ctx.request_repaint();
         }
 
-        if self.view == AppView::Reader && !self.show_sharing_panel {
+        if self.view == AppView::Reader && !self.show_sharing_panel && !ctx.wants_keyboard_input() {
             ctx.input(|i| {
+                if i.key_pressed(egui::Key::A) {
+                    self.prev_chapter();
+                }
+                if i.key_pressed(egui::Key::D) {
+                    self.next_chapter();
+                }
                 if i.key_pressed(egui::Key::ArrowLeft) {
                     if self.scroll_mode {
                         self.prev_chapter();
