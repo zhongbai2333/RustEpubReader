@@ -31,12 +31,160 @@ struct BossHotkeySpec {
 
 #[cfg(target_os = "windows")]
 struct BossHotkeyRuntime {
-    stop: Arc<AtomicBool>,
+    thread_id: u32,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
 fn default_boss_key() -> String {
-    "Ctrl+Shift+H".to_string()
+    "F1".to_string()
+}
+
+fn normalize_boss_hotkey(ctrl: bool, alt: bool, shift: bool, win: bool, key_token: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if ctrl {
+        parts.push("Ctrl".to_string());
+    }
+    if alt {
+        parts.push("Alt".to_string());
+    }
+    if shift {
+        parts.push("Shift".to_string());
+    }
+    if win {
+        parts.push("Win".to_string());
+    }
+    parts.push(key_token.to_string());
+    parts.join("+")
+}
+
+fn normalize_boss_key_token(token: &str) -> Option<String> {
+    let up = token.trim().to_ascii_uppercase();
+    match up.as_str() {
+        "" => None,
+        "ESC" | "ESCAPE" => Some("Esc".to_string()),
+        "SPACE" => Some("Space".to_string()),
+        "ENTER" | "RETURN" => Some("Enter".to_string()),
+        "TAB" => Some("Tab".to_string()),
+        "BACKSPACE" => Some("Backspace".to_string()),
+        "INSERT" | "INS" => Some("Insert".to_string()),
+        "DELETE" | "DEL" => Some("Delete".to_string()),
+        "HOME" => Some("Home".to_string()),
+        "END" => Some("End".to_string()),
+        "PAGEUP" | "PGUP" => Some("PageUp".to_string()),
+        "PAGEDOWN" | "PGDN" => Some("PageDown".to_string()),
+        "LEFT" => Some("Left".to_string()),
+        "RIGHT" => Some("Right".to_string()),
+        "UP" => Some("Up".to_string()),
+        "DOWN" => Some("Down".to_string()),
+        _ => {
+            if up.len() == 1 && up.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+                return Some(up);
+            }
+            if up
+                .strip_prefix('F')
+                .and_then(|s| s.parse::<u8>().ok())
+                .is_some_and(|n| (1..=12).contains(&n))
+            {
+                return Some(up);
+            }
+            None
+        }
+    }
+}
+
+fn is_low_conflict_single_boss_key(token: &str) -> bool {
+    token
+        .strip_prefix('F')
+        .and_then(|s| s.parse::<u8>().ok())
+        .is_some_and(|n| (1..=12).contains(&n))
+}
+
+fn egui_key_to_boss_token(key: egui::Key) -> Option<&'static str> {
+    use egui::Key;
+    match key {
+        Key::ArrowDown => Some("Down"),
+        Key::ArrowLeft => Some("Left"),
+        Key::ArrowRight => Some("Right"),
+        Key::ArrowUp => Some("Up"),
+        Key::Escape => Some("Esc"),
+        Key::Tab => Some("Tab"),
+        Key::Backspace => Some("Backspace"),
+        Key::Enter => Some("Enter"),
+        Key::Space => Some("Space"),
+        Key::Insert => Some("Insert"),
+        Key::Delete => Some("Delete"),
+        Key::Home => Some("Home"),
+        Key::End => Some("End"),
+        Key::PageUp => Some("PageUp"),
+        Key::PageDown => Some("PageDown"),
+        Key::Num0 => Some("0"),
+        Key::Num1 => Some("1"),
+        Key::Num2 => Some("2"),
+        Key::Num3 => Some("3"),
+        Key::Num4 => Some("4"),
+        Key::Num5 => Some("5"),
+        Key::Num6 => Some("6"),
+        Key::Num7 => Some("7"),
+        Key::Num8 => Some("8"),
+        Key::Num9 => Some("9"),
+        Key::A => Some("A"),
+        Key::B => Some("B"),
+        Key::C => Some("C"),
+        Key::D => Some("D"),
+        Key::E => Some("E"),
+        Key::F => Some("F"),
+        Key::G => Some("G"),
+        Key::H => Some("H"),
+        Key::I => Some("I"),
+        Key::J => Some("J"),
+        Key::K => Some("K"),
+        Key::L => Some("L"),
+        Key::M => Some("M"),
+        Key::N => Some("N"),
+        Key::O => Some("O"),
+        Key::P => Some("P"),
+        Key::Q => Some("Q"),
+        Key::R => Some("R"),
+        Key::S => Some("S"),
+        Key::T => Some("T"),
+        Key::U => Some("U"),
+        Key::V => Some("V"),
+        Key::W => Some("W"),
+        Key::X => Some("X"),
+        Key::Y => Some("Y"),
+        Key::Z => Some("Z"),
+        Key::F1 => Some("F1"),
+        Key::F2 => Some("F2"),
+        Key::F3 => Some("F3"),
+        Key::F4 => Some("F4"),
+        Key::F5 => Some("F5"),
+        Key::F6 => Some("F6"),
+        Key::F7 => Some("F7"),
+        Key::F8 => Some("F8"),
+        Key::F9 => Some("F9"),
+        Key::F10 => Some("F10"),
+        Key::F11 => Some("F11"),
+        Key::F12 => Some("F12"),
+        _ => None,
+    }
+}
+
+fn boss_hotkey_spec_from_key(modifiers: egui::Modifiers, key: egui::Key) -> Option<BossHotkeySpec> {
+    let key_token = egui_key_to_boss_token(key)?.to_string();
+    Some(BossHotkeySpec {
+        normalized: normalize_boss_hotkey(
+            modifiers.ctrl,
+            modifiers.alt,
+            modifiers.shift,
+            modifiers.mac_cmd || modifiers.command,
+            &key_token,
+        ),
+        ctrl: modifiers.ctrl,
+        alt: modifiers.alt,
+        shift: modifiers.shift,
+        win: modifiers.mac_cmd || modifiers.command,
+        key_token,
+    })
 }
 
 fn parse_boss_hotkey(input: &str) -> Option<BossHotkeySpec> {
@@ -61,41 +209,14 @@ fn parse_boss_hotkey(input: &str) -> Option<BossHotkeySpec> {
                 if key_token.is_some() {
                     return None;
                 }
-                let is_single =
-                    up.len() == 1 && up.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
-                let is_fn = up
-                    .strip_prefix('F')
-                    .and_then(|s| s.parse::<u8>().ok())
-                    .is_some_and(|n| (1..=12).contains(&n));
-                if !is_single && !is_fn {
-                    return None;
-                }
-                key_token = Some(up);
+                key_token = normalize_boss_key_token(token);
             }
         }
     }
 
     let key_token = key_token?;
-    if !(ctrl || alt || shift || win) {
-        return None;
-    }
-    let mut parts: Vec<&str> = Vec::new();
-    if ctrl {
-        parts.push("Ctrl");
-    }
-    if alt {
-        parts.push("Alt");
-    }
-    if shift {
-        parts.push("Shift");
-    }
-    if win {
-        parts.push("Win");
-    }
-    parts.push(&key_token);
-
     Some(BossHotkeySpec {
-        normalized: parts.join("+"),
+        normalized: normalize_boss_hotkey(ctrl, alt, shift, win, &key_token),
         ctrl,
         alt,
         shift,
@@ -105,22 +226,107 @@ fn parse_boss_hotkey(input: &str) -> Option<BossHotkeySpec> {
 }
 
 #[cfg(target_os = "windows")]
-fn boss_key_token_to_vk(token: &str) -> Option<i32> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_F1;
-    if token.len() == 1 {
-        return token.chars().next().map(|c| c as i32);
+fn boss_key_token_to_vk(token: &str) -> Option<u32> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME, VK_INSERT, VK_LEFT,
+        VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
+    };
+    match token {
+        "Esc" => Some(VK_ESCAPE),
+        "Space" => Some(VK_SPACE),
+        "Enter" => Some(VK_RETURN),
+        "Tab" => Some(VK_TAB),
+        "Backspace" => Some(VK_BACK),
+        "Insert" => Some(VK_INSERT),
+        "Delete" => Some(VK_DELETE),
+        "Home" => Some(VK_HOME),
+        "End" => Some(VK_END),
+        "PageUp" => Some(VK_PRIOR),
+        "PageDown" => Some(VK_NEXT),
+        "Left" => Some(VK_LEFT),
+        "Right" => Some(VK_RIGHT),
+        "Up" => Some(VK_UP),
+        "Down" => Some(VK_DOWN),
+        _ => {
+            if token.len() == 1 {
+                return token.chars().next().map(|c| c as u32);
+            }
+            let n = token.strip_prefix('F')?.parse::<u32>().ok()?;
+            if !(1..=12).contains(&n) {
+                return None;
+            }
+            Some(VK_F1 + (n - 1))
+        }
     }
-    let n = token.strip_prefix('F')?.parse::<i32>().ok()?;
-    if !(1..=12).contains(&n) {
-        return None;
-    }
-    Some(VK_F1 as i32 + (n - 1))
 }
 
 #[cfg(target_os = "windows")]
-fn key_down(vk: i32) -> bool {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
+fn boss_key_modifiers(spec: &BossHotkeySpec) -> u32 {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+    };
+
+    let mut modifiers = MOD_NOREPEAT;
+    if spec.ctrl {
+        modifiers |= MOD_CONTROL;
+    }
+    if spec.alt {
+        modifiers |= MOD_ALT;
+    }
+    if spec.shift {
+        modifiers |= MOD_SHIFT;
+    }
+    if spec.win {
+        modifiers |= MOD_WIN;
+    }
+    modifiers
+}
+
+#[cfg(target_os = "windows")]
+fn start_boss_hotkey_runtime(spec: &BossHotkeySpec) -> Result<BossHotkeyRuntime, ()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetMessageW, PeekMessageW, RegisterHotKey, UnregisterHotKey, MSG, PM_NOREMOVE, WM_HOTKEY,
+    };
+
+    const BOSS_HOTKEY_ID: i32 = 0x5245;
+    let Some(vk) = boss_key_token_to_vk(&spec.key_token) else {
+        return Err(());
+    };
+    let modifiers = boss_key_modifiers(spec);
+    let (tx, rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || unsafe {
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+
+        let thread_id = GetCurrentThreadId();
+        let mut msg = std::mem::zeroed::<MSG>();
+        PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+        if RegisterHotKey(std::ptr::null_mut(), BOSS_HOTKEY_ID, modifiers, vk) == 0 {
+            let _ = tx.send(Err(()));
+            return;
+        }
+        let _ = tx.send(Ok(thread_id));
+
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            if msg.message == WM_HOTKEY {
+                toggle_main_window_visibility();
+            }
+        }
+
+        UnregisterHotKey(std::ptr::null_mut(), BOSS_HOTKEY_ID);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(thread_id)) => Ok(BossHotkeyRuntime {
+            thread_id,
+            worker: Some(worker),
+        }),
+        _ => {
+            let _ = worker.join();
+            Err(())
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -784,6 +990,7 @@ pub struct ReaderApp {
     pub boss_key_shortcut: String,
     pub boss_key_input: String,
     pub boss_key_status: String,
+    pub boss_key_capturing: bool,
     #[cfg(target_os = "windows")]
     boss_hotkey_runtime: Option<BossHotkeyRuntime>,
 
@@ -1048,6 +1255,7 @@ impl Default for ReaderApp {
             boss_key_shortcut: default_boss_key(),
             boss_key_input: default_boss_key(),
             boss_key_status: String::new(),
+            boss_key_capturing: false,
             #[cfg(target_os = "windows")]
             boss_hotkey_runtime: None,
             // CSC
@@ -1126,7 +1334,8 @@ impl Default for ReaderApp {
             app.push_feedback_log("[Init] auto-starting sharing server");
             app.start_sharing_server();
         }
-        app.rebind_boss_hotkey();
+        let initial_boss_key = app.boss_key_shortcut.clone();
+        app.rebind_boss_hotkey(initial_boss_key);
         app.push_feedback_log(format!(
             "[Init] app initialized (data_dir={})",
             app.data_dir
@@ -1789,62 +1998,160 @@ impl ReaderApp {
         Color32::from_rgba_unmultiplied(r, g, b, alpha)
     }
 
+    pub fn begin_boss_key_capture(&mut self) {
+        self.boss_key_capturing = true;
+        self.boss_key_status = self.i18n.t("settings.boss_key_capturing").to_string();
+    }
+
+    pub fn cancel_boss_key_capture(&mut self) {
+        self.boss_key_capturing = false;
+        self.refresh_boss_key_status();
+    }
+
+    pub fn clear_boss_key(&mut self) {
+        self.stop_boss_hotkey_runtime();
+        self.boss_key_shortcut.clear();
+        self.boss_key_input.clear();
+        self.boss_key_capturing = false;
+        self.boss_key_status = self.i18n.t("settings.boss_key_deleted").to_string();
+    }
+
+    pub fn poll_boss_key_capture(&mut self, ctx: &egui::Context) {
+        if !self.boss_key_capturing {
+            return;
+        }
+
+        let events = ctx.input(|i| i.events.clone());
+        for event in events {
+            let egui::Event::Key {
+                key,
+                pressed,
+                repeat,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if !pressed || repeat {
+                continue;
+            }
+
+            let Some(spec) = boss_hotkey_spec_from_key(modifiers, key) else {
+                continue;
+            };
+            self.boss_key_capturing = false;
+            self.apply_boss_hotkey_spec(spec);
+            break;
+        }
+    }
+
+    fn apply_boss_hotkey_spec(&mut self, spec: BossHotkeySpec) {
+        let previous_shortcut = self.boss_key_shortcut.clone();
+        if !spec.ctrl
+            && !spec.alt
+            && !spec.shift
+            && !spec.win
+            && !is_low_conflict_single_boss_key(&spec.key_token)
+        {
+            self.boss_key_status = self
+                .i18n
+                .t("settings.boss_key_single_key_limited")
+                .to_string();
+            return;
+        }
+
+        self.boss_key_shortcut = spec.normalized.clone();
+        self.boss_key_input = self.boss_key_shortcut.clone();
+        self.rebind_boss_hotkey(previous_shortcut);
+    }
+
     pub fn apply_boss_key_from_input(&mut self) {
         let Some(spec) = parse_boss_hotkey(&self.boss_key_input) else {
             self.boss_key_status = self.i18n.t("settings.boss_key_invalid").to_string();
             return;
         };
-        self.boss_key_shortcut = spec.normalized;
-        self.boss_key_input = self.boss_key_shortcut.clone();
-        self.rebind_boss_hotkey();
+        self.apply_boss_hotkey_spec(spec);
     }
 
-    fn rebind_boss_hotkey(&mut self) {
-        self.stop_boss_hotkey_runtime();
-        let Some(spec) = parse_boss_hotkey(&self.boss_key_shortcut) else {
+    fn refresh_boss_key_status(&mut self) {
+        if self.boss_key_shortcut.is_empty() {
+            self.boss_key_status = self.i18n.t("settings.boss_key_disabled").to_string();
+        } else {
+            self.boss_key_status = self
+                .i18n
+                .tf1("settings.boss_key_active", &self.boss_key_shortcut);
+        }
+    }
+
+    fn rebind_boss_hotkey(&mut self, previous_shortcut: String) {
+        let previous_spec = parse_boss_hotkey(&previous_shortcut);
+
+        let new_shortcut = self.boss_key_shortcut.trim().to_string();
+        if new_shortcut.is_empty() {
+            self.stop_boss_hotkey_runtime();
+            self.boss_key_shortcut.clear();
+            self.boss_key_input.clear();
+            self.boss_key_status = self.i18n.t("settings.boss_key_disabled").to_string();
+            return;
+        }
+
+        let Some(spec) = parse_boss_hotkey(&new_shortcut) else {
+            self.boss_key_shortcut = previous_shortcut;
+            self.boss_key_input = self.boss_key_shortcut.clone();
             self.boss_key_status = self.i18n.t("settings.boss_key_invalid").to_string();
             return;
         };
 
         #[cfg(target_os = "windows")]
         {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-                VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
-            };
+            self.stop_boss_hotkey_runtime();
 
-            let Some(main_vk) = boss_key_token_to_vk(&spec.key_token) else {
+            if !spec.ctrl
+                && !spec.alt
+                && !spec.shift
+                && !spec.win
+                && !is_low_conflict_single_boss_key(&spec.key_token)
+            {
+                self.boss_key_shortcut = previous_shortcut;
+                self.boss_key_input = self.boss_key_shortcut.clone();
+                if let Some(old_spec) = previous_spec.clone() {
+                    self.boss_hotkey_runtime = start_boss_hotkey_runtime(&old_spec).ok();
+                }
+                self.boss_key_status = self
+                    .i18n
+                    .t("settings.boss_key_single_key_limited")
+                    .to_string();
+                return;
+            }
+
+            let Some(_) = boss_key_token_to_vk(&spec.key_token) else {
+                self.boss_key_shortcut = previous_shortcut;
+                self.boss_key_input = self.boss_key_shortcut.clone();
+                if let Some(old_spec) = previous_spec.clone() {
+                    self.boss_hotkey_runtime = start_boss_hotkey_runtime(&old_spec).ok();
+                }
                 self.boss_key_status = self.i18n.t("settings.boss_key_invalid").to_string();
                 return;
             };
 
-            let stop = Arc::new(AtomicBool::new(false));
-            let stop_worker = stop.clone();
-            let ctrl = spec.ctrl;
-            let alt = spec.alt;
-            let shift = spec.shift;
-            let win = spec.win;
-            let worker = std::thread::spawn(move || {
-                let mut was_down = false;
-                while !stop_worker.load(Ordering::Relaxed) {
-                    let ctrl_down = !ctrl || key_down(VK_CONTROL as i32);
-                    let alt_down = !alt || key_down(VK_MENU as i32);
-                    let shift_down = !shift || key_down(VK_SHIFT as i32);
-                    let win_down = !win || key_down(VK_LWIN as i32) || key_down(VK_RWIN as i32);
-                    let hotkey_down =
-                        ctrl_down && alt_down && shift_down && win_down && key_down(main_vk);
-                    if hotkey_down && !was_down {
-                        toggle_main_window_visibility();
-                    }
-                    was_down = hotkey_down;
-                    std::thread::sleep(std::time::Duration::from_millis(25));
+            match start_boss_hotkey_runtime(&spec) {
+                Ok(runtime) => {
+                    self.boss_hotkey_runtime = Some(runtime);
+                    self.boss_key_shortcut = spec.normalized.clone();
+                    self.boss_key_input = self.boss_key_shortcut.clone();
+                    self.boss_key_status =
+                        self.i18n.tf1("settings.boss_key_active", &spec.normalized);
                 }
-            });
-
-            self.boss_hotkey_runtime = Some(BossHotkeyRuntime {
-                stop,
-                worker: Some(worker),
-            });
-            self.boss_key_status = self.i18n.tf1("settings.boss_key_active", &spec.normalized);
+                Err(_) => {
+                    self.boss_key_shortcut = previous_shortcut;
+                    self.boss_key_input = self.boss_key_shortcut.clone();
+                    if let Some(old_spec) = previous_spec {
+                        self.boss_hotkey_runtime = start_boss_hotkey_runtime(&old_spec).ok();
+                    }
+                    self.boss_key_status = self.i18n.t("settings.boss_key_conflict").to_string();
+                }
+            }
             return;
         }
 
@@ -1857,7 +2164,11 @@ impl ReaderApp {
     fn stop_boss_hotkey_runtime(&mut self) {
         #[cfg(target_os = "windows")]
         if let Some(mut runtime) = self.boss_hotkey_runtime.take() {
-            runtime.stop.store(true, Ordering::Relaxed);
+            use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+
+            unsafe {
+                PostThreadMessageW(runtime.thread_id, WM_QUIT, 0, 0);
+            }
             if let Some(worker) = runtime.worker.take() {
                 let _ = worker.join();
             }
@@ -1874,6 +2185,10 @@ impl Drop for ReaderApp {
 impl eframe::App for ReaderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.last_egui_ctx = Some(ctx.clone());
+        self.poll_boss_key_capture(ctx);
+        if !self.show_settings && self.boss_key_capturing {
+            self.cancel_boss_key_capture();
+        }
         // --- Poll TTS audio ---
         self.tts_poll_audio();
         // --- Poll CSC model download ---

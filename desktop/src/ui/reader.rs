@@ -297,11 +297,7 @@ impl ReaderApp {
                                         |ui| {
                                             let clip = left_from_rect.intersect(page_rect);
                                             ui.set_clip_rect(clip);
-                                            ui.painter().rect_filled(
-                                                clip,
-                                                0.0,
-                                                reader_bg_fill,
-                                            );
+                                            ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                             render_content_layout(
                                                 ui,
                                                 h_margin,
@@ -343,11 +339,7 @@ impl ReaderApp {
                                             |ui| {
                                                 let clip = right_from_rect.intersect(page_rect);
                                                 ui.set_clip_rect(clip);
-                                                ui.painter().rect_filled(
-                                                    clip,
-                                                    0.0,
-                                                    reader_bg_fill,
-                                                );
+                                                ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                                 render_content_layout(
                                                     ui,
                                                     h_margin,
@@ -391,11 +383,7 @@ impl ReaderApp {
                                         |ui| {
                                             let clip = left_from_rect.intersect(page_rect);
                                             ui.set_clip_rect(clip);
-                                            ui.painter().rect_filled(
-                                                clip,
-                                                0.0,
-                                                reader_bg_fill,
-                                            );
+                                            ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                             render_content_layout(
                                                 ui,
                                                 h_margin,
@@ -438,11 +426,7 @@ impl ReaderApp {
                                             |ui| {
                                                 let clip = right_from_rect.intersect(page_rect);
                                                 ui.set_clip_rect(clip);
-                                                ui.painter().rect_filled(
-                                                    clip,
-                                                    0.0,
-                                                    reader_bg_fill,
-                                                );
+                                                ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                                 render_content_layout(
                                                     ui,
                                                     h_margin,
@@ -727,11 +711,7 @@ impl ReaderApp {
                                         |ui| {
                                             let clip = from_rect.intersect(page_rect);
                                             ui.set_clip_rect(clip);
-                                            ui.painter().rect_filled(
-                                                clip,
-                                                0.0,
-                                                reader_bg_fill,
-                                            );
+                                            ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                             render_content_layout(
                                                 ui,
                                                 h_margin,
@@ -772,11 +752,7 @@ impl ReaderApp {
                                         |ui| {
                                             let clip = from_rect.intersect(page_rect);
                                             ui.set_clip_rect(clip);
-                                            ui.painter().rect_filled(
-                                                clip,
-                                                0.0,
-                                                reader_bg_fill,
-                                            );
+                                            ui.painter().rect_filled(clip, 0.0, reader_bg_fill);
                                             render_content_layout(
                                                 ui,
                                                 h_margin,

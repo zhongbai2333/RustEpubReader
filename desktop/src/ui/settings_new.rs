@@ -320,18 +320,36 @@ impl ReaderApp {
                 .size(12.0)
                 .color(Color32::from_gray(140)),
         );
+        let shortcut_label = if self.boss_key_shortcut.is_empty() {
+            self.i18n.t("settings.boss_key_disabled")
+        } else {
+            self.boss_key_shortcut.clone()
+        };
+        ui.label(self.i18n.tf1("settings.boss_key_current", &shortcut_label));
         ui.horizontal(|ui| {
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut self.boss_key_input)
-                    .hint_text("Ctrl+Shift+H")
-                    .desired_width(180.0),
-            );
-            let pressed_enter =
-                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button(self.i18n.t("settings.boss_key_apply")).clicked() || pressed_enter {
-                self.apply_boss_key_from_input();
+            let change_label = if self.boss_key_capturing {
+                self.i18n.t("common.cancel")
+            } else {
+                self.i18n.t("settings.boss_key_change")
+            };
+            if ui.button(change_label).clicked() {
+                if self.boss_key_capturing {
+                    self.cancel_boss_key_capture();
+                } else {
+                    self.begin_boss_key_capture();
+                }
+            }
+            if ui.button(self.i18n.t("settings.boss_key_delete")).clicked() {
+                self.clear_boss_key();
             }
         });
+        if self.boss_key_capturing {
+            ui.label(
+                egui::RichText::new(self.i18n.t("settings.boss_key_capturing"))
+                    .size(12.0)
+                    .color(Color32::from_rgb(220, 170, 90)),
+            );
+        }
         if !self.boss_key_status.is_empty() {
             ui.label(
                 egui::RichText::new(&self.boss_key_status)
