@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use super::crypto;
-use super::dbg_log;
 use super::protocol::*;
 use crate::{base64_decode, base64_encode, now_secs};
 

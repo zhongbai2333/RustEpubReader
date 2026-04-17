@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::dbg_log;
 use crate::now_secs;
 
 /// UDP port used for discovery broadcasts (chosen to avoid common port conflicts).

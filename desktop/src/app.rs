@@ -124,7 +124,7 @@ fn key_down(vk: i32) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn current_process_main_window() -> Option<isize> {
+fn current_process_main_window() -> Option<windows_sys::Win32::Foundation::HWND> {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -140,7 +140,7 @@ fn current_process_main_window() -> Option<isize> {
         let search = &mut *(lparam as *mut Search);
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid == search.pid && GetWindow(hwnd, GW_OWNER) == 0 {
+        if pid == search.pid && GetWindow(hwnd, GW_OWNER) == std::ptr::null_mut() {
             search.hwnd = hwnd;
             return 0;
         }
@@ -149,12 +149,12 @@ fn current_process_main_window() -> Option<isize> {
 
     let mut search = Search {
         pid: unsafe { GetCurrentProcessId() },
-        hwnd: 0,
+        hwnd: std::ptr::null_mut(),
     };
     unsafe {
         EnumWindows(Some(enum_proc), &mut search as *mut Search as isize);
     }
-    (search.hwnd != 0).then_some(search.hwnd)
+    (search.hwnd != std::ptr::null_mut()).then_some(search.hwnd)
 }
 
 #[cfg(target_os = "windows")]
