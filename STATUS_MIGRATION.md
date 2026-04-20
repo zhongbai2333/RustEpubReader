@@ -147,7 +147,7 @@
 | PR | 分支 | 目标 | 状态 |
 |---|------|------|------|
 | #1 | `feat/review-panel` → `main` (fork 内部) | Copilot 审查 | ✅ 已合并 |
-| #2 | `feat/p1-fixes` → `main` (fork 内部) | Copilot 审查 | ⏳ 待创建 |
+| #2 | `feat/review-panel` → `main` (fork 内部) | Copilot 审查 | ✅ 已创建，等待审查 |
 
 > 最终向上游 `zhongbai2333/RustEpubReader` 发 PR 暂缓，等 P2 处理完再统一提。
 
@@ -161,10 +161,8 @@ cd RustEpubReader/desktop
 cargo build --release --no-default-features
 ./target/release/rust_epub_reader.exe
 
-# 推送 P1 修复到 fork
-cd RustEpubReader
-git checkout feat/p1-fixes
-git push origin feat/p1-fixes
+# 当前 feature branch 已推送到 fork
+git push -u fork feat/review-panel
 ```
 
 ---
