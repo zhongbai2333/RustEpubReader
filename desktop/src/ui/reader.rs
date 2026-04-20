@@ -1638,7 +1638,7 @@ impl ReaderApp {
                 .order(egui::Order::Foreground)
                 .interactable(true)
                 .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    let frame_resp = egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.set_max_width(320.0);
 
                         // Top row: highlight info + action buttons
@@ -1713,8 +1713,8 @@ impl ReaderApp {
                             }
                         });
                     });
-                    // Capture the actual rendered rect (Area::show response.rect is just a point)
-                    popup_rect = ui.min_rect();
+                    // Capture Frame's actual rect (includes padding + content)
+                    popup_rect = frame_resp.response.rect;
                 });
 
             // Cache the popup rect for next frame's over_toolbar check
