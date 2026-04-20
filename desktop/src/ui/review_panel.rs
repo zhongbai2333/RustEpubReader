@@ -56,8 +56,9 @@ fn compute_anchor_scroll_offset(
     font_size: f32,
     content_width: f32,
 ) -> Option<f32> {
-    const HEADER_HEIGHT: f32 = 60.0; // heading + separator + chapter title + padding
-    let mut offset = HEADER_HEIGHT;
+    // The header (title bar, separator, chapter title) is rendered *outside* the
+    // ScrollArea, so vertical_scroll_offset is relative to the ScrollArea content only.
+    let mut offset = 0.0_f32;
     for block in blocks {
         let is_match = match block {
             reader_core::epub::ContentBlock::Heading {
