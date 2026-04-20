@@ -1085,6 +1085,10 @@ impl ReaderApp {
                         self.review_panel_chapter = Some(idx);
                         self.review_panel_anchor = url.split('#').nth(1).map(|s| s.to_string());
                         self.review_panel_just_opened = true;
+                        // Clear any open highlight popup / selection so they don't fight for focus
+                        self.clicked_highlight_id = None;
+                        self.text_selection = None;
+                        self.sel_press_origin = None;
                     } else {
                         self.current_chapter = idx;
                         self.current_page = 0;
