@@ -1621,7 +1621,7 @@ impl ReaderApp {
             let note_toolbar_id = egui::Id::new("hl_note_toolbar");
             let mut close_popup = false;
 
-            egui::Area::new(note_toolbar_id)
+            let area_resp = egui::Area::new(note_toolbar_id)
                 .fixed_pos(egui::pos2(popup_pos.x - 160.0, popup_pos.y - 170.0))
                 .order(egui::Order::Foreground)
                 .interactable(true)
@@ -1710,10 +1710,9 @@ impl ReaderApp {
                 } else if !self.show_review_panel {
                     let any_click = ui.ctx().input(|i| i.pointer.primary_clicked());
                     if any_click {
-                        let over_note_popup = ui.ctx().memory(|mem| {
-                            mem.layer_id_at(pointer_pos.unwrap_or_default())
-                                .is_some_and(|layer| layer.id == note_toolbar_id)
-                        });
+                        let over_note_popup = ui.ctx()
+                            .pointer_interact_pos()
+                            .is_some_and(|pos| area_resp.response.rect.contains(pos));
                         if !over_note_popup {
                             close_popup = true;
                         }
