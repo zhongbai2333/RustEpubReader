@@ -1,5 +1,5 @@
 //! Main entry point for the cross-platform egui desktop application.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod self_update;

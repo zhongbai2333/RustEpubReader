@@ -4,6 +4,111 @@ use std::cell::Cell;
 use crate::app::ReaderApp;
 use eframe::egui;
 
+/// Parsed review card from a paragraph text like:
+/// "1. 【内容】 作者：xxx | 时间：xxx | 赞：52"
+struct ReviewCard {
+    #[allow(dead_code)]
+    index: usize,
+    content: String,
+    author: String,
+    timestamp: String,
+    likes: usize,
+}
+
+/// Try to parse a review paragraph into structured card data.
+fn parse_review_card(text: &str) -> Option<ReviewCard> {
+    let trimmed = text.trim();
+
+    // Extract index: "1. ..."
+    let dot_pos = trimmed.find('.')?;
+    let index = trimmed[..dot_pos].trim().parse::<usize>().ok()?;
+    let rest = trimmed[dot_pos + 1..].trim();
+
+    // Split by " | " or " ｜ "
+    let parts: Vec<&str> = rest.split(|c: char| c == '|' || c == '｜').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    // Last part: "赞：52"
+    let likes_part = parts.last()?.trim();
+    let likes_str = likes_part
+        .strip_prefix("赞：")
+        .or_else(|| likes_part.strip_prefix("赞:"))?
+        .trim();
+    let likes = likes_str.parse::<usize>().ok()?;
+
+    // Second-to-last part: "时间：1770036499"
+    let time_part = parts[parts.len() - 2].trim();
+    let timestamp = time_part
+        .strip_prefix("时间：")
+        .or_else(|| time_part.strip_prefix("时间:"))?
+        .trim()
+        .to_string();
+
+    // First part: "【内容】 作者：吃草莓布丁吗"
+    let first_part = parts[0].trim();
+    let author_marker = "作者：";
+    let author_pos = first_part
+        .rfind(author_marker)
+        .or_else(|| first_part.rfind("作者:"))?;
+    let content = first_part[..author_pos].trim().to_string();
+    let author = first_part[author_pos + author_marker.len()..].trim().to_string();
+
+    Some(ReviewCard {
+        index,
+        content,
+        author,
+        timestamp,
+        likes,
+    })
+}
+
+/// Convert a Unix timestamp string (or any string) to human-readable format.
+fn format_timestamp(s: &str) -> String {
+    if let Ok(ts) = s.parse::<u64>() {
+        format_unix_timestamp(ts)
+    } else {
+        s.to_string()
+    }
+}
+
+fn format_unix_timestamp(ts: u64) -> String {
+    const SECONDS_PER_DAY: u64 = 86400;
+    let mut days = ts / SECONDS_PER_DAY;
+    let rem = ts % SECONDS_PER_DAY;
+    let mut year: u64 = 1970;
+    loop {
+        let dim = if is_leap_year(year) { 366 } else { 365 };
+        if days < dim {
+            break;
+        }
+        days -= dim;
+        year += 1;
+    }
+    let month_days = [
+        31,
+        if is_leap_year(year) { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month = 1;
+    let mut day = days as u32;
+    for dim in month_days.iter() {
+        if day < *dim {
+            break;
+        }
+        day -= *dim;
+        month += 1;
+    }
+    let hour = rem / 3600;
+    let minute = (rem % 3600) / 60;
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", year, month, day + 1, hour, minute)
+}
+
+fn is_leap_year(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
 /// Estimate how many lines of text fit in the given width.
 fn estimate_text_lines(text: &str, font_size: f32, content_width: f32) -> f32 {
     if text.is_empty() || content_width <= 0.0 {
@@ -82,26 +187,23 @@ fn compute_anchor_scroll_offset(
 impl ReaderApp {
     pub fn render_review_panel(&mut self, ctx: &egui::Context) {
         if !self.show_review_panel {
-            // Render non-interactable background-order placeholder Areas so egui
-            // properly demotes the foreground layers that were active when the
-            // panel was open.  Without this, the stale Foreground-order backdrop
-            // layer keeps intercepting all pointer events ("focus lost" bug).
-            let sr = ctx.screen_rect();
-            egui::Area::new(egui::Id::new("review_backdrop"))
-                .fixed_pos(sr.min)
-                .order(egui::Order::Background)
-                .interactable(false)
-                .show(ctx, |_| {});
-            egui::Area::new(egui::Id::new("review_panel"))
-                .fixed_pos(sr.min)
-                .order(egui::Order::Background)
-                .interactable(false)
-                .show(ctx, |_| {});
+            return;
+        }
+        // ESC / Android back key closes the panel
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_review_panel = false;
+            self.review_panel_chapter = None;
+            self.review_panel_anchor = None;
             return;
         }
         // Consume just_opened immediately so it never survives an early return.
         let was_just_opened = self.review_panel_just_opened;
         self.review_panel_just_opened = false;
+
+        // When opening from an anchor link, default to filtered view (only that paragraph)
+        if was_just_opened && self.review_panel_anchor.is_some() {
+            self.review_panel_show_all = false;
+        }
 
         let Some(review_ch_idx) = self.review_panel_chapter else {
             return;
@@ -128,18 +230,18 @@ impl ReaderApp {
             None
         };
 
-        // ── Backdrop (semi-transparent black overlay) ──
-        let backdrop_id = egui::Id::new("review_backdrop");
-        let backdrop_resp = egui::Area::new(backdrop_id)
+        // ── Backdrop (semi-transparent black overlay, visual only) ──
+        // Backdrop does NOT register click interaction — close only via ✕ button.
+        // This avoids egui focus/state issues that caused permanent input lock.
+        egui::Area::new(egui::Id::new("review_backdrop"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Foreground)
-            .interactable(true)
+            .interactable(false)
             .show(ctx, |ui| {
                 ui.set_min_size(screen_rect.size());
                 let rect = ui.max_rect();
                 ui.painter()
                     .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(140));
-                ui.interact(rect, ui.id(), egui::Sense::click())
             });
 
         // ── Right-side sliding panel ──
@@ -192,6 +294,20 @@ impl ReaderApp {
                                 },
                             );
                         });
+
+                        // Filter toggle (only when opened from an anchor)
+                        if self.review_panel_anchor.is_some() {
+                            ui.horizontal(|ui| {
+                                let label = if self.review_panel_show_all {
+                                    "🔍 只看当前段"
+                                } else {
+                                    "📖 显示全部"
+                                };
+                                if ui.button(label).clicked() {
+                                    self.review_panel_show_all = !self.review_panel_show_all;
+                                }
+                            });
+                        }
                         ui.separator();
 
                         // Chapter title
@@ -207,8 +323,50 @@ impl ReaderApp {
                         if let Some(y) = scroll_offset {
                             scroll_area = scroll_area.vertical_scroll_offset(y);
                         }
+                        let anchor_filter = self.review_panel_anchor.clone();
+                        let show_all = self.review_panel_show_all;
+
+                        // Build filtered block list: when filtering, find the Heading that
+                        // matches the anchor and include it plus all following non-Heading
+                        // blocks until the next Heading (paragraph group).
+
+                        let filtered_blocks: Vec<&reader_core::epub::ContentBlock> =
+                            if let Some(ref filter) = anchor_filter {
+                                if !show_all {
+                                    let mut result = Vec::new();
+                                    let mut in_group = false;
+                                    for block in &chapter.blocks {
+                                        match block {
+                                            reader_core::epub::ContentBlock::Heading {
+                                                anchor_id,
+                                                ..
+                                            } => {
+                                                if anchor_id.as_ref() == Some(filter) {
+                                                    in_group = true;
+                                                    result.push(block);
+                                                } else if in_group {
+                                                    // Reached next heading — stop
+                                                    break;
+                                                }
+                                                // Before match: skip headings
+                                            }
+                                            _ => {
+                                                if in_group {
+                                                    result.push(block);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    result
+                                } else {
+                                    chapter.blocks.iter().collect()
+                                }
+                            } else {
+                                chapter.blocks.iter().collect()
+                            };
+
                         scroll_area.show(ui, |ui| {
-                            for block in &chapter.blocks {
+                            for block in &filtered_blocks {
                                 match block {
                                     reader_core::epub::ContentBlock::Heading {
                                         level,
@@ -230,8 +388,60 @@ impl ReaderApp {
                                     reader_core::epub::ContentBlock::Paragraph { spans, .. } => {
                                         let text: String =
                                             spans.iter().map(|s| s.text.as_str()).collect();
-                                        if !text.trim().is_empty() {
-                                            // Render spans with link support
+                                        let trimmed = text.trim();
+                                        if trimmed.is_empty() {
+                                            continue;
+                                        }
+
+                                        // Try to render as review card
+                                        if let Some(card) = parse_review_card(&text) {
+                                            let card_bg = ui.visuals().extreme_bg_color;
+                                            let frame = egui::Frame::new()
+                                                .fill(card_bg)
+                                                .corner_radius(6.0)
+                                                .inner_margin(10.0)
+                                                .stroke(ui.visuals().widgets.noninteractive.bg_stroke);
+                                            frame.show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                // Author
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(&card.author)
+                                                            .size(13.0)
+                                                            .color(egui::Color32::from_rgb(64, 128, 200))
+                                                            .strong(),
+                                                    );
+                                                });
+                                                ui.add_space(4.0);
+                                                // Content
+                                                ui.label(
+                                                    egui::RichText::new(&card.content)
+                                                        .size(14.0),
+                                                );
+                                                ui.add_space(6.0);
+                                                // Meta row: time + likes
+                                                ui.horizontal(|ui| {
+                                                    let time_str = format_timestamp(&card.timestamp);
+                                                    ui.label(
+                                                        egui::RichText::new(&time_str)
+                                                            .size(11.0)
+                                                            .color(egui::Color32::GRAY),
+                                                    );
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(egui::Align::Center),
+                                                        |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(format!("❤ {}", card.likes))
+                                                                    .size(11.0)
+                                                                    .color(egui::Color32::GRAY),
+                                                            );
+                                                        },
+                                                    );
+                                                });
+                                            });
+                                            ui.add_space(8.0);
+                                        } else {
+                                            // Fallback: render as normal paragraph with link support
                                             ui.horizontal_wrapped(|ui| {
                                                 for span in spans {
                                                     let mut label = egui::RichText::new(&span.text)
@@ -254,10 +464,8 @@ impl ReaderApp {
                                                         if let Some(url) = &span.link_url {
                                                             let url = url.trim();
                                                             if url.starts_with('#') || url.is_empty() {
-                                                                // "Back to main" link — close panel
                                                                 close.set(true);
                                                             } else {
-                                                                // External or other internal link
                                                                 ctx.open_url(
                                                                     egui::OpenUrl::new_tab(url),
                                                                 );
@@ -284,14 +492,8 @@ impl ReaderApp {
                 );
             });
 
-        // Close on backdrop click (skip the frame it was just opened)
-        if !was_just_opened && backdrop_resp.inner.clicked() {
-            close.set(true);
-        }
-
         if close.get() {
             self.show_review_panel = false;
-            self.review_panel_just_closed = true;
             self.review_panel_chapter = None;
             self.review_panel_anchor = None;
         }

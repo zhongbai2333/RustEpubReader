@@ -921,7 +921,6 @@ impl ReaderApp {
                         && self.csc_popup.is_none()
                         && !self.csc_custom_replace_active
                         && !self.show_review_panel
-                        && !self.review_panel_just_closed
                     {
                         let pointer_in_page = ui.input(|i| {
                             i.pointer
@@ -940,7 +939,6 @@ impl ReaderApp {
                         // Click-to-turn is handled in the selection release handler
                         // to avoid conflict with sel_press_origin
                         if !self.show_review_panel
-                            && !self.review_panel_just_closed
                             && clicked_link.is_none()
                             && self.sel_press_origin.is_none()
                             && ui.input(|i| i.pointer.primary_clicked())
@@ -1139,7 +1137,7 @@ impl ReaderApp {
         let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
 
         // Detect primary pointer press / drag / release for selection
-        if !self.show_review_panel && !self.review_panel_just_closed {
+        if !self.show_review_panel {
             let primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
             let primary_released = ui.ctx().input(|i| i.pointer.primary_released());
 
@@ -1753,7 +1751,7 @@ impl ReaderApp {
         {
             // Check if user clicked on a correction rect (ReadWrite mode)
             let any_click = ui.ctx().input(|i| i.pointer.primary_clicked());
-            if any_click && !self.show_review_panel && !self.review_panel_just_closed && self.csc_popup.is_none() && self.text_selection.is_none() {
+            if any_click && !self.show_review_panel && self.csc_popup.is_none() && self.text_selection.is_none() {
                 if let Some(click_pos) = ui.ctx().pointer_interact_pos() {
                     CSC_RECTS.with(|rects| {
                         let r = rects.borrow();
@@ -1896,9 +1894,5 @@ impl ReaderApp {
             }
         }
 
-        // Clear one-frame cooldown flag after review panel close
-        if self.review_panel_just_closed {
-            self.review_panel_just_closed = false;
-        }
     }
 }
