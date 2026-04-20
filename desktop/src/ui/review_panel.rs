@@ -270,7 +270,7 @@ impl ReaderApp {
             });
 
         // Close on backdrop click (skip the frame it was just opened)
-        if !was_just_opened && backdrop_resp.response.clicked() {
+        if !was_just_opened && backdrop_resp.inner.clicked() {
             close.set(true);
         }
 

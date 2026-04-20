@@ -938,7 +938,8 @@ impl ReaderApp {
                         }
                         // Click-to-turn is handled in the selection release handler
                         // to avoid conflict with sel_press_origin
-                        if clicked_link.is_none()
+                        if !self.show_review_panel
+                            && clicked_link.is_none()
                             && self.sel_press_origin.is_none()
                             && ui.input(|i| i.pointer.primary_clicked())
                         {
