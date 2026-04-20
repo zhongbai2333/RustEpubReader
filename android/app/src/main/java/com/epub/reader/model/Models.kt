@@ -23,6 +23,7 @@ data class CorrectionInfo(
     val original: String,
     val corrected: String,
     val confidence: Float = 0f,
+    @SerialName("char_offset")
     val charOffset: Int = 0,
     val status: CorrectionStatus = CorrectionStatus.Pending
 )

@@ -90,7 +90,12 @@ fn collect_blocks(
                         }
                         "blockquote" => {
                             let mut inner = Vec::new();
-                            let mut bq_id = elem.attr("id").map(|s| s.to_string());
+                            // Use blockquote's own id if present, otherwise consume the
+                            // inherited id so it attaches to the first visible content inside.
+                            let mut bq_id = elem
+                                .attr("id")
+                                .map(|s| s.to_string())
+                                .or_else(|| inherited_id.take());
                             collect_blocks(
                                 elem_ref,
                                 &mut inner,
