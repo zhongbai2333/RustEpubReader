@@ -92,20 +92,28 @@ impl PeerStore {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("peers.json");
 
-        #[cfg(feature = "keychain")]
-        {
-            // Strip private key before writing JSON
+        // SECURITY: Always strip the private key from the serialized JSON.
+        // The private key should only be stored in the OS keychain (when available)
+        // or kept in memory only. Writing it to disk in plaintext is a security risk.
+        // Note: We use serde_json with a modified copy rather than #[serde(skip)]
+        // because the field must remain deserializable for migration from older versions.
+        let json = {
             let mut copy = self.clone();
             copy.private_key_pem.clear();
-            if let Ok(json) = serde_json::to_string_pretty(&copy) {
-                let _ = std::fs::write(path, json);
-            }
+            serde_json::to_string_pretty(&copy)
+        };
+        if let Ok(json) = json {
+            let _ = std::fs::write(&path, json);
         }
-        #[cfg(not(feature = "keychain"))]
+
+        // Set restrictive file permissions on Unix
+        #[cfg(unix)]
         {
-            if let Ok(json) = serde_json::to_string_pretty(self) {
-                let _ = std::fs::write(path, json);
-            }
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &path,
+                std::fs::Permissions::from_mode(0o600),
+            );
         }
     }
 
@@ -209,12 +217,16 @@ pub fn handle_client(
     store: Arc<Mutex<PeerStore>>,
     extra_book_paths: &[String],
 ) -> Result<(), String> {
+    // Set read timeout to prevent a malicious client from holding the connection indefinitely
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+        .ok();
     let peer_addr = stream
         .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or("?".into());
     dbg_log!("SERVER: new client connection from {}", peer_addr);
-    dbg_log!("SERVER: expecting PIN = '{}'", pin);
+    dbg_log!("SERVER: PIN configured (length={})", pin.len());
 
     let msg = read_message(stream)?;
     dbg_log!(
@@ -420,13 +432,7 @@ fn handle_pairing(
 
     // Step 2: Derive shared AES key
     let pair_key = crypto::ecdh_derive_key(ecdh_secret, &client_ecdh_pub)?;
-    dbg_log!(
-        "PAIRING: derived ECDH key, first 4 bytes: {:02x}{:02x}{:02x}{:02x}",
-        pair_key[0],
-        pair_key[1],
-        pair_key[2],
-        pair_key[3]
-    );
+    dbg_log!("PAIRING: derived ECDH key successfully");
     let mut pair_recv_ctr: u64 = 0;
     let mut pair_send_ctr: u64 = 1;
 
@@ -445,15 +451,8 @@ fn handle_pairing(
                 public_key_pem,
             } => {
                 dbg_log!(
-                    "PAIRING: received PairRequest, client_pin='{}' server_pin='{}' match={}",
-                    client_pin,
-                    pin,
+                    "PAIRING: received PairRequest, pin_match={}",
                     client_pin == pin
-                );
-                dbg_log!(
-                    "PAIRING: client_pin bytes={:?} server_pin bytes={:?}",
-                    client_pin.as_bytes(),
-                    pin.as_bytes()
                 );
                 if client_pin == pin {
                     let pairing_uuid = generate_uuid();
@@ -679,10 +678,10 @@ pub fn connect_to_peer(
     pin: Option<&str>,
 ) -> Result<(TcpStream, [u8; 32], u64, u64), String> {
     dbg_log!(
-        "CONNECT: connecting to addr={} remote_id={:?} pin={:?}",
+        "CONNECT: connecting to addr={} remote_id={:?} has_pin={}",
         addr,
         remote_device_id,
-        pin
+        pin.is_some()
     );
     let mut stream = TcpStream::connect(addr).map_err(|e| {
         dbg_log!("CONNECT: TCP connect failed: {}", e);
@@ -719,7 +718,7 @@ pub fn connect_to_peer(
             );
             // Need to pair — requires PIN
             let pin = pin.ok_or("需要配对 PIN")?;
-            dbg_log!("CONNECT: using PIN='{}'", pin);
+            dbg_log!("CONNECT: PIN provided (length={})", pin.len());
 
             // Step 1: ECDH key exchange
             let server_ecdh_bytes = base64_decode(&ecdh_public_key)?;
@@ -739,19 +738,13 @@ pub fn connect_to_peer(
             dbg_log!("CONNECT: sent PairKeyExchange");
 
             let pair_key = crypto::ecdh_derive_key(&client_ecdh_secret, &server_ecdh_pub)?;
-            dbg_log!(
-                "CONNECT: derived ECDH key, first 4 bytes: {:02x}{:02x}{:02x}{:02x}",
-                pair_key[0],
-                pair_key[1],
-                pair_key[2],
-                pair_key[3]
-            );
+            dbg_log!("CONNECT: derived ECDH key successfully");
             let mut pair_send_ctr: u64 = 0;
             let mut pair_recv_ctr: u64 = 1;
 
             // Step 2: Send PIN + RSA public key (encrypted with ECDH-derived key)
             let my_pub_key = store.public_key_pem.clone();
-            dbg_log!("CONNECT: sending encrypted PairRequest with pin='{}'", pin);
+            dbg_log!("CONNECT: sending encrypted PairRequest");
             crypto::write_encrypted_message(
                 &mut stream,
                 &Message::PairRequest {

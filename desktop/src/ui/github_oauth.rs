@@ -2,7 +2,15 @@
 use crate::app::ReaderApp;
 
 /// GitHub OAuth App Client ID.
-const GITHUB_CLIENT_ID: &str = "Ov23liG7iXNfGOTAXXxx";
+/// Can be overridden via the `EPUB_READER_GITHUB_CLIENT_ID` environment variable.
+fn github_client_id() -> &'static str {
+    // Allow overriding via environment for different deployments/forks
+    static CLIENT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CLIENT_ID.get_or_init(|| {
+        std::env::var("EPUB_READER_GITHUB_CLIENT_ID")
+            .unwrap_or_else(|_| "Ov23liG7iXNfGOTAXXxx".to_string())
+    })
+}
 
 pub enum PollResult {
     Success { token: String, username: String },
@@ -31,7 +39,7 @@ impl ReaderApp {
                 let resp = client
                     .post("https://github.com/login/device/code")
                     .header("Accept", "application/json")
-                    .form(&[("client_id", GITHUB_CLIENT_ID), ("scope", "public_repo")])
+                    .form(&[("client_id", github_client_id()), ("scope", "public_repo")])
                     .send()
                     .map_err(|e| {
                         crate::app::dbg_log(
@@ -163,7 +171,7 @@ impl ReaderApp {
                     .post("https://github.com/login/oauth/access_token")
                     .header("Accept", "application/json")
                     .form(&[
-                        ("client_id", GITHUB_CLIENT_ID),
+                        ("client_id", github_client_id()),
                         ("device_code", device_code.as_str()),
                         ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                     ])

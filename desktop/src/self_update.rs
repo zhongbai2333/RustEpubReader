@@ -159,6 +159,7 @@ fn is_dev_build() -> bool {
 fn build_http_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .context("init http client")
 }
@@ -467,6 +468,9 @@ fn windows_apply_and_restart(tmp_file: &Path) -> Result<()> {
 
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
 
+    // SECURITY: The batch script only uses paths derived from the canonical executable name
+    // (validated above) and the parent directory of the current exe. User-supplied arguments
+    // are NOT interpolated into the script body; they are passed via cmd.exe args.
     let mut lines = Vec::new();
     lines.push("@echo off".to_string());
     lines.push("echo Updating RustEpubReader, please wait...".to_string());

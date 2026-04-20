@@ -116,6 +116,7 @@ pub fn write_encrypted(
 }
 
 /// Read a length-framed, AES-encrypted message.
+/// Maximum allowed ciphertext size is ~1 MB to prevent memory exhaustion from malicious peers.
 pub fn read_encrypted(
     reader: &mut impl std::io::Read,
     key: &[u8; 32],
@@ -124,8 +125,13 @@ pub fn read_encrypted(
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 20_000_000 {
-        return Err("Encrypted message too large".into());
+    // Encrypted messages (JSON commands) should never exceed 1 MB.
+    // Raw data transfers use write_encrypted_raw which sends in 64KB chunks.
+    if len > 1_048_576 {
+        return Err(format!(
+            "Encrypted message too large: {} bytes (max 1 MB)",
+            len
+        ));
     }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).map_err(|e| e.to_string())?;

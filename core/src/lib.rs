@@ -19,20 +19,34 @@ pub fn now_secs() -> u64 {
 }
 
 /// Sanitize a string for use as a filename, with length limit.
+/// Rejects path separators, control characters, and reserved filenames.
 pub fn sanitize_filename(name: &str) -> String {
     let sanitized: String = name
         .chars()
         .take(200)
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' || c > '\x7F' {
-                c
+                // Reject Unicode characters that resemble path separators
+                if c == '\u{FF0F}' || c == '\u{FF3C}' || c == '\u{2044}' || c == '\u{2215}' {
+                    '_'
+                } else {
+                    c
+                }
             } else {
                 '_'
             }
         })
         .collect();
     let sanitized = sanitized.trim_matches('.').to_string();
-    if sanitized.is_empty() || sanitized.contains("..") {
+    // Reject empty, path traversal sequences, and Windows reserved names
+    let upper = sanitized.to_uppercase();
+    let is_reserved = matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" |
+        "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9" |
+        "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    );
+    if sanitized.is_empty() || sanitized.contains("..") || is_reserved {
         format!("book_{}", now_secs())
     } else {
         sanitized

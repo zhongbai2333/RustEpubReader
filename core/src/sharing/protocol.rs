@@ -139,8 +139,18 @@ pub fn write_raw(writer: &mut impl std::io::Write, data: &[u8]) -> Result<(), St
     Ok(())
 }
 
-/// Read exactly `size` raw bytes
+/// Maximum allowed size for raw book transfers (500 MB).
+const MAX_RAW_SIZE: u64 = 500_000_000;
+
+/// Read exactly `size` raw bytes.
+/// Returns an error if `size` exceeds `MAX_RAW_SIZE` to prevent memory exhaustion attacks.
 pub fn read_raw(reader: &mut impl std::io::Read, size: u64) -> Result<Vec<u8>, String> {
+    if size > MAX_RAW_SIZE {
+        return Err(format!(
+            "Raw data size {} exceeds maximum allowed {} bytes",
+            size, MAX_RAW_SIZE
+        ));
+    }
     let mut buf = vec![0u8; size as usize];
     reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
     Ok(buf)
