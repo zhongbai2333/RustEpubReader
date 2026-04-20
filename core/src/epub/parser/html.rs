@@ -19,7 +19,8 @@ pub(super) fn parse_html_blocks(
         .unwrap_or_else(|| document.root_element());
 
     let mut blocks = Vec::new();
-    collect_blocks(start_elem, &mut blocks, chapter_path, image_resources);
+    let mut no_id = None;
+    collect_blocks(start_elem, &mut blocks, chapter_path, image_resources, &mut no_id);
 
     while matches!(blocks.first(), Some(ContentBlock::BlankLine)) {
         blocks.remove(0);
@@ -36,6 +37,7 @@ fn collect_blocks(
     blocks: &mut Vec<ContentBlock>,
     chapter_path: &str,
     image_resources: &HashMap<String, Vec<u8>>,
+    inherited_id: &mut Option<String>,
 ) {
     for child in parent.children() {
         match child.value() {
@@ -45,7 +47,10 @@ fn collect_blocks(
                     match tag {
                         "p" | "figcaption" | "cite" => {
                             let spans = collect_spans(elem_ref, InlineStyle::Normal, None);
-                            let anchor_id = elem.attr("id").map(|s| s.to_string());
+                            let anchor_id = elem
+                                .attr("id")
+                                .map(|s| s.to_string())
+                                .or_else(|| inherited_id.take());
                             if has_visible_text(&spans) {
                                 blocks.push(ContentBlock::Paragraph { spans, anchor_id });
                             } else if anchor_id.is_some() {
@@ -56,7 +61,10 @@ fn collect_blocks(
                         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                             let level = (tag.as_bytes()[1] - b'0').clamp(1, 6);
                             let spans = collect_spans(elem_ref, InlineStyle::Bold, None);
-                            let anchor_id = elem.attr("id").map(|s| s.to_string());
+                            let anchor_id = elem
+                                .attr("id")
+                                .map(|s| s.to_string())
+                                .or_else(|| inherited_id.take());
                             if has_visible_text(&spans) {
                                 blocks.push(ContentBlock::Heading { level, spans, anchor_id });
                             } else if anchor_id.is_some() {
@@ -67,14 +75,29 @@ fn collect_blocks(
                         "br" => blocks.push(ContentBlock::BlankLine),
                         "div" | "section" | "article" | "main" | "body" | "html" | "nav"
                         | "header" | "footer" | "aside" => {
-                            collect_blocks(elem_ref, blocks, chapter_path, image_resources);
+                            let mut container_id = elem.attr("id").map(|s| s.to_string());
+                            collect_blocks(
+                                elem_ref,
+                                blocks,
+                                chapter_path,
+                                image_resources,
+                                &mut container_id,
+                            );
                         }
                         "ul" | "ol" => {
-                            collect_list(elem_ref, blocks, tag == "ol");
+                            let mut list_id = elem.attr("id").map(|s| s.to_string());
+                            collect_list(elem_ref, blocks, tag == "ol", &mut list_id);
                         }
                         "blockquote" => {
                             let mut inner = Vec::new();
-                            collect_blocks(elem_ref, &mut inner, chapter_path, image_resources);
+                            let mut bq_id = elem.attr("id").map(|s| s.to_string());
+                            collect_blocks(
+                                elem_ref,
+                                &mut inner,
+                                chapter_path,
+                                image_resources,
+                                &mut bq_id,
+                            );
                             for block in inner {
                                 if let ContentBlock::Paragraph { mut spans, anchor_id } = block {
                                     spans.insert(
@@ -95,6 +118,10 @@ fn collect_blocks(
                         "pre" | "code" => {
                             let text = elem_ref.text().collect::<String>();
                             if !text.trim().is_empty() {
+                                let anchor_id = elem
+                                    .attr("id")
+                                    .map(|s| s.to_string())
+                                    .or_else(|| inherited_id.take());
                                 blocks.push(ContentBlock::Paragraph {
                                     spans: vec![TextSpan {
                                         text,
@@ -102,12 +129,13 @@ fn collect_blocks(
                                         link_url: None,
                                         correction: None,
                                     }],
-                                    anchor_id: None,
+                                    anchor_id,
                                 });
                             }
                         }
                         "table" => {
-                            collect_table(elem_ref, blocks);
+                            let mut table_id = elem.attr("id").map(|s| s.to_string());
+                            collect_table(elem_ref, blocks, &mut table_id);
                         }
                         "script" | "style" | "meta" | "link" | "title" | "head" => {}
                         "img" | "image" => {
@@ -134,7 +162,8 @@ fn collect_blocks(
                                 if let Some(data) =
                                     resolve_image_data(src, chapter_path, image_resources)
                                 {
-                                    let alt = img_node.value().attr("alt").map(|s| s.to_string());
+                                    let alt =
+                                        img_node.value().attr("alt").map(|s| s.to_string());
                                     blocks.push(ContentBlock::Image { data, alt });
                                 }
                             }
@@ -164,11 +193,22 @@ fn collect_blocks(
                                 }
                             });
                             if has_block_children {
-                                collect_blocks(elem_ref, blocks, chapter_path, image_resources);
+                                let mut fallback_id = elem.attr("id").map(|s| s.to_string());
+                                collect_blocks(
+                                    elem_ref,
+                                    blocks,
+                                    chapter_path,
+                                    image_resources,
+                                    &mut fallback_id,
+                                );
                             } else {
                                 let spans = collect_spans(elem_ref, InlineStyle::Normal, None);
+                                let anchor_id = elem
+                                    .attr("id")
+                                    .map(|s| s.to_string())
+                                    .or_else(|| inherited_id.take());
                                 if has_visible_text(&spans) {
-                                    blocks.push(ContentBlock::Paragraph { spans, anchor_id: None });
+                                    blocks.push(ContentBlock::Paragraph { spans, anchor_id });
                                 }
                             }
                         }
@@ -178,6 +218,7 @@ fn collect_blocks(
             scraper::Node::Text(text) => {
                 let s = text.trim();
                 if !s.is_empty() {
+                    let anchor_id = inherited_id.take();
                     blocks.push(ContentBlock::Paragraph {
                         spans: vec![TextSpan {
                             text: s.to_string(),
@@ -185,7 +226,7 @@ fn collect_blocks(
                             link_url: None,
                             correction: None,
                         }],
-                        anchor_id: None,
+                        anchor_id,
                     });
                 }
             }
@@ -255,7 +296,12 @@ fn collect_spans(
     spans
 }
 
-fn collect_list(parent: ElementRef, blocks: &mut Vec<ContentBlock>, ordered: bool) {
+fn collect_list(
+    parent: ElementRef,
+    blocks: &mut Vec<ContentBlock>,
+    ordered: bool,
+    inherited_id: &mut Option<String>,
+) {
     let mut index = 1;
     for child in parent.children() {
         if let scraper::Node::Element(elem) = child.value() {
@@ -275,7 +321,8 @@ fn collect_list(parent: ElementRef, blocks: &mut Vec<ContentBlock>, ordered: boo
                     }];
                     spans.extend(collect_spans(li_ref, InlineStyle::Normal, None));
                     if spans.len() > 1 {
-                        blocks.push(ContentBlock::Paragraph { spans, anchor_id: None });
+                        let anchor_id = inherited_id.take();
+                        blocks.push(ContentBlock::Paragraph { spans, anchor_id });
                     }
                     index += 1;
                 }
@@ -284,7 +331,11 @@ fn collect_list(parent: ElementRef, blocks: &mut Vec<ContentBlock>, ordered: boo
     }
 }
 
-fn collect_table(parent: ElementRef, blocks: &mut Vec<ContentBlock>) {
+fn collect_table(
+    parent: ElementRef,
+    blocks: &mut Vec<ContentBlock>,
+    inherited_id: &mut Option<String>,
+) {
     let row_sel = Selector::parse("tr").expect("valid selector");
     for row in parent.select(&row_sel) {
         let mut row_spans = Vec::new();
@@ -312,7 +363,11 @@ fn collect_table(parent: ElementRef, blocks: &mut Vec<ContentBlock>) {
             }
         }
         if has_visible_text(&row_spans) {
-            blocks.push(ContentBlock::Paragraph { spans: row_spans, anchor_id: None });
+            let anchor_id = inherited_id.take();
+            blocks.push(ContentBlock::Paragraph {
+                spans: row_spans,
+                anchor_id,
+            });
         }
     }
 }

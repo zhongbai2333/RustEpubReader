@@ -1,19 +1,26 @@
 package com.zhongbai233.epub.reader.ui.reader
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.i18n.I18n
 import com.zhongbai233.epub.reader.model.ContentBlock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 段评面板 — 底部弹层展示段评内容
@@ -70,7 +77,7 @@ fun ReviewPanel(
 
             // Content
             LazyColumn {
-                items(blocks) { block ->
+                itemsIndexed(blocks, key = { index, _ -> index }) { _, block ->
                     when (block) {
                         is ContentBlock.Heading -> {
                             val text = block.spans.joinToString("") { it.text }
@@ -96,6 +103,33 @@ fun ReviewPanel(
                                 )
                             }
                         }
+                        is ContentBlock.Image -> {
+                            val bitmap by produceState<android.graphics.Bitmap?>(
+                                initialValue = null,
+                                block.data
+                            ) {
+                                value = withContext(Dispatchers.IO) {
+                                    val bytes = android.util.Base64.decode(
+                                        block.data,
+                                        android.util.Base64.DEFAULT
+                                    )
+                                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                }
+                            }
+                            val bmp = bitmap
+                            if (bmp != null && bmp.width > 0 && bmp.height > 0) {
+                                val ratio = bmp.width.toFloat() / bmp.height.toFloat()
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = block.alt,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .aspectRatio(ratio)
+                                        .padding(vertical = (fontSize * 0.35f).dp),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
+                        }
                         is ContentBlock.Separator -> {
                             HorizontalDivider(
                                 modifier = Modifier.padding(vertical = 8.dp),
@@ -105,7 +139,6 @@ fun ReviewPanel(
                         is ContentBlock.BlankLine -> {
                             Spacer(Modifier.height((fontSize * 0.5).dp))
                         }
-                        else -> {}
                     }
                 }
             }

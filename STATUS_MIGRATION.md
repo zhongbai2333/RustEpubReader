@@ -115,30 +115,36 @@
 | 18 | 同名章节映射错误 | `core/src/epub/parser/mod.rs:211` | ✅ 修复 |
 | 19 | `blockquote` 内部 `anchor_id` 被丢弃 | `core/src/epub/parser/html.rs:79,89` | ✅ 修复 |
 
-### 🟢 P2 — 优化项（0/6 ⏳ 待处理）
+### 🟢 P2 — 优化项（6/6 ✅ 已完成）
 
 | # | 问题 | 位置 | 状态 |
 |---|------|------|------|
-| 20 | `compute_anchor_scroll_offset` 估算偏差 | `desktop/src/ui/review_panel.rs:8-79` | ⏳ 待处理 |
-| 21 | 大量非 p/h 标签的 `id` 丢失 | `core/src/epub/parser/html.rs` | ⏳ 待处理 |
-| 22 | Android `ReviewPanel` 不渲染图片 | `ReviewPanel.kt:108` | ⏳ 待处理 |
-| 23 | `LazyColumn` 缺少稳定 key | `ReviewPanel.kt:72-73` | ⏳ 待处理 |
-| 24 | `TextSpan.correction` Kotlin 端缺失 | `Models.kt:16-20` | ⏳ 待处理 |
-| 25 | `match_len` 字节/字符歧义 | `core/src/search.rs:63` | ⏳ 待处理 |
+| 20 | `compute_anchor_scroll_offset` 估算偏差 | `desktop/src/ui/review_panel.rs:8-79` | ✅ Copilot 自动修复 (`9a26c65`) |
+| 21 | 大量非 p/h 标签的 `id` 丢失 | `core/src/epub/parser/html.rs` | ✅ 重写 `collect_blocks` 添加 `inherited_id` |
+| 22 | Android `ReviewPanel` 不渲染图片 | `ReviewPanel.kt:108` | ✅ 添加 `Image` block 渲染分支 |
+| 23 | `LazyColumn` 缺少稳定 key | `ReviewPanel.kt:72-73` | ✅ 改用 `itemsIndexed(..., key = { index, _ -> index })` |
+| 24 | `TextSpan.correction` Kotlin 端缺失 | `Models.kt:16-20` | ✅ 添加 `CorrectionInfo`/`CorrectionStatus` + `TextSpan.correction` |
+| 25 | `match_len` 字节/字符歧义 | `core/src/search.rs:63` | ✅ `match_len` 改为字符数，`match_start` 改为字符偏移 |
 
 ---
 
 ## Copilot 审查记录
 
-- **PR**: https://github.com/yang12535/RustEpubReader/pull/1
-- **审查时间**: 2026-04-20
-- **Copilot 自动修复 Commit**: `458fc7e`
-  - Android `parseAndOpen()` 段评面板状态未清除
-  - Android `goToChapter()` TOC 跳章节评面板不关闭
-  - Desktop `next_chapter()`/`prev_chapter()` 边界章节跳过不彻底
-- **Copilot 提示问题（未自动修复）**:
-  - `blockquote` 内部 `anchor_id` 被丢弃（P1 #19，已人工修复）
-  - Android `ReviewPanel` 未实现锚点滚动（P2 #22，待处理）
+- **PR #1**: https://github.com/yang12535/RustEpubReader/pull/1
+  - **审查时间**: 2026-04-20
+  - **Copilot 自动修复 Commit**: `458fc7e`
+    - Android `parseAndOpen()` 段评面板状态未清除
+    - Android `goToChapter()` TOC 跳章节评面板不关闭
+    - Desktop `next_chapter()`/`prev_chapter()` 边界章节跳过不彻底
+- **PR #2**: https://github.com/yang12535/RustEpubReader/pull/2
+  - **审查时间**: 2026-04-20
+  - **Copilot 自动修复 Commits**: `03877f5`, `9a26c65`
+    - 去掉 `HEADER_HEIGHT` 偏移，修复锚点滚动偏差
+    - 移除冗余 `_f32` 类型标注
+  - **Copilot 提示问题（已人工跟进）**:
+    - 空章节不过滤 → 插入 `BlankLine` 占位
+    - `review_panel_scroll_offset` 死代码 → 移除字段
+    - `getChapter` `{:?}` style 序列化 → 改用 `InlineStyle::as_str()`
 
 ---
 

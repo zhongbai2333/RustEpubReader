@@ -7,7 +7,7 @@ use std::path::Path;
 
 use epub::doc::EpubDoc;
 
-use super::{Chapter, TocEntry};
+use super::{Chapter, ContentBlock, TocEntry};
 use html::parse_html_blocks;
 use image::load_referenced_images;
 
@@ -142,6 +142,13 @@ impl EpubBook {
                     .unwrap_or_else(|| format!("第 {} 章", chapters.len() + 1));
 
                 let chapter_idx = chapters.len();
+
+                // Avoid completely empty chapters (keeps index stable but shows something)
+                let blocks = if blocks.is_empty() {
+                    vec![ContentBlock::BlankLine]
+                } else {
+                    blocks
+                };
 
                 chapters.push(Chapter {
                     title: chapter_title.clone(),

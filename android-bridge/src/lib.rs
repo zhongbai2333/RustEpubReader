@@ -201,7 +201,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
                     "type": "paragraph",
                     "spans": spans.iter().map(|s| serde_json::json!({
                         "text": s.text,
-                        "style": format!("{:?}", s.style),
+                        "style": s.style.as_str(),
                         "linkUrl": s.link_url,
                     })).collect::<Vec<_>>(),
                     "anchorId": anchor_id,
@@ -213,7 +213,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
                     "level": level,
                     "spans": spans.iter().map(|s| serde_json::json!({
                         "text": s.text,
-                        "style": format!("{:?}", s.style),
+                        "style": s.style.as_str(),
                         "linkUrl": s.link_url,
                     })).collect::<Vec<_>>(),
                     "anchorId": anchor_id,

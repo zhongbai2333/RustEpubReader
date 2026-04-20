@@ -34,7 +34,6 @@ impl ReaderApp {
                 self.review_panel_chapter = None;
                 self.review_panel_anchor = None;
                 self.review_panel_just_opened = false;
-                self.review_panel_scroll_offset = None;
             }
             ui.add_space(2.0);
             if ui

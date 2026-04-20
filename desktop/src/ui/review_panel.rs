@@ -106,8 +106,7 @@ impl ReaderApp {
         // ── Compute anchor scroll offset (only on the frame the panel opens) ──
         let content_width = panel_width - 32.0; // margin * 2
         let scroll_offset = if was_just_opened {
-            self.review_panel_scroll_offset.take().or_else(|| {
-                let anchor = self.review_panel_anchor.as_ref()?;
+            self.review_panel_anchor.as_ref().and_then(|anchor| {
                 compute_anchor_scroll_offset(&chapter.blocks, anchor, self.font_size, content_width)
             })
         } else {
@@ -279,7 +278,6 @@ impl ReaderApp {
             self.show_review_panel = false;
             self.review_panel_chapter = None;
             self.review_panel_anchor = None;
-            self.review_panel_scroll_offset = None;
         }
     }
 }

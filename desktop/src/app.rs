@@ -659,8 +659,6 @@ pub struct ReaderApp {
     pub review_panel_chapter: Option<usize>,
     pub review_panel_anchor: Option<String>,
     pub review_panel_just_opened: bool,
-    /// Computed scroll offset for the current anchor. Applied once when opening.
-    pub review_panel_scroll_offset: Option<f32>,
     /// Computed scroll offset for a clicked anchor link in the main reader.
     pub anchor_scroll_offset: Option<f32>,
 }
@@ -915,7 +913,6 @@ impl Default for ReaderApp {
             review_panel_chapter: None,
             review_panel_anchor: None,
             review_panel_just_opened: false,
-            review_panel_scroll_offset: None,
             anchor_scroll_offset: None,
         };
 
@@ -1125,7 +1122,6 @@ impl ReaderApp {
                 self.review_panel_chapter = None;
                 self.review_panel_anchor = None;
                 self.review_panel_just_opened = false;
-                self.review_panel_scroll_offset = None;
                 self.pages_dirty = true;
                 self.current_page = 0;
                 self.view = AppView::Reader;

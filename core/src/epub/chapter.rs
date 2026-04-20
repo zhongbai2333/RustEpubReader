@@ -10,6 +10,18 @@ pub enum InlineStyle {
     BoldItalic,
 }
 
+impl InlineStyle {
+    /// Stable string representation for cross-platform serialization.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InlineStyle::Normal => "Normal",
+            InlineStyle::Bold => "Bold",
+            InlineStyle::Italic => "Italic",
+            InlineStyle::BoldItalic => "BoldItalic",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub enum CorrectionStatus {
     #[default]
