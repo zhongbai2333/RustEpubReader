@@ -82,6 +82,21 @@ fn compute_anchor_scroll_offset(
 impl ReaderApp {
     pub fn render_review_panel(&mut self, ctx: &egui::Context) {
         if !self.show_review_panel {
+            // Render non-interactable background-order placeholder Areas so egui
+            // properly demotes the foreground layers that were active when the
+            // panel was open.  Without this, the stale Foreground-order backdrop
+            // layer keeps intercepting all pointer events ("focus lost" bug).
+            let sr = ctx.screen_rect();
+            egui::Area::new(egui::Id::new("review_backdrop"))
+                .fixed_pos(sr.min)
+                .order(egui::Order::Background)
+                .interactable(false)
+                .show(ctx, |_| {});
+            egui::Area::new(egui::Id::new("review_panel"))
+                .fixed_pos(sr.min)
+                .order(egui::Order::Background)
+                .interactable(false)
+                .show(ctx, |_| {});
             return;
         }
         // Consume just_opened immediately so it never survives an early return.
