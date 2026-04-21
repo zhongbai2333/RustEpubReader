@@ -19,17 +19,17 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            val keystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
-                ?: project.findProperty("ANDROID_KEYSTORE_FILE") as String?
-            val ksAlias = System.getenv("ANDROID_KEY_ALIAS")
-                ?: project.findProperty("ANDROID_KEY_ALIAS") as String?
-            val ksPassword = System.getenv("ANDROID_STORE_PASSWORD")
-                ?: project.findProperty("ANDROID_STORE_PASSWORD") as String?
-            val kPassword = System.getenv("ANDROID_KEY_PASSWORD")
-                ?: project.findProperty("ANDROID_KEY_PASSWORD") as String?
+        val keystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
+            ?: project.findProperty("ANDROID_KEYSTORE_FILE") as String?
+        val ksAlias = System.getenv("ANDROID_KEY_ALIAS")
+            ?: project.findProperty("ANDROID_KEY_ALIAS") as String?
+        val ksPassword = System.getenv("ANDROID_STORE_PASSWORD")
+            ?: project.findProperty("ANDROID_STORE_PASSWORD") as String?
+        val kPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            ?: project.findProperty("ANDROID_KEY_PASSWORD") as String?
 
-            if (keystoreFile != null && ksAlias != null) {
+        if (!keystoreFile.isNullOrBlank() && !ksAlias.isNullOrBlank()) {
+            create("release") {
                 storeFile = file(keystoreFile)
                 keyAlias = ksAlias
                 storePassword = ksPassword
