@@ -9,6 +9,7 @@ pub mod library;
 pub mod reader;
 pub mod reader_block;
 pub mod reader_state;
+pub mod review_panel;
 pub mod search;
 pub mod settings_new;
 pub mod sharing;

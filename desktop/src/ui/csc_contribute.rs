@@ -99,7 +99,7 @@ impl ReaderApp {
 
             // Extract full block text
             let block_text: String = match block {
-                ContentBlock::Paragraph { spans } => {
+                ContentBlock::Paragraph { spans, .. } => {
                     spans.iter().map(|s| s.text.as_str()).collect()
                 }
                 ContentBlock::Heading { spans, .. } => {

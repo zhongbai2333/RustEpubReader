@@ -167,7 +167,7 @@ pub(crate) fn render_block(
     highlight_ranges: &[(usize, usize, reader_core::library::HighlightColor)],
 ) {
     match block {
-        ContentBlock::Heading { level, spans } => {
+        ContentBlock::Heading { level, spans, .. } => {
             let scale = match level {
                 1 => 2.0,
                 2 => 1.6,
@@ -189,7 +189,7 @@ pub(crate) fn render_block(
             let galley = ui.painter().layout_job(job);
             let galley_size = galley.size();
             let (rect, response) =
-                ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
+                ui.allocate_exact_size(galley_size, egui::Sense::click());
 
             if is_tts_block {
                 paint_tts_highlight(ui, rect);
@@ -224,7 +224,7 @@ pub(crate) fn render_block(
             }
             ui.add_space(font_size * 0.4);
         }
-        ContentBlock::Paragraph { spans } => {
+        ContentBlock::Paragraph { spans, .. } => {
             let is_readwrite = CSC_READWRITE.get();
 
             // ── Build display spans and annotation info based on CSC state ──
@@ -343,7 +343,7 @@ pub(crate) fn render_block(
             let galley = ui.painter().layout_job(job);
             let galley_size = galley.size();
             let (rect, response) =
-                ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
+                ui.allocate_exact_size(galley_size, egui::Sense::click());
             // TTS read-along highlight (paint behind text)
             if TTS_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx) {
                 paint_tts_highlight(ui, rect);
@@ -780,7 +780,7 @@ pub(crate) fn estimate_block_height(
     max_width: f32,
 ) -> f32 {
     match block {
-        ContentBlock::Heading { level, spans } => {
+        ContentBlock::Heading { level, spans, .. } => {
             let scale = match level {
                 1 => 2.0,
                 2 => 1.6,
@@ -791,7 +791,7 @@ pub(crate) fn estimate_block_height(
             let text_len: f32 = spans.iter().map(|s| estimate_text_width(&s.text, sz)).sum();
             (text_len / max_width).ceil().max(1.0) * sz * line_spacing() + font_size * 1.2
         }
-        ContentBlock::Paragraph { spans } => {
+        ContentBlock::Paragraph { spans, .. } => {
             let text_len: f32 = spans
                 .iter()
                 .map(|s| estimate_text_width(&s.text, font_size))
