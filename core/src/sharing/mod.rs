@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static DEBUG_LOG_ENABLED: AtomicBool = AtomicBool::new(true);
+static DEBUG_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_debug_logging_enabled(enabled: bool) {
     DEBUG_LOG_ENABLED.store(enabled, Ordering::Relaxed);
