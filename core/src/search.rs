@@ -46,6 +46,9 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
                     .nth(20)
                     .map(|(i, _)| i)
                     .unwrap_or(0);
+                // Character-based match length for cross-platform consistency
+                let match_len_chars = query.chars().count();
+                let match_start_chars = text[..abs_pos].chars().count();
                 let ctx_end = text
                     .char_indices()
                     .filter(|&(i, _)| i >= abs_pos + query.len())
@@ -59,8 +62,8 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
                     chapter_title: chapter.title.clone(),
                     block_index: blk_idx,
                     context,
-                    match_start: abs_pos,
-                    match_len: query.len(),
+                    match_start: match_start_chars,
+                    match_len: match_len_chars,
                 });
                 start = abs_pos + query.len();
             }
@@ -71,7 +74,7 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
 
 fn block_text(block: &ContentBlock) -> String {
     match block {
-        ContentBlock::Paragraph { spans } | ContentBlock::Heading { spans, .. } => {
+        ContentBlock::Paragraph { spans, .. } | ContentBlock::Heading { spans, .. } => {
             spans.iter().map(|s| s.text.as_str()).collect()
         }
         _ => String::new(),

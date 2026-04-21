@@ -124,16 +124,30 @@ fn build_chapter_xhtml(
         };
 
         match block {
-            ContentBlock::Heading { level, spans } => {
+            ContentBlock::Heading { level, spans, anchor_id } => {
                 let tag = format!("h{}", level.min(&6));
-                html.push_str(&format!("<{tag}>"));
+                if let Some(id) = anchor_id {
+                    html.push_str(&format!(
+                        "<{tag} id=\"{}\">",
+                        crate::escape_html(id)
+                    ));
+                } else {
+                    html.push_str(&format!("<{tag}>"));
+                }
                 for span in spans {
                     html.push_str(&crate::escape_html(&span.text));
                 }
                 html.push_str(&format!("</{tag}>\n"));
             }
-            ContentBlock::Paragraph { spans } => {
-                html.push_str("<p>");
+            ContentBlock::Paragraph { spans, anchor_id } => {
+                if let Some(id) = anchor_id {
+                    html.push_str(&format!(
+                        "<p id=\"{}\">",
+                        crate::escape_html(id)
+                    ));
+                } else {
+                    html.push_str("<p>");
+                }
                 if let Some(hl) = highlight {
                     html.push_str(&format!("<span class=\"{}\">", hl.color.css_class()));
                 }

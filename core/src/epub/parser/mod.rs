@@ -2,12 +2,12 @@
 mod html;
 mod image;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use epub::doc::EpubDoc;
 
-use super::{Chapter, TocEntry};
+use super::{Chapter, ContentBlock, TocEntry};
 use html::parse_html_blocks;
 use image::load_referenced_images;
 
@@ -20,6 +20,12 @@ pub struct EpubBook {
     pub cover_data: Option<Vec<u8>>,
     #[serde(skip)]
     pub fonts: Vec<(String, Vec<u8>)>,
+    /// Mapping from main chapter index to its review chapter index.
+    #[serde(default)]
+    pub chapter_reviews: HashMap<usize, usize>,
+    /// Set of chapter indices that are review chapters.
+    #[serde(default)]
+    pub review_chapter_indices: HashSet<usize>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -135,11 +141,14 @@ impl EpubBook {
                     .map(|(label, _)| label.clone())
                     .unwrap_or_else(|| format!("第 {} 章", chapters.len() + 1));
 
-                if blocks.is_empty() {
-                    continue;
-                }
-
                 let chapter_idx = chapters.len();
+
+                // Avoid completely empty chapters (keeps index stable but shows something)
+                let blocks = if blocks.is_empty() {
+                    vec![ContentBlock::BlankLine]
+                } else {
+                    blocks
+                };
 
                 chapters.push(Chapter {
                     title: chapter_title.clone(),
@@ -193,12 +202,36 @@ impl EpubBook {
             }
         }
 
+        // Identify review chapters (段评) and build mapping
+        let mut chapter_reviews = HashMap::new();
+        let mut review_chapter_indices = HashSet::new();
+        const REVIEW_SUFFIX: &str = " - 段评";
+        for (idx, ch) in chapters.iter().enumerate() {
+            if ch.title.ends_with(REVIEW_SUFFIX) {
+                review_chapter_indices.insert(idx);
+                let base_title = &ch.title[..ch.title.len() - REVIEW_SUFFIX.len()];
+                // Match to the Nth main chapter with the same title
+                let review_count = chapters[..idx].iter().filter(|c| c.title == ch.title).count();
+                if let Some(main_idx) = chapters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.title == base_title)
+                    .nth(review_count)
+                    .map(|(i, _)| i)
+                {
+                    chapter_reviews.insert(main_idx, idx);
+                }
+            }
+        }
+
         Ok(EpubBook {
             title,
             chapters,
             toc,
             cover_data,
             fonts,
+            chapter_reviews,
+            review_chapter_indices,
         })
     }
 

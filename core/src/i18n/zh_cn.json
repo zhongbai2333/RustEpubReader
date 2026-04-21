@@ -149,6 +149,8 @@
   "nav.reading_settings": "阅读设置",
   "nav.prev_chapter": "上一章",
   "nav.next_chapter": "下一章",
+  "reader.at_first_chapter": "已到开头",
+  "reader.at_last_chapter": "已到末尾",
   "nav.scroll_mode": "滚动模式",
   "nav.page_mode": "翻页模式",
   "nav.dark_mode": "夜间模式",
@@ -347,5 +349,6 @@
   "settings.csc_settings": "中文纠错",
   "settings.csc_mode": "纠错模式",
   "settings.csc_threshold": "纠错力度",
-  "settings.chars": "字符"
+  "settings.chars": "字符",
+  "review.panel_title": "段评"
 }

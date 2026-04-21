@@ -149,6 +149,8 @@
   "nav.reading_settings": "Reading Settings",
   "nav.prev_chapter": "Previous Chapter",
   "nav.next_chapter": "Next Chapter",
+  "reader.at_first_chapter": "Already at the beginning",
+  "reader.at_last_chapter": "Already at the end",
   "nav.scroll_mode": "Scroll Mode",
   "nav.page_mode": "Page Mode",
   "nav.dark_mode": "Dark Mode",
@@ -347,5 +349,6 @@
   "settings.csc_settings": "Chinese Spell Check",
   "settings.csc_mode": "Correction Mode",
   "settings.csc_threshold": "Threshold",
-  "settings.chars": "chars"
+  "settings.chars": "chars",
+  "review.panel_title": "Paragraph Reviews"
 }
