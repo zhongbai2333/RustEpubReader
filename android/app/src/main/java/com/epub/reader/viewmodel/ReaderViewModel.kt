@@ -35,6 +35,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import android.util.Base64
+import android.widget.Toast
 
 data class TxtChapterPreview(val title: String, val lineStart: Int, val charCount: Int)
 
@@ -68,7 +69,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var fontSize by mutableFloatStateOf(18f)
         private set
     var isDarkMode by mutableStateOf(false)
-    var isScrollMode by mutableStateOf(true)
+    var isScrollMode by mutableStateOf(false)
     var readerBgColorIndex by mutableIntStateOf(0)
         private set
     var readerCustomBgColorArgb by mutableIntStateOf(0xFFF5F0E8.toInt())
@@ -193,6 +194,15 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var showAnnotationsPanel by mutableStateOf(false)
 
+    // ---- 段评状态 ----
+    var reviewChapterIndices by mutableStateOf<Set<Int>>(emptySet())
+        private set
+    var chapterReviews by mutableStateOf<Map<Int, Int>>(emptyMap())
+        private set
+    var showReviewPanel by mutableStateOf(false)
+    var reviewPanelChapter by mutableStateOf<Int?>(null)
+    var reviewPanelAnchor by mutableStateOf<String?>(null)
+
     // ---- CSC 贡献状态 ----
     var showContributeDialog by mutableStateOf(false)
     var contributeStatus by mutableStateOf("")
@@ -315,7 +325,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private fun loadSettings() {
         fontSize = prefs.getFloat(PrefKeys.FONT_SIZE, 18f).coerceIn(12f, 40f)
         isDarkMode = prefs.getBoolean(PrefKeys.DARK_MODE, false)
-        isScrollMode = prefs.getBoolean(PrefKeys.SCROLL_MODE, true)
+        isScrollMode = prefs.getBoolean(PrefKeys.SCROLL_MODE, false)
 
         readerBgColorIndex = prefs.getInt(PrefKeys.BG_COLOR_INDEX, 0).coerceAtLeast(0)
         readerCustomBgColorArgb = prefs.getInt(PrefKeys.CUSTOM_BG_COLOR, 0xFFF5F0E8.toInt())
@@ -633,6 +643,27 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 ?: throw Exception("EPUB ����ʧ�� (Rust Bridge)")
             
             val metadata = jsonParser.decodeFromString<BookMetadataDto>(metadataJson)
+
+            // Parse review chapter info from DTO with safe fallback
+            val reviewIndices = try {
+                metadata.reviewChapterIndices.toMutableSet()
+            } catch (e: Exception) {
+                android.util.Log.e("ReaderViewModel", "解析段评数据失败", e)
+                mutableSetOf<Int>()
+            }
+            val chapterReviewMap = try {
+                metadata.chapterReviews.associate { it.main to it.review }.toMutableMap()
+            } catch (e: Exception) {
+                android.util.Log.e("ReaderViewModel", "解析段评数据失败", e)
+                mutableMapOf<Int, Int>()
+            }
+            withContext(Dispatchers.Main) {
+                reviewChapterIndices = reviewIndices
+                chapterReviews = chapterReviewMap
+                // Reset review panel state so a stale panel never persists across book switches
+                showReviewPanel = false
+                reviewPanelChapter = null
+            }
             
             val lazyChapters = object : AbstractList<Chapter>() {
                 val cache = ConcurrentHashMap<Int, Chapter>()
@@ -726,6 +757,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
         currentChapter = target
         currentPage = 0
+        // Close review panel if open so a stale panel doesn't linger after TOC navigation
+        showReviewPanel = false
+        reviewPanelChapter = null
         saveProgress()
         updateBookmarkState()
         checkContributionPrompt()
@@ -744,22 +778,53 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun nextChapter() {
         val book = currentBook ?: return
         if (currentChapter < book.chapters.size - 1) {
-            currentChapter++
-            currentPage = 0
-            saveProgress()
-            updateBookmarkState()
-            checkContributionPrompt()
+            var next = currentChapter + 1
+            // Skip review chapters
+            while (next < book.chapters.size && reviewChapterIndices.contains(next)) {
+                next++
+            }
+            if (next < book.chapters.size) {
+                currentChapter = next
+                currentPage = 0
+                saveProgress()
+                updateBookmarkState()
+                checkContributionPrompt()
+            } else {
+                Toast.makeText(context, I18n.t("reader.at_last_chapter"), Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     fun prevChapter() {
+        val book = currentBook ?: return
         if (currentChapter > 0) {
-            currentChapter--
-            currentPage = 0
-            saveProgress()
-            updateBookmarkState()
-            checkContributionPrompt()
+            var prev = currentChapter - 1
+            // Skip review chapters
+            while (prev >= 0 && reviewChapterIndices.contains(prev)) {
+                prev--
+            }
+            if (prev >= 0) {
+                currentChapter = prev
+                currentPage = 0
+                saveProgress()
+                updateBookmarkState()
+                checkContributionPrompt()
+            } else {
+                Toast.makeText(context, I18n.t("reader.at_first_chapter"), Toast.LENGTH_SHORT).show()
+            }
         }
+    }
+
+    fun openReviewPanel(chapterIndex: Int, anchor: String? = null) {
+        showReviewPanel = true
+        reviewPanelChapter = chapterIndex
+        reviewPanelAnchor = anchor
+    }
+
+    fun closeReviewPanel() {
+        showReviewPanel = false
+        reviewPanelChapter = null
+        reviewPanelAnchor = null
     }
 
     fun setPage(page: Int) {

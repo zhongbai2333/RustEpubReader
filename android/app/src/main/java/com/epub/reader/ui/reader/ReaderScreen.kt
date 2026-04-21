@@ -198,7 +198,13 @@ fun ReaderScreen(
     cscModelReady: Boolean = false,
     cscModelLoading: Boolean = false,
     cscCorrections: List<com.zhongbai233.epub.reader.csc.CorrectionInfo> = emptyList(),
-    onDownloadCscModel: () -> Unit = {}
+    onDownloadCscModel: () -> Unit = {},
+    // 段评
+    reviewChapterIndices: Set<Int> = emptySet(),
+    showReviewPanel: Boolean = false,
+    reviewPanelChapter: Int? = null,
+    onOpenReviewPanel: (Int, String?) -> Unit = { _, _ -> },
+    onCloseReviewPanel: () -> Unit = {}
 ) {
     var textSelection by remember { mutableStateOf<TextSelectionState?>(null) }
     var selectionAnchorRange by remember { mutableStateOf<TextSelectionState?>(null) }
@@ -242,7 +248,13 @@ fun ReaderScreen(
                         }
 
                         if (target >= 0) {
-                            onChapterChange(target)
+                            // Intercept review chapters (段评) — show overlay instead of navigating
+                            if (reviewChapterIndices.contains(target)) {
+                                val anchor = link.substringAfter('#', "")
+                                onOpenReviewPanel(target, anchor.takeIf { it.isNotBlank() })
+                            } else {
+                                onChapterChange(target)
+                            }
                         } else {
                             runCatching { uriHandler.openUri(link) }
                         }

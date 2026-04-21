@@ -146,6 +146,13 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_openBook(
         Err(_) => return std::ptr::null_mut(),
     };
 
+    let chapter_reviews: Vec<serde_json::Value> = book
+        .chapter_reviews
+        .iter()
+        .map(|(k, v)| serde_json::json!({"main": k, "review": v}))
+        .collect();
+    let review_chapter_indices: Vec<usize> = book.review_chapter_indices.iter().copied().collect();
+
     let json = serde_json::json!({
         "title": book.title,
         "chapterCount": book.chapters.len(),
@@ -154,6 +161,8 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_openBook(
             "chapterIndex": t.chapter_index,
         })).collect::<Vec<_>>(),
         "hasCover": book.cover_data.is_some(),
+        "chapterReviews": chapter_reviews,
+        "reviewChapterIndices": review_chapter_indices,
     });
 
     jni_string_or_null!(env, json.to_string())
@@ -187,25 +196,27 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
         .blocks
         .iter()
         .map(|block| match block {
-            reader_core::epub::ContentBlock::Paragraph { spans } => {
+            reader_core::epub::ContentBlock::Paragraph { spans, anchor_id } => {
                 serde_json::json!({
                     "type": "paragraph",
                     "spans": spans.iter().map(|s| serde_json::json!({
                         "text": s.text,
-                        "style": format!("{:?}", s.style),
+                        "style": s.style.as_str(),
                         "linkUrl": s.link_url,
                     })).collect::<Vec<_>>(),
+                    "anchorId": anchor_id,
                 })
             }
-            reader_core::epub::ContentBlock::Heading { level, spans } => {
+            reader_core::epub::ContentBlock::Heading { level, spans, anchor_id } => {
                 serde_json::json!({
                     "type": "heading",
                     "level": level,
                     "spans": spans.iter().map(|s| serde_json::json!({
                         "text": s.text,
-                        "style": format!("{:?}", s.style),
+                        "style": s.style.as_str(),
                         "linkUrl": s.link_url,
                     })).collect::<Vec<_>>(),
+                    "anchorId": anchor_id,
                 })
             }
             reader_core::epub::ContentBlock::Separator => {
@@ -1713,7 +1724,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_collectCscSamples(
             None => continue,
         };
         let block_text: String = match block {
-            ContentBlock::Paragraph { spans } => spans.iter().map(|s| s.text.as_str()).collect(),
+            ContentBlock::Paragraph { spans, .. } => spans.iter().map(|s| s.text.as_str()).collect(),
             ContentBlock::Heading { spans, .. } => spans.iter().map(|s| s.text.as_str()).collect(),
             _ => continue,
         };

@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -23,6 +24,7 @@ import com.zhongbai233.epub.reader.ui.library.LibraryScreen
 import com.zhongbai233.epub.reader.ui.library.SharingDialog
 import com.zhongbai233.epub.reader.ui.library.TxtImportDialog
 import com.zhongbai233.epub.reader.ui.reader.ReaderScreen
+import com.zhongbai233.epub.reader.ui.reader.ReviewPanel
 import com.zhongbai233.epub.reader.ui.reader.SearchDialog
 import com.zhongbai233.epub.reader.ui.reader.ContributeDialog
 import com.zhongbai233.epub.reader.ui.reader.AnnotationsSheet
@@ -329,8 +331,33 @@ private fun MainContent(vm: ReaderViewModel) {
                         cscModelReady = vm.cscModelReady,
                         cscModelLoading = vm.cscModelLoading,
                         cscCorrections = vm.cscCorrections,
-                        onDownloadCscModel = { vm.downloadCscModel() }
+                        onDownloadCscModel = { vm.downloadCscModel() },
+                        // 段评
+                        reviewChapterIndices = vm.reviewChapterIndices,
+                        showReviewPanel = vm.showReviewPanel,
+                        reviewPanelChapter = vm.reviewPanelChapter,
+                        onOpenReviewPanel = { idx, anchor -> vm.openReviewPanel(idx, anchor) },
+                        onCloseReviewPanel = { vm.closeReviewPanel() }
                     )
+
+                    // 段评面板返回键拦截
+                    BackHandler(enabled = vm.showReviewPanel) {
+                        vm.closeReviewPanel()
+                    }
+
+                    // 段评面板
+                    if (vm.showReviewPanel && vm.reviewPanelChapter != null) {
+                        val reviewCh = book.chapters.getOrNull(vm.reviewPanelChapter!!)
+                        if (reviewCh != null) {
+                            ReviewPanel(
+                                chapterTitle = reviewCh.title,
+                                blocks = reviewCh.blocks,
+                                anchorId = vm.reviewPanelAnchor,
+                                fontSize = vm.fontSize,
+                                onDismiss = { vm.closeReviewPanel() }
+                            )
+                        }
+                    }
 
                     // 标注面板
                     if (vm.showAnnotationsPanel) {

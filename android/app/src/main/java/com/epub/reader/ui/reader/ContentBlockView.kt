@@ -19,6 +19,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -136,10 +137,9 @@ internal fun ContentBlockView(
                             val isSmallMove = (up.position - down.position).getDistance() <= viewConfiguration.touchSlop
                             if (isQuickTap && isSmallMove) {
                                 layoutResult?.let { result ->
-                                    val offset = result.getOffsetForPosition(up.position)
-                                    val annotations = annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
-                                    if (annotations.isNotEmpty()) {
-                                        onLinkClick(annotations.first().item)
+                                    val url = result.findUrlAtPosition(up.position, annotated, extraPaddingPx = 30f)
+                                    if (url != null) {
+                                        onLinkClick(url)
                                     } else {
                                         onTextTapped()
                                     }
@@ -230,10 +230,9 @@ internal fun ContentBlockView(
                             val isSmallMove = (up.position - down.position).getDistance() <= viewConfiguration.touchSlop
                             if (isQuickTap && isSmallMove) {
                                 layoutResult?.let { result ->
-                                    val offset = result.getOffsetForPosition(up.position)
-                                    val annotations = annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
-                                    if (annotations.isNotEmpty()) {
-                                        onLinkClick(annotations.first().item)
+                                    val url = result.findUrlAtPosition(up.position, annotated, extraPaddingPx = 30f)
+                                    if (url != null) {
+                                        onLinkClick(url)
                                     } else {
                                         onTextTapped()
                                     }
@@ -295,4 +294,34 @@ private fun highlightColor(name: String): Color = when (name) {
     "Blue"   -> Color(0x5990CAF9)
     "Pink"   -> Color(0x59F48FB1)
     else     -> Color(0x59FFF176)
+}
+
+/**
+ * 在 TextLayoutResult 中查找点击位置是否落在某个 URL 链接的扩展边界框内。
+ * 先尝试精确字符匹配，失败后再检查链接边界框 ±[extraPaddingPx] 的扩展区域。
+ */
+private fun TextLayoutResult.findUrlAtPosition(
+    position: androidx.compose.ui.geometry.Offset,
+    annotated: AnnotatedString,
+    extraPaddingPx: Float = 30f
+): String? {
+    // 先精确匹配
+    val exactOffset = getOffsetForPosition(position)
+    annotated.getStringAnnotations(tag = "URL", start = exactOffset, end = exactOffset)
+        .firstOrNull()?.let { return it.item }
+
+    // 再检查扩展边界框
+    val all = annotated.getStringAnnotations(tag = "URL", start = 0, end = annotated.length)
+    for (ann in all) {
+        val startBox = getBoundingBox(ann.start)
+        val endBox = getBoundingBox((ann.end - 1).coerceAtLeast(ann.start))
+        val left = minOf(startBox.left, endBox.left) - extraPaddingPx
+        val top = minOf(startBox.top, endBox.top) - extraPaddingPx
+        val right = maxOf(startBox.right, endBox.right) + extraPaddingPx
+        val bottom = maxOf(startBox.bottom, endBox.bottom) + extraPaddingPx
+        if (position.x in left..right && position.y in top..bottom) {
+            return ann.item
+        }
+    }
+    return null
 }
