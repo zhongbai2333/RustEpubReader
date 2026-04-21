@@ -11,7 +11,8 @@
 - **字体设置** — 自动发现系统字体，可按需切换字体与字号
 - **多语言** — 内置中文（简体）与 English 界面
 - **局域网共享** — 通过点对点协议在设备间传输书籍（PIN 配对）
-- **Android 支持** — 通过 JNI 桥接核心逻辑，Jetpack Compose 构建 Android UI
+- **段评支持** — 正文段落链接直达段评面板，支持锚点筛选、结构化卡片展示、时间戳格式化（Android & Desktop）
+- **Android 支持** — 通过 JNI 桥接核心逻辑，Jetpack Compose 构建 Android UI，支持左右翻页与上下滚动
 
 ## 项目结构
 
@@ -28,6 +29,10 @@ RustEpubReader/
 ### 桌面端
 
 ```bash
+# Windows（无 CSC/ONNX 依赖，体积更小）
+cargo build --release --no-default-features -p rust_epub_reader
+
+# Linux / macOS
 cargo build --release -p rust_epub_reader
 ```
 
@@ -35,16 +40,17 @@ Windows 下会自动嵌入应用图标（需要 `rc.exe`）。
 
 ### Android
 
-1. 配置 Android NDK，并在 `android/local.properties` 中设置 `sdk.dir`。
-2. 使用 `cargo-ndk` 编译 `android-bridge`：
-   ```bash
-   cargo ndk -t arm64-v8a build --release -p android-bridge
-   ```
-3. 将产物 `.so` 文件放入 `android/app/src/main/jniLibs/` 对应 ABI 目录。
-4. 在 `android/` 目录下运行：
-   ```bash
-   ./gradlew assembleRelease
-   ```
+项目已配置 `cargoBuild` Gradle task，编译时会自动调用 `cargo-ndk` 生成 `.so`：
+
+```bash
+cd android
+./gradlew assembleDebug
+```
+
+如需手动编译 bridge：
+```bash
+cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --release -p android-bridge
+```
 
 ## 依赖
 

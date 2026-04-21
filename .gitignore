@@ -39,3 +39,13 @@ settings.json
 books/
 models/
 android/app/src/main/jniLibs/
+
+# macOS
+.DS_Store
+
+# Log files
+*.log
+
+# Agent session / debug artifacts
+STATUS_*.md
+*_bug.json
