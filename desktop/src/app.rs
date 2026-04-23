@@ -39,6 +39,27 @@ fn default_boss_key() -> String {
     "F1".to_string()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SavedWindowGeometry {
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+}
+
+impl SavedWindowGeometry {
+    fn sanitized(position: Option<[f32; 2]>, size: Option<[f32; 2]>) -> Option<Self> {
+        let position = position?;
+        let size = size?;
+        let values = [position[0], position[1], size[0], size[1]];
+        if values.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        if size[0] < 360.0 || size[1] < 240.0 {
+            return None;
+        }
+        Some(Self { position, size })
+    }
+}
+
 fn normalize_boss_hotkey(ctrl: bool, alt: bool, shift: bool, win: bool, key_token: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     if ctrl {
@@ -431,7 +452,7 @@ pub struct CscPopupInfo {
     pub just_opened: bool,
 }
 
-fn default_data_dir() -> String {
+pub(crate) fn default_data_dir() -> String {
     let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&dir);
     dir.to_string_lossy().to_string()
@@ -725,6 +746,10 @@ struct AppSettings {
     #[serde(default = "default_boss_key")]
     boss_key_shortcut: String,
     #[serde(default)]
+    window_position: Option<[f32; 2]>,
+    #[serde(default)]
+    window_size: Option<[f32; 2]>,
+    #[serde(default)]
     csc_mode: reader_core::csc::CorrectionMode,
     #[serde(default)]
     csc_threshold: reader_core::csc::CscThreshold,
@@ -796,6 +821,8 @@ impl AppSettings {
             dictionary_api_url: app.dictionary_api_url.clone(),
             dictionary_api_key: app.dictionary_api_key.clone(),
             boss_key_shortcut: app.boss_key_shortcut.clone(),
+            window_position: app.window_position,
+            window_size: app.window_size,
             csc_mode: app.csc_mode.clone(),
             csc_threshold: app.csc_threshold.clone(),
             github_username: app.github_username.clone(),
@@ -834,6 +861,9 @@ impl AppSettings {
         app.dictionary_api_key = self.dictionary_api_key.clone();
         app.boss_key_shortcut = self.boss_key_shortcut.clone();
         app.boss_key_input = app.boss_key_shortcut.clone();
+        let saved_geometry = SavedWindowGeometry::sanitized(self.window_position, self.window_size);
+        app.window_position = saved_geometry.map(|g| g.position);
+        app.window_size = saved_geometry.map(|g| g.size);
         app.csc_mode = self.csc_mode.clone();
         app.csc_threshold = self.csc_threshold.clone();
         app.github_username = self.github_username.clone();
@@ -843,6 +873,15 @@ impl AppSettings {
         }
         // last_book_path/last_chapter applied in Default::default after call
     }
+
+    fn saved_window_geometry(&self) -> Option<SavedWindowGeometry> {
+        SavedWindowGeometry::sanitized(self.window_position, self.window_size)
+    }
+}
+
+pub(crate) fn load_saved_window_geometry() -> Option<SavedWindowGeometry> {
+    let data_dir = default_data_dir();
+    AppSettings::load(&data_dir).and_then(|settings| settings.saved_window_geometry())
 }
 
 #[derive(PartialEq)]
@@ -923,6 +962,8 @@ pub struct ReaderApp {
     pub show_toc: bool,
     pub reader_toolbar_visible: bool,
     pub reader_window_level: egui::WindowLevel,
+    pub window_position: Option<[f32; 2]>,
+    pub window_size: Option<[f32; 2]>,
     pub scroll_to_top: bool,
     pub error_msg: Option<String>,
     pub view: AppView,
@@ -1212,6 +1253,8 @@ impl Default for ReaderApp {
             show_toc: true,
             reader_toolbar_visible: default_reader_toolbar_visible(),
             reader_window_level: egui::WindowLevel::Normal,
+            window_position: None,
+            window_size: None,
             scroll_to_top: false,
             error_msg: None,
             view: AppView::Library,
@@ -2118,6 +2161,29 @@ impl ReaderApp {
         }
     }
 
+    fn sync_root_viewport_geometry(&mut self, ctx: &egui::Context) {
+        ctx.input(|i| {
+            let viewport = i.viewport();
+            if viewport.minimized == Some(true) {
+                return;
+            }
+
+            if let Some(inner_rect) = viewport.inner_rect {
+                let size = inner_rect.size();
+                if size.x.is_finite() && size.y.is_finite() && size.x >= 360.0 && size.y >= 240.0 {
+                    self.window_size = Some([size.x, size.y]);
+                }
+            }
+
+            if let Some(outer_rect) = viewport.outer_rect {
+                let pos = outer_rect.min;
+                if pos.x.is_finite() && pos.y.is_finite() {
+                    self.window_position = Some([pos.x, pos.y]);
+                }
+            }
+        });
+    }
+
     fn handle_root_viewport_resize(&self, ctx: &egui::Context) {
         const BORDER: f32 = 6.0;
 
@@ -2981,6 +3047,7 @@ impl eframe::App for ReaderApp {
             self.render_txt_import(ctx);
         }
 
+        self.sync_root_viewport_geometry(ctx);
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
             settings.save(&self.data_dir);

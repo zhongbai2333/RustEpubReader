@@ -149,13 +149,18 @@ fn main() -> eframe::Result {
         eprintln!("[APP-DBG] Debug console logging enabled via --debug");
     }
 
-    let viewport = egui::ViewportBuilder::default()
+    let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1200.0, 800.0])
         .with_min_inner_size([360.0, 240.0])
         .with_resizable(true)
         .with_transparent(true)
         .with_decorations(false)
         .with_taskbar(false);
+    if let Some(saved) = app::load_saved_window_geometry() {
+        viewport = viewport
+            .with_inner_size(egui::vec2(saved.size[0], saved.size[1]))
+            .with_position(egui::pos2(saved.position[0], saved.position[1]));
+    }
     let viewport = if let Some(icon) = load_app_icon() {
         viewport.with_icon(icon)
     } else {
