@@ -576,8 +576,6 @@ pub struct ReaderApp {
     pub search_query: String,
     pub search_results: Vec<reader_core::search::SearchResult>,
     pub search_selected: Option<usize>,
-    /// Block index to jump to after a search result is clicked (used for page-mode positioning).
-    pub search_target_block: Option<usize>,
     // ── Annotations ──
     pub show_annotations: bool,
     pub book_config: Option<reader_core::library::BookConfig>,
@@ -859,7 +857,6 @@ impl Default for ReaderApp {
             search_query: String::new(),
             search_results: Vec::new(),
             search_selected: None,
-            search_target_block: None,
             // Annotations
             show_annotations: false,
             book_config: None,

@@ -356,6 +356,5 @@
   "settings.chars": "字符",
   "review.panel_title": "段评",
   "review.show_current_only": "🔍 只看当前段",
-  "review.show_all": "📖 显示全部",
-  "search.hint": "按回车或点击搜索按钮搜索"
+  "review.show_all": "📖 显示全部"
 }

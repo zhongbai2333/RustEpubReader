@@ -186,15 +186,11 @@ pub(crate) fn render_block(
             );
             ui.add_space(font_size * 0.8);
             let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx);
-            let is_search_block = SEARCH_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx);
             let galley = ui.painter().layout_job(job);
             let galley_size = galley.size();
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
 
-            if is_search_block {
-                paint_search_highlight(ui, rect);
-            }
             if is_tts_block {
                 paint_tts_highlight(ui, rect);
             }
@@ -348,10 +344,6 @@ pub(crate) fn render_block(
             let galley_size = galley.size();
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
-            // Search highlight (paint behind text)
-            if SEARCH_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx) {
-                paint_search_highlight(ui, rect);
-            }
             // TTS read-along highlight (paint behind text)
             if TTS_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx) {
                 paint_tts_highlight(ui, rect);

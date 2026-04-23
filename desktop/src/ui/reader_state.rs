@@ -45,8 +45,6 @@ thread_local! {
     pub(crate) static BLOCK_GALLEYS: RefCell<Vec<BlockGalleyEntry>> = const { RefCell::new(Vec::new()) };
     /// TTS read-along highlight: Some(block_idx) when TTS is actively reading a block.
     pub(crate) static TTS_HIGHLIGHT_BLOCK: Cell<Option<usize>> = const { Cell::new(None) };
-    /// Search result highlight: Some(block_idx) when user clicked a search result.
-    pub(crate) static SEARCH_HIGHLIGHT_BLOCK: Cell<Option<usize>> = const { Cell::new(None) };
     /// CSC corrections for the current chapter: block_idx → Vec<CorrectionInfo>.
     /// Set before rendering, read inside render_block for Ruby annotation painting.
     pub(crate) static CSC_CORRECTIONS: RefCell<std::collections::HashMap<usize, Vec<reader_core::epub::CorrectionInfo>>>
@@ -89,23 +87,6 @@ pub(crate) fn paint_tts_highlight(ui: &egui::Ui, rect: egui::Rect) {
     );
     ui.painter()
         .rect_filled(bar, egui::CornerRadius::same(1), TTS_ACCENT);
-}
-
-/// Search highlight colour (golden yellow, visible on both dark and light themes).
-pub(crate) const SEARCH_BG: Color32 = Color32::from_rgba_premultiplied(255, 215, 0, 60);
-pub(crate) const SEARCH_ACCENT: Color32 = Color32::from_rgb(255, 165, 0);
-
-/// Paint search result highlight: golden background + left accent bar.
-pub(crate) fn paint_search_highlight(ui: &egui::Ui, rect: egui::Rect) {
-    let r = rect.expand2(egui::vec2(4.0, 2.0));
-    ui.painter()
-        .rect_filled(r, egui::CornerRadius::same(3), SEARCH_BG);
-    let bar = egui::Rect::from_min_size(
-        egui::pos2(r.left() - 3.0, r.top()),
-        egui::vec2(3.0, r.height()),
-    );
-    ui.painter()
-        .rect_filled(bar, egui::CornerRadius::same(1), SEARCH_ACCENT);
 }
 
 /// Build mapping from block char_offset → galley char index.

@@ -36,8 +36,9 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
             } else {
                 text.to_lowercase()
             };
-            if let Some(pos) = search_text.find(&query_cmp) {
-                let abs_pos = pos;
+            let mut start = 0;
+            while let Some(pos) = search_text[start..].find(&query_cmp) {
+                let abs_pos = start + pos;
                 let ctx_start = text
                     .char_indices()
                     .rev()
@@ -61,6 +62,7 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
                     match_start: abs_pos,
                     match_len: query.len(),
                 });
+                start = abs_pos + query.len();
             }
         }
     }

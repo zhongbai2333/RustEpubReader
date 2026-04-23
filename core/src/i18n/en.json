@@ -356,6 +356,5 @@
   "settings.chars": "chars",
   "review.panel_title": "Reviews",
   "review.show_current_only": "🔍 Current Only",
-  "review.show_all": "📖 Show All",
-  "search.hint": "Press Enter or click Search button"
+  "review.show_all": "📖 Show All"
 }

@@ -162,17 +162,6 @@ impl ReaderApp {
                 if !self.scroll_mode && self.pages_dirty {
                     self.recalculate_pages(ui.available_height(), text_width);
                 }
-                // Handle search jump target (both scroll and page mode)
-                if let Some(target_block) = self.search_target_block.take() {
-                    SEARCH_HIGHLIGHT_BLOCK.set(Some(target_block));
-                    if !self.scroll_mode {
-                        if let Some(page_idx) = self.page_block_ranges.iter().position(|&(s, e)| {
-                            target_block >= s && target_block < e
-                        }) {
-                            self.current_page = page_idx;
-                        }
-                    }
-                }
                 if !self.scroll_mode
                     && self.total_pages > 0
                     && self.current_page >= self.total_pages
