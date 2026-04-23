@@ -27,14 +27,14 @@ sealed class ContentBlock {
     data class Heading(
         val level: Int,
         val spans: List<TextSpan>,
-        val anchor_id: String? = null
+        @SerialName("anchor_id") val anchor_id: String? = null
     ) : ContentBlock()
 
     @Serializable
     @SerialName("paragraph")
     data class Paragraph(
         val spans: List<TextSpan>,
-        val anchor_id: String? = null
+        @SerialName("anchor_id") val anchor_id: String? = null
     ) : ContentBlock()
 
     @Serializable

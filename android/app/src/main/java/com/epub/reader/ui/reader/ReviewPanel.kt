@@ -1,5 +1,6 @@
 package com.zhongbai233.epub.reader.ui.reader
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -104,6 +105,8 @@ fun ReviewPanel(
     blocks: List<ContentBlock>,
     anchorId: String? = null,
     fontSize: Float = 16f,
+    showAll: Boolean = false,
+    onShowAllChanged: ((Boolean) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -142,26 +145,55 @@ fun ReviewPanel(
                 chapterTitle,
                 fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp)
+                modifier = Modifier.padding(bottom = 4.dp)
             )
+
+            // Show-all toggle (only when opened from anchor link)
+            if (!anchorId.isNullOrBlank() && onShowAllChanged != null) {
+                TextButton(
+                    onClick = { onShowAllChanged(!showAll) },
+                    modifier = Modifier.padding(vertical = 2.dp)
+                ) {
+                    Text(
+                        text = if (showAll) I18n.t("review.show_current_only") else I18n.t("review.show_all"),
+                        fontSize = 13.sp
+                    )
+                }
+            }
 
             HorizontalDivider()
             Spacer(Modifier.height(8.dp))
 
-            // Filter blocks by anchor if specified; fallback to all if no match
-            val filteredBlocks = remember(blocks, anchorId) {
-                if (anchorId.isNullOrBlank()) blocks
-                else {
-                    val matched = blocks.filter { block ->
+            // Group-filter: anchor-matching block (Heading or Paragraph with anchor_id)
+            // + subsequent blocks until next group start (Heading or block with anchor_id)
+            val filteredBlocks = remember(blocks, anchorId, showAll) {
+                if (anchorId.isNullOrBlank() || showAll) {
+                    blocks
+                } else {
+                    val result = mutableListOf<ContentBlock>()
+                    var inGroup = false
+                    for (block in blocks) {
                         val blockAnchor = when (block) {
                             is ContentBlock.Heading -> block.anchor_id
                             is ContentBlock.Paragraph -> block.anchor_id
                             else -> null
                         }
-                        blockAnchor != null && blockAnchor == anchorId
+                        val isGroupStart = when (block) {
+                            is ContentBlock.Heading -> true
+                            is ContentBlock.Paragraph -> block.anchor_id != null
+                            else -> false
+                        }
+                        when {
+                            blockAnchor == anchorId -> {
+                                inGroup = true
+                                result.add(block)
+                            }
+                            inGroup && isGroupStart -> break
+                            inGroup -> result.add(block)
+                        }
                     }
-                    // Review chapter paragraphs usually have no id; show all if nothing matches
-                    matched.ifEmpty { blocks }
+                    // Defensive fallback: if anchor is not found, show all instead of blank
+                    result.ifEmpty { blocks }
                 }
             }
 
@@ -220,10 +252,15 @@ private fun ReviewCardItem(card: ReviewCard, fontSize: Float) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 6.dp)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(12.dp)
+            ),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
         )
     ) {
         Column(

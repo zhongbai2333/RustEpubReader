@@ -145,6 +145,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var showReviewPanel by mutableStateOf(false)
     var reviewPanelChapter by mutableStateOf<Int?>(null)
     var reviewPanelAnchor by mutableStateOf<String?>(null)
+    var reviewPanelShowAll by mutableStateOf(false)
 
     fun updateCorrectionStatus(correction: com.zhongbai233.epub.reader.ui.reader.CscBlockCorrection, newStatus: com.zhongbai233.epub.reader.csc.CorrectionStatus) {
         cscCorrections = cscCorrections.map { c ->
@@ -853,6 +854,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         showReviewPanel = true
         reviewPanelChapter = chapterIndex
         reviewPanelAnchor = anchorId
+        reviewPanelShowAll = false
     }
 
     fun openReviewPanelForCurrentChapter() {
@@ -866,6 +868,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         showReviewPanel = false
         reviewPanelChapter = null
         reviewPanelAnchor = null
+        reviewPanelShowAll = false
     }
 
     fun setPage(page: Int) {

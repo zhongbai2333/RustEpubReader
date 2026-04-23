@@ -194,7 +194,7 @@ internal fun ReaderBottomBar(
                 }
 
                 // 日/夜间模式
-                IconButton(onClick = onToggleDarkMode) {
+                IconButton(onClick = { onToggleDarkMode(); onOpenSettings() }) {
                     if (isDarkMode) {
                         Icon(Icons.Default.DarkMode, I18n.t("nav.dark_mode"))
                     } else {

@@ -393,6 +393,8 @@ private fun MainContent(vm: ReaderViewModel) {
                                 blocks = reviewCh.blocks,
                                 anchorId = vm.reviewPanelAnchor,
                                 fontSize = vm.fontSize,
+                                showAll = vm.reviewPanelShowAll,
+                                onShowAllChanged = { vm.reviewPanelShowAll = it },
                                 onDismiss = { vm.closeReviewPanel() }
                             )
                         }
