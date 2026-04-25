@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static DEBUG_LOG_ENABLED: AtomicBool = AtomicBool::new(true);
+static DEBUG_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_debug_logging_enabled(enabled: bool) {
     DEBUG_LOG_ENABLED.store(enabled, Ordering::Relaxed);
@@ -47,7 +47,6 @@ macro_rules! dbg_log {
         $crate::sharing::share_dbg_log(&format!($($arg)*));
     };
 }
-pub(crate) use dbg_log;
 
 // ── Module declarations ──
 

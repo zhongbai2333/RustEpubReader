@@ -45,15 +45,24 @@ fn collect_blocks(
                     match tag {
                         "p" | "figcaption" | "cite" => {
                             let spans = collect_spans(elem_ref, InlineStyle::Normal, None);
+                            let anchor_id = elem.attr("id").map(|s| s.to_string());
                             if has_visible_text(&spans) {
-                                blocks.push(ContentBlock::Paragraph { spans });
+                                blocks.push(ContentBlock::Paragraph { spans, anchor_id });
+                            } else if anchor_id.is_some() {
+                                // Keep empty paragraph if it has an anchor id (e.g. review placeholder)
+                                blocks.push(ContentBlock::Paragraph { spans, anchor_id });
                             }
                         }
                         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                             let level = (tag.as_bytes()[1] - b'0').clamp(1, 6);
                             let spans = collect_spans(elem_ref, InlineStyle::Bold, None);
-                            if has_visible_text(&spans) {
-                                blocks.push(ContentBlock::Heading { level, spans });
+                            let anchor_id = elem.attr("id").map(|s| s.to_string());
+                            if has_visible_text(&spans) || anchor_id.is_some() {
+                                blocks.push(ContentBlock::Heading {
+                                    level,
+                                    spans,
+                                    anchor_id,
+                                });
                             }
                         }
                         "hr" => blocks.push(ContentBlock::Separator),
@@ -69,7 +78,11 @@ fn collect_blocks(
                             let mut inner = Vec::new();
                             collect_blocks(elem_ref, &mut inner, chapter_path, image_resources);
                             for block in inner {
-                                if let ContentBlock::Paragraph { mut spans } = block {
+                                if let ContentBlock::Paragraph {
+                                    mut spans,
+                                    anchor_id,
+                                } = block
+                                {
                                     spans.insert(
                                         0,
                                         TextSpan {
@@ -79,7 +92,7 @@ fn collect_blocks(
                                             correction: None,
                                         },
                                     );
-                                    blocks.push(ContentBlock::Paragraph { spans });
+                                    blocks.push(ContentBlock::Paragraph { spans, anchor_id });
                                 } else {
                                     blocks.push(block);
                                 }
@@ -95,6 +108,7 @@ fn collect_blocks(
                                         link_url: None,
                                         correction: None,
                                     }],
+                                    anchor_id: None,
                                 });
                             }
                         }
@@ -160,7 +174,10 @@ fn collect_blocks(
                             } else {
                                 let spans = collect_spans(elem_ref, InlineStyle::Normal, None);
                                 if has_visible_text(&spans) {
-                                    blocks.push(ContentBlock::Paragraph { spans });
+                                    blocks.push(ContentBlock::Paragraph {
+                                        spans,
+                                        anchor_id: None,
+                                    });
                                 }
                             }
                         }
@@ -177,6 +194,7 @@ fn collect_blocks(
                             link_url: None,
                             correction: None,
                         }],
+                        anchor_id: None,
                     });
                 }
             }
@@ -266,7 +284,10 @@ fn collect_list(parent: ElementRef, blocks: &mut Vec<ContentBlock>, ordered: boo
                     }];
                     spans.extend(collect_spans(li_ref, InlineStyle::Normal, None));
                     if spans.len() > 1 {
-                        blocks.push(ContentBlock::Paragraph { spans });
+                        blocks.push(ContentBlock::Paragraph {
+                            spans,
+                            anchor_id: None,
+                        });
                     }
                     index += 1;
                 }
@@ -303,7 +324,10 @@ fn collect_table(parent: ElementRef, blocks: &mut Vec<ContentBlock>) {
             }
         }
         if has_visible_text(&row_spans) {
-            blocks.push(ContentBlock::Paragraph { spans: row_spans });
+            blocks.push(ContentBlock::Paragraph {
+                spans: row_spans,
+                anchor_id: None,
+            });
         }
     }
 }

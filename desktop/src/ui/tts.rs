@@ -308,7 +308,7 @@ impl ReaderApp {
             .and_then(|b| {
                 b.chapters.get(self.current_chapter).and_then(|ch| {
                     ch.blocks.get(block_idx).map(|block| match block {
-                        reader_core::epub::ContentBlock::Paragraph { spans } => {
+                        reader_core::epub::ContentBlock::Paragraph { spans, .. } => {
                             spans.iter().map(|s| s.text.as_str()).collect::<String>()
                         }
                         reader_core::epub::ContentBlock::Heading { spans, .. } => {

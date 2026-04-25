@@ -671,6 +671,15 @@ pub struct ReaderApp {
     pub csc_contribute_pr_url: Option<String>,
     pub csc_contribute_rx:
         Option<std::sync::mpsc::Receiver<crate::ui::csc_contribute::ContributeResult>>,
+    // ── Review Panel (段评覆盖层) ──
+    pub show_review_panel: bool,
+    pub review_panel_chapter: Option<usize>,
+    pub review_panel_anchor: Option<String>,
+    pub review_panel_just_opened: bool,
+    /// Computed scroll offset for the current anchor. Applied once when opening.
+    pub review_panel_scroll_offset: Option<f32>,
+    /// When true, show all reviews; when false, filter to the anchored paragraph only.
+    pub review_panel_show_all: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -922,6 +931,13 @@ impl Default for ReaderApp {
             csc_contribute_status: String::new(),
             csc_contribute_pr_url: None,
             csc_contribute_rx: None,
+            // Review Panel
+            show_review_panel: false,
+            review_panel_chapter: None,
+            review_panel_anchor: None,
+            review_panel_just_opened: false,
+            review_panel_scroll_offset: None,
+            review_panel_show_all: true,
         };
 
         if let Some(settings) = AppSettings::load(&app.data_dir) {
@@ -1129,6 +1145,13 @@ impl ReaderApp {
                 self.current_page = 0;
                 self.view = AppView::Reader;
                 self.error_msg = None;
+                // Reset review panel when opening a new book
+                self.show_review_panel = false;
+                self.review_panel_chapter = None;
+                self.review_panel_anchor = None;
+                self.review_panel_just_opened = false;
+                self.review_panel_scroll_offset = None;
+                self.review_panel_show_all = true;
                 // Load annotation config and start reading timer
                 self.book_config =
                     reader_core::library::Library::read_book_config(&self.data_dir, &entry.id);
@@ -1299,7 +1322,7 @@ impl ReaderApp {
                     .enumerate()
                     .filter_map(|(i, block)| {
                         let spans = match block {
-                            ContentBlock::Paragraph { spans } => spans,
+                            ContentBlock::Paragraph { spans, .. } => spans,
                             ContentBlock::Heading { spans, .. } => spans,
                             _ => return None,
                         };
@@ -2112,7 +2135,7 @@ impl eframe::App for ReaderApp {
             ctx.request_repaint();
         }
 
-        if self.view == AppView::Reader && !self.show_sharing_panel {
+        if self.view == AppView::Reader && !self.show_sharing_panel && !self.show_review_panel {
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::ArrowLeft) {
                     if self.scroll_mode {
@@ -2218,6 +2241,9 @@ impl eframe::App for ReaderApp {
         if self.show_settings {
             self.render_settings_panel(ctx);
         }
+
+        // ── Review Panel ──
+        self.render_review_panel(ctx);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(reader_fill))

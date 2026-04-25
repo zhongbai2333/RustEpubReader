@@ -71,7 +71,7 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
 
 fn block_text(block: &ContentBlock) -> String {
     match block {
-        ContentBlock::Paragraph { spans } | ContentBlock::Heading { spans, .. } => {
+        ContentBlock::Paragraph { spans, .. } | ContentBlock::Heading { spans, .. } => {
             spans.iter().map(|s| s.text.as_str()).collect()
         }
         _ => String::new(),

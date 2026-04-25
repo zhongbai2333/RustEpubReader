@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -68,7 +69,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var fontSize by mutableFloatStateOf(18f)
         private set
     var isDarkMode by mutableStateOf(false)
-    var isScrollMode by mutableStateOf(true)
+    var isScrollMode by mutableStateOf(false)
     var readerBgColorIndex by mutableIntStateOf(0)
         private set
     var readerCustomBgColorArgb by mutableIntStateOf(0xFFF5F0E8.toInt())
@@ -135,6 +136,16 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var cscCorrections by mutableStateOf<List<CorrectionInfo>>(emptyList())
         private set
+
+    // ---- 段评状态 ----
+    var reviewChapterIndices by mutableStateOf<Set<Int>>(emptySet())
+        private set
+    var chapterReviews by mutableStateOf<Map<Int, Int>>(emptyMap())
+        private set
+    var showReviewPanel by mutableStateOf(false)
+    var reviewPanelChapter by mutableStateOf<Int?>(null)
+    var reviewPanelAnchor by mutableStateOf<String?>(null)
+    var reviewPanelShowAll by mutableStateOf(false)
 
     fun updateCorrectionStatus(correction: com.zhongbai233.epub.reader.ui.reader.CscBlockCorrection, newStatus: com.zhongbai233.epub.reader.csc.CorrectionStatus) {
         cscCorrections = cscCorrections.map { c ->
@@ -339,7 +350,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private fun loadSettings() {
         fontSize = prefs.getFloat(PrefKeys.FONT_SIZE, 18f).coerceIn(12f, 40f)
         isDarkMode = prefs.getBoolean(PrefKeys.DARK_MODE, false)
-        isScrollMode = prefs.getBoolean(PrefKeys.SCROLL_MODE, true)
+        isScrollMode = prefs.getBoolean(PrefKeys.SCROLL_MODE, false)
 
         readerBgColorIndex = prefs.getInt(PrefKeys.BG_COLOR_INDEX, 0).coerceAtLeast(0)
         readerCustomBgColorArgb = prefs.getInt(PrefKeys.CUSTOM_BG_COLOR, 0xFFF5F0E8.toInt())
@@ -657,6 +668,27 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 ?: throw Exception("EPUB ����ʧ�� (Rust Bridge)")
             
             val metadata = jsonParser.decodeFromString<BookMetadataDto>(metadataJson)
+
+            // Parse review chapter info from DTO with safe fallback
+            val reviewIndices = try {
+                metadata.reviewChapterIndices.toMutableSet()
+            } catch (e: Exception) {
+                android.util.Log.e("ReaderViewModel", "解析段评数据失败", e)
+                mutableSetOf<Int>()
+            }
+            val chapterReviewMap = try {
+                metadata.chapterReviews.associate { it.main to it.review }.toMutableMap()
+            } catch (e: Exception) {
+                android.util.Log.e("ReaderViewModel", "解析段评数据失败", e)
+                mutableMapOf<Int, Int>()
+            }
+            withContext(Dispatchers.Main) {
+                reviewChapterIndices = reviewIndices
+                chapterReviews = chapterReviewMap
+                // Reset review panel state so a stale panel never persists across book switches
+                showReviewPanel = false
+                reviewPanelChapter = null
+            }
             
             val lazyChapters = object : AbstractList<Chapter>() {
                 val cache = ConcurrentHashMap<Int, Chapter>()
@@ -744,12 +776,19 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun goToChapter(index: Int) {
         val book = currentBook ?: return
+        if (reviewChapterIndices.contains(index)) {
+            openReviewPanel(index)
+            return
+        }
         val target = index.coerceIn(0, book.chapters.size - 1)
         if (target != currentChapter) {
             previousChapter = currentChapter
         }
         currentChapter = target
         currentPage = 0
+        // Close review panel if open so a stale panel doesn't linger after TOC navigation
+        showReviewPanel = false
+        reviewPanelChapter = null
         saveProgress()
         updateBookmarkState()
         checkContributionPrompt()
@@ -768,22 +807,68 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun nextChapter() {
         val book = currentBook ?: return
         if (currentChapter < book.chapters.size - 1) {
-            currentChapter++
-            currentPage = 0
-            saveProgress()
-            updateBookmarkState()
-            checkContributionPrompt()
+            var next = currentChapter + 1
+            // Skip review chapters
+            while (next < book.chapters.size && reviewChapterIndices.contains(next)) {
+                next++
+            }
+            if (next < book.chapters.size) {
+                if (currentChapter != next) {
+                    previousChapter = currentChapter
+                }
+                currentChapter = next
+                currentPage = 0
+                saveProgress()
+                updateBookmarkState()
+                checkContributionPrompt()
+            } else {
+                Toast.makeText(context, I18n.t("reader.at_last_chapter"), Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     fun prevChapter() {
+        val book = currentBook ?: return
         if (currentChapter > 0) {
-            currentChapter--
-            currentPage = 0
-            saveProgress()
-            updateBookmarkState()
-            checkContributionPrompt()
+            var prev = currentChapter - 1
+            // Skip review chapters
+            while (prev >= 0 && reviewChapterIndices.contains(prev)) {
+                prev--
+            }
+            if (prev >= 0) {
+                if (currentChapter != prev) {
+                    previousChapter = currentChapter
+                }
+                currentChapter = prev
+                currentPage = 0
+                saveProgress()
+                updateBookmarkState()
+                checkContributionPrompt()
+            } else {
+                Toast.makeText(context, I18n.t("reader.at_first_chapter"), Toast.LENGTH_SHORT).show()
+            }
         }
+    }
+
+    fun openReviewPanel(chapterIndex: Int, anchorId: String? = null) {
+        showReviewPanel = true
+        reviewPanelChapter = chapterIndex
+        reviewPanelAnchor = anchorId
+        reviewPanelShowAll = false
+    }
+
+    fun openReviewPanelForCurrentChapter() {
+        val reviewCh = chapterReviews[currentChapter] ?: return
+        showReviewPanel = true
+        reviewPanelChapter = reviewCh
+        reviewPanelAnchor = null
+    }
+
+    fun closeReviewPanel() {
+        showReviewPanel = false
+        reviewPanelChapter = null
+        reviewPanelAnchor = null
+        reviewPanelShowAll = false
     }
 
     fun setPage(page: Int) {

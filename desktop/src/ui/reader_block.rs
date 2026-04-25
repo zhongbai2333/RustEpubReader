@@ -167,7 +167,7 @@ pub(crate) fn render_block(
     highlight_ranges: &[(usize, usize, reader_core::library::HighlightColor)],
 ) {
     match block {
-        ContentBlock::Heading { level, spans } => {
+        ContentBlock::Heading { level, spans, .. } => {
             let scale = match level {
                 1 => 2.0,
                 2 => 1.6,
@@ -224,7 +224,7 @@ pub(crate) fn render_block(
             }
             ui.add_space(font_size * 0.4);
         }
-        ContentBlock::Paragraph { spans } => {
+        ContentBlock::Paragraph { spans, .. } => {
             let is_readwrite = CSC_READWRITE.get();
 
             // ── Build display spans and annotation info based on CSC state ──
@@ -780,7 +780,7 @@ pub(crate) fn estimate_block_height(
     max_width: f32,
 ) -> f32 {
     match block {
-        ContentBlock::Heading { level, spans } => {
+        ContentBlock::Heading { level, spans, .. } => {
             let scale = match level {
                 1 => 2.0,
                 2 => 1.6,
@@ -791,7 +791,7 @@ pub(crate) fn estimate_block_height(
             let text_len: f32 = spans.iter().map(|s| estimate_text_width(&s.text, sz)).sum();
             (text_len / max_width).ceil().max(1.0) * sz * line_spacing() + font_size * 1.2
         }
-        ContentBlock::Paragraph { spans } => {
+        ContentBlock::Paragraph { spans, .. } => {
             let text_len: f32 = spans
                 .iter()
                 .map(|s| estimate_text_width(&s.text, font_size))

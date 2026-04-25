@@ -224,7 +224,7 @@ internal fun ContentBlockView(
                             }
                         }
                     }
-                    .pointerInput(annotated, onLinkClick, cscMode, cscBlockCorrections) {
+                    .pointerInput(block, onLinkClick, cscMode, cscBlockCorrections) {
                         awaitEachGesture {
                             val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
                             val up = waitForUpOrCancellation(pass = PointerEventPass.Initial) ?: return@awaitEachGesture
@@ -246,7 +246,9 @@ internal fun ContentBlockView(
                                             return@awaitEachGesture
                                         }
                                     }
-                                    val annotations = annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                                    val startOffset = (offset - 2).coerceAtLeast(0)
+                                    val endOffset = (offset + 2).coerceAtMost(annotated.length)
+                                    val annotations = annotated.getStringAnnotations(tag = "URL", start = startOffset, end = endOffset)
                                     if (annotations.isNotEmpty()) {
                                         onLinkClick(annotations.first().item)
                                     } else {
@@ -350,7 +352,7 @@ internal fun ContentBlockView(
                             }
                         }
                     }
-                    .pointerInput(annotated, onLinkClick, cscMode, cscBlockCorrections) {
+                    .pointerInput(block, onLinkClick, cscMode, cscBlockCorrections) {
                         awaitEachGesture {
                             val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
                             val up = waitForUpOrCancellation(pass = PointerEventPass.Initial) ?: return@awaitEachGesture
@@ -372,7 +374,9 @@ internal fun ContentBlockView(
                                             return@awaitEachGesture
                                         }
                                     }
-                                    val annotations = annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                                    val startOffset = (offset - 2).coerceAtLeast(0)
+                                    val endOffset = (offset + 2).coerceAtMost(annotated.length)
+                                    val annotations = annotated.getStringAnnotations(tag = "URL", start = startOffset, end = endOffset)
                                     if (annotations.isNotEmpty()) {
                                         onLinkClick(annotations.first().item)
                                     } else {

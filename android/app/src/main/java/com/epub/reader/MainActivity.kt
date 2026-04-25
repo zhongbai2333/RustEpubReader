@@ -30,6 +30,7 @@ import com.zhongbai233.epub.reader.ui.reader.ReaderScreen
 import com.zhongbai233.epub.reader.ui.reader.SearchDialog
 import com.zhongbai233.epub.reader.ui.reader.ContributeDialog
 import com.zhongbai233.epub.reader.ui.reader.AnnotationsSheet
+import com.zhongbai233.epub.reader.ui.reader.ReviewPanel
 import com.zhongbai233.epub.reader.ui.reader.TocDrawerContent
 import com.zhongbai233.epub.reader.ui.theme.EpubReaderTheme
 import com.zhongbai233.epub.reader.viewmodel.ReaderViewModel
@@ -368,8 +369,35 @@ private fun MainContent(vm: ReaderViewModel) {
                         cscModelLoading = vm.cscModelLoading,
                         cscCorrections = vm.cscCorrections,
                         onDownloadCscModel = { vm.downloadCscModel() },
-                        onCscCorrectionStatusChange = { correction, status -> vm.updateCorrectionStatus(correction, status) }
+                        onCscCorrectionStatusChange = { correction, status -> vm.updateCorrectionStatus(correction, status) },
+                        // 段评
+                        reviewChapterIndices = vm.reviewChapterIndices,
+                        showReviewPanel = vm.showReviewPanel,
+                        reviewPanelChapter = vm.reviewPanelChapter,
+                        onOpenReviewPanel = { chapter, anchor -> vm.openReviewPanel(chapter, anchor) },
+                        onCloseReviewPanel = { vm.closeReviewPanel() }
                     )
+
+                    // 段评面板返回键拦截
+                    BackHandler(enabled = vm.showReviewPanel) {
+                        vm.closeReviewPanel()
+                    }
+
+                    // 段评面板
+                    if (vm.showReviewPanel && vm.reviewPanelChapter != null) {
+                        val reviewCh = vm.reviewPanelChapter?.let { book.chapters.getOrNull(it) }
+                        if (reviewCh != null) {
+                            ReviewPanel(
+                                chapterTitle = reviewCh.title,
+                                blocks = reviewCh.blocks,
+                                anchorId = vm.reviewPanelAnchor,
+                                fontSize = vm.fontSize,
+                                showAll = vm.reviewPanelShowAll,
+                                onShowAllChanged = { vm.reviewPanelShowAll = it },
+                                onDismiss = { vm.closeReviewPanel() }
+                            )
+                        }
+                    }
 
                     // 标注面板
                     if (vm.showAnnotationsPanel) {

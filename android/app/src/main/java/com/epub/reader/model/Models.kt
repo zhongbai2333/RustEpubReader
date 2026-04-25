@@ -24,11 +24,18 @@ data class TextSpan(
 sealed class ContentBlock {
     @Serializable
     @SerialName("heading")
-    data class Heading(val level: Int, val spans: List<TextSpan>) : ContentBlock()
+    data class Heading(
+        val level: Int,
+        val spans: List<TextSpan>,
+        @SerialName("anchor_id") val anchor_id: String? = null
+    ) : ContentBlock()
 
     @Serializable
     @SerialName("paragraph")
-    data class Paragraph(val spans: List<TextSpan>) : ContentBlock()
+    data class Paragraph(
+        val spans: List<TextSpan>,
+        @SerialName("anchor_id") val anchor_id: String? = null
+    ) : ContentBlock()
 
     @Serializable
     @SerialName("image")
@@ -59,11 +66,19 @@ data class TocEntryDto(
 )
 
 @Serializable
+data class ChapterReviewEntry(
+    @SerialName("main") val main: Int,
+    @SerialName("review") val review: Int
+)
+
+@Serializable
 data class BookMetadataDto(
     val title: String,
     val chapterCount: Int,
     val toc: List<TocEntryDto>,
-    val hasCover: Boolean
+    val hasCover: Boolean,
+    @SerialName("chapterReviews") val chapterReviews: List<ChapterReviewEntry> = emptyList(),
+    @SerialName("reviewChapterIndices") val reviewChapterIndices: List<Int> = emptyList()
 )
 
 /** 方便与老代码兼容保留的 Chapter 定义（如果需要映射） */

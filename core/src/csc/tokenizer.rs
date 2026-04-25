@@ -96,8 +96,12 @@ impl CscTokenizer {
             offset_mapping.truncate(MAX_SEQ_LEN);
             // Ensure last token is [SEP]
             if let Some(sep_id) = self.inner.token_to_id("[SEP]") {
-                *input_ids.last_mut().unwrap() = sep_id as i64;
-                *offset_mapping.last_mut().unwrap() = None;
+                if let Some(last) = input_ids.last_mut() {
+                    *last = sep_id as i64;
+                }
+                if let Some(last) = offset_mapping.last_mut() {
+                    *last = None;
+                }
             }
         }
 

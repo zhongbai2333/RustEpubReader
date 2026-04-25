@@ -99,3 +99,8 @@ internal fun normalizeInternalHref(raw: String): String {
         .removePrefix("./")
         .trim('/')
 }
+
+internal fun extractAnchorFromHref(raw: String): String? {
+    val hashPos = raw.indexOf('#')
+    return if (hashPos >= 0) raw.substring(hashPos + 1).trim() else null
+}

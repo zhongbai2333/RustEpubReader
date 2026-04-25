@@ -203,7 +203,13 @@ fun ReaderScreen(
     cscModelLoading: Boolean = false,
     cscCorrections: List<com.zhongbai233.epub.reader.csc.CorrectionInfo> = emptyList(),
     onDownloadCscModel: () -> Unit = {},
-    onCscCorrectionStatusChange: (CscBlockCorrection, CorrectionStatus) -> Unit = { _, _ -> }
+    onCscCorrectionStatusChange: (CscBlockCorrection, CorrectionStatus) -> Unit = { _, _ -> },
+    // 段评
+    reviewChapterIndices: Set<Int> = emptySet(),
+    showReviewPanel: Boolean = false,
+    reviewPanelChapter: Int? = null,
+    onOpenReviewPanel: (Int, String?) -> Unit = { _, _ -> },
+    onCloseReviewPanel: () -> Unit = {}
 ) {
     var textSelection by remember { mutableStateOf<TextSelectionState?>(null) }
     var selectionAnchorRange by remember { mutableStateOf<TextSelectionState?>(null) }
@@ -241,6 +247,7 @@ fun ReaderScreen(
 
                 else -> {
                     val normalizedPath = normalizeInternalHref(link)
+                    val anchorId = extractAnchorFromHref(link)
                     if (normalizedPath.isBlank()) {
                         runCatching { uriHandler.openUri(link) }
                     } else {
@@ -253,7 +260,12 @@ fun ReaderScreen(
                         }
 
                         if (target >= 0) {
-                            onChapterChange(target)
+                            // Intercept review chapters (段评) — show overlay instead of navigating
+                            if (reviewChapterIndices.contains(target)) {
+                                onOpenReviewPanel(target, anchorId)
+                            } else {
+                                onChapterChange(target)
+                            }
                         } else {
                             runCatching { uriHandler.openUri(link) }
                         }
@@ -811,11 +823,17 @@ fun ReaderScreen(
                 onPrevChapter = {
                     if (currentChapter > 0) {
                         startAtLastPageRef[0] = true
-                        onChapterChange(currentChapter - 1)
+                        var prev = currentChapter - 1
+                        while (prev >= 0 && reviewChapterIndices.contains(prev)) prev--
+                        if (prev >= 0) onChapterChange(prev)
                     }
                 },
                 onNextChapter = {
-                    if (currentChapter < book.chapters.size - 1) onChapterChange(currentChapter + 1)
+                    if (currentChapter < book.chapters.size - 1) {
+                        var next = currentChapter + 1
+                        while (next < book.chapters.size && reviewChapterIndices.contains(next)) next++
+                        if (next < book.chapters.size) onChapterChange(next)
+                    }
                 },
                 onToggleControls = {
                     if (!showSettingsSheet) {

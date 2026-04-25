@@ -124,7 +124,7 @@ fn build_chapter_xhtml(
         };
 
         match block {
-            ContentBlock::Heading { level, spans } => {
+            ContentBlock::Heading { level, spans, .. } => {
                 let tag = format!("h{}", level.min(&6));
                 html.push_str(&format!("<{tag}>"));
                 for span in spans {
@@ -132,7 +132,7 @@ fn build_chapter_xhtml(
                 }
                 html.push_str(&format!("</{tag}>\n"));
             }
-            ContentBlock::Paragraph { spans } => {
+            ContentBlock::Paragraph { spans, .. } => {
                 html.push_str("<p>");
                 if let Some(hl) = highlight {
                     html.push_str(&format!("<span class=\"{}\">", hl.color.css_class()));

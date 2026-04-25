@@ -106,36 +106,35 @@ impl ReaderApp {
                                     let (dot_color, _label) = hl_color_info(&hl.color);
 
                                     // Extract highlighted text preview from book
-                                    let preview = self
-                                        .book
-                                        .as_ref()
-                                        .and_then(|b| b.chapters.get(hl.chapter))
-                                        .and_then(|ch| ch.blocks.get(hl.start_block))
-                                        .map(|block| {
-                                            let full: String = match block {
+                                    let preview =
+                                        self.book
+                                            .as_ref()
+                                            .and_then(|b| b.chapters.get(hl.chapter))
+                                            .and_then(|ch| ch.blocks.get(hl.start_block))
+                                            .map(|block| {
+                                                let full: String = match block {
                                                 reader_core::epub::ContentBlock::Paragraph {
-                                                    spans,
+                                                    spans, ..
                                                 } => {
                                                     spans.iter().map(|s| s.text.as_str()).collect()
                                                 }
                                                 reader_core::epub::ContentBlock::Heading {
-                                                    spans,
-                                                    ..
+                                                    spans, ..
                                                 } => {
                                                     spans.iter().map(|s| s.text.as_str()).collect()
                                                 }
                                                 _ => String::new(),
                                             };
-                                            let chars: Vec<char> = full.chars().collect();
-                                            let start = hl.start_offset.min(chars.len());
-                                            let end = hl.end_offset.min(chars.len());
-                                            if start < end {
-                                                chars[start..end].iter().collect::<String>()
-                                            } else {
-                                                chars.iter().take(40).collect::<String>()
-                                            }
-                                        })
-                                        .unwrap_or_default();
+                                                let chars: Vec<char> = full.chars().collect();
+                                                let start = hl.start_offset.min(chars.len());
+                                                let end = hl.end_offset.min(chars.len());
+                                                if start < end {
+                                                    chars[start..end].iter().collect::<String>()
+                                                } else {
+                                                    chars.iter().take(40).collect::<String>()
+                                                }
+                                            })
+                                            .unwrap_or_default();
 
                                     ui.horizontal(|ui| {
                                         let dot = egui::Button::new(" ")

@@ -205,11 +205,15 @@ impl ReaderApp {
                     );
                 });
                 ui.add_space(12.0);
-                let padding = 24.0_f32;
+                // Match the 32px horizontal padding used by the header so the
+                // last card always has a visible right margin.
+                let padding = 32.0_f32;
                 let gap = 16.0_f32;
                 let available_width = (ui.available_width() - padding * 2.0).max(0.0);
-                // Responsive: determine columns first, then compute card width to fill space
-                let min_card_w = 240.0_f32;
+                // Responsive: determine columns first, then compute card width to fill space.
+                // min_card_w 210 ensures the action button row (read + export + delete)
+                // fits within the content area at the smallest size.
+                let min_card_w = 210.0_f32;
                 let max_card_w = 420.0_f32;
                 let cols = ((available_width + gap) / (min_card_w + gap))
                     .floor()
@@ -220,12 +224,18 @@ impl ReaderApp {
                     ((available_width - gap * (cols as f32 - 1.0)) / cols as f32)
                         .clamp(min_card_w, max_card_w)
                 };
-                let card_height = (card_width * 0.6).clamp(140.0, 180.0);
-                let cover_w = (card_width * 0.33).clamp(70.0, 100.0);
+                // Fixed card height keeps rows uniform regardless of text wrapping.
+                let card_height = 160.0_f32;
+                // Cover takes a slightly larger share so artwork is more visible.
+                let cover_w = (card_width * 0.36).clamp(72.0, 110.0);
                 let chunks: Vec<Vec<usize>> = sorted.chunks(cols).map(|c| c.to_vec()).collect();
+                // Total width occupied by a full row; if cards were clamped to max_card_w
+                // there will be leftover space — split it evenly so left/right margins match.
+                let row_width = card_width * cols as f32 + gap * (cols as f32 - 1.0);
+                let leading_pad = padding + ((available_width - row_width).max(0.0) * 0.5);
                 for chunk in &chunks {
                     ui.horizontal(|ui| {
-                        ui.add_space(padding);
+                        ui.add_space(leading_pad);
                         for (ci, &idx) in chunk.iter().enumerate() {
                             let entry = &self.library.books[idx];
                             let title = entry.title.clone();
@@ -312,39 +322,42 @@ impl ReaderApp {
                                     .max_rect(content_rect)
                                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
                             );
+                            // Clip the child painter to content_rect so widgets never
+                            // paint outside the card border.
+                            let parent_clip = ui.clip_rect();
+                            child.set_clip_rect(parent_clip.intersect(content_rect));
                             child.add_space(4.0);
-                            // Dynamic title truncation based on available content width
-                            let max_title_chars = ((content_rect.width() / 11.0) as usize).max(6);
-                            let display_title = if title.chars().count() > max_title_chars {
-                                format!(
-                                    "{}…",
-                                    title.chars().take(max_title_chars - 1).collect::<String>()
+                            // Use egui's built-in single-line truncation so CJK titles
+                            // never wrap regardless of card width.
+                            child.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&title)
+                                        .size(15.0)
+                                        .strong()
+                                        .color(heading_color),
                                 )
-                            } else {
-                                title.clone()
-                            };
-                            child.label(
-                                egui::RichText::new(&display_title)
-                                    .size(15.0)
-                                    .strong()
-                                    .color(heading_color),
+                                .truncate(),
                             );
                             child.add_space(6.0);
-                            child.label(
-                                egui::RichText::new(
-                                    self.i18n.tf1(
-                                        "library.last_read_chapter",
-                                        entry
-                                            .last_chapter_title
-                                            .as_deref()
-                                            .unwrap_or(&format!("{}", chapter + 1)),
-                                    ),
+                            child.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        self.i18n.tf1(
+                                            "library.last_read_chapter",
+                                            entry
+                                                .last_chapter_title
+                                                .as_deref()
+                                                .unwrap_or(&format!("{}", chapter + 1)),
+                                        ),
+                                    )
+                                    .size(12.0)
+                                    .color(subtitle_color),
                                 )
-                                .size(12.0)
-                                .color(subtitle_color),
+                                .truncate(),
                             );
-                            child.add_space(16.0);
+                            child.add_space(8.0);
                             child.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
                                 let read_btn = egui::Button::new(
                                     egui::RichText::new(self.i18n.t("library.continue_reading"))
                                         .size(12.5)
@@ -353,18 +366,17 @@ impl ReaderApp {
                                 .fill(accent)
                                 .stroke(Stroke::NONE)
                                 .corner_radius(CornerRadius::same(5))
-                                .min_size(Vec2::new(80.0, 28.0));
+                                .min_size(Vec2::new(0.0, 26.0));
                                 if ui.add(read_btn).clicked() {
                                     action_open_path = Some((path.clone(), chapter));
                                 }
-                                ui.add_space(4.0);
                                 let export_btn = egui::Button::new(
-                                    egui::RichText::new("↗").size(13.0).color(subtitle_color),
+                                    egui::RichText::new("↗").size(12.0).color(subtitle_color),
                                 )
                                 .fill(Color32::TRANSPARENT)
                                 .stroke(Stroke::new(1.0, border_color))
                                 .corner_radius(CornerRadius::same(5))
-                                .min_size(Vec2::new(28.0, 28.0));
+                                .min_size(Vec2::new(24.0, 26.0));
                                 if ui
                                     .add(export_btn)
                                     .on_hover_text(self.i18n.t("toolbar.export"))
@@ -372,14 +384,13 @@ impl ReaderApp {
                                 {
                                     action_export_path = Some(path.clone());
                                 }
-                                ui.add_space(4.0);
                                 let del_btn = egui::Button::new(
-                                    egui::RichText::new("🗑").size(13.0).color(subtitle_color),
+                                    egui::RichText::new("🗑").size(12.0).color(subtitle_color),
                                 )
                                 .fill(Color32::TRANSPARENT)
                                 .stroke(Stroke::new(1.0, border_color))
                                 .corner_radius(CornerRadius::same(5))
-                                .min_size(Vec2::new(28.0, 28.0));
+                                .min_size(Vec2::new(24.0, 26.0));
                                 if ui.add(del_btn).clicked() {
                                     action_remove_path = Some(path.clone());
                                 }

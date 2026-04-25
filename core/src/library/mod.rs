@@ -101,6 +101,14 @@ impl Library {
             }
             Err(e) => eprintln!("[Library] failed to serialize library: {}", e),
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(mut perm) = std::fs::metadata(&path).map(|m| m.permissions()) {
+                perm.set_mode(0o600);
+                let _ = std::fs::set_permissions(&path, perm);
+            }
+        }
     }
 
     pub fn add_or_update(
@@ -448,6 +456,14 @@ impl Library {
         if let Ok(data) = serde_json::to_string_pretty(&cfg) {
             if let Err(e) = std::fs::write(&config_path, &data) {
                 eprintln!("[Library] failed to write config {:?}: {}", config_path, e);
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(mut perm) = std::fs::metadata(&config_path).map(|m| m.permissions()) {
+                    perm.set_mode(0o600);
+                    let _ = std::fs::set_permissions(&config_path, perm);
+                }
             }
         }
     }

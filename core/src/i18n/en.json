@@ -353,5 +353,8 @@
   "settings.csc_settings": "Chinese Spell Check",
   "settings.csc_mode": "Correction Mode",
   "settings.csc_threshold": "Threshold",
-  "settings.chars": "chars"
+  "settings.chars": "chars",
+  "review.panel_title": "Reviews",
+  "review.show_current_only": "🔍 Current Only",
+  "review.show_all": "📖 Show All"
 }

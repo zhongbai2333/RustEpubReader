@@ -45,9 +45,13 @@ pub enum ContentBlock {
     Heading {
         level: u8,
         spans: Vec<TextSpan>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor_id: Option<String>,
     },
     Paragraph {
         spans: Vec<TextSpan>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor_id: Option<String>,
     },
     Image {
         data: Arc<Vec<u8>>,
