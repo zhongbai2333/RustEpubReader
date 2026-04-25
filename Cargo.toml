@@ -4,6 +4,6 @@ resolver = "2"
 
 # ── Unified app version (edit here to update globally) ──
 [workspace.package]
-version = "1.0.2"
+version = "1.0.3"
 authors = ["zhongbai233"]
 license = "Apache-2.0"
