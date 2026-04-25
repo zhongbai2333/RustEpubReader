@@ -170,6 +170,13 @@ fun AboutScreen(
             )
             Spacer(Modifier.height(8.dp))
             OpenSourceEntry(
+                name = "rbook",
+                license = "Apache 2.0",
+                url = "https://crates.io/crates/rbook",
+                uriHandler = { uriHandler.openUri(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+            OpenSourceEntry(
                 name = "Jetpack Compose",
                 license = "Apache 2.0",
                 url = "https://developer.android.com/jetpack/compose",

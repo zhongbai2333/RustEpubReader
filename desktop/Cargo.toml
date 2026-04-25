@@ -27,11 +27,10 @@ rodio = "0.20"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 [features]
-default = ["csc", "directml"]
+# CSC is now a tiny client (~50 KB) that loads a separately-distributed
+# dynamic library at runtime. Safe to enable by default.
+default = ["csc"]
 csc = ["reader_core/csc"]
-cuda = ["csc", "reader_core/cuda"]
-tensorrt = ["csc", "reader_core/tensorrt"]
-directml = ["csc", "reader_core/directml"]
 vendored-openssl = ["openssl/vendored"]
 
 [target.'cfg(windows)'.build-dependencies]

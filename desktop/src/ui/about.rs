@@ -292,9 +292,9 @@ impl ReaderApp {
                 ui.add_space(4.0);
                 open_source_row(
                     ui,
-                    "epub",
-                    "MIT",
-                    "https://crates.io/crates/epub",
+                    "rbook",
+                    "Apache 2.0",
+                    "https://crates.io/crates/rbook",
                     self.i18n.t("about.view_license"),
                 );
 

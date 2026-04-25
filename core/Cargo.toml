@@ -7,10 +7,10 @@ license.workspace = true
 [features]
 default = []
 keychain = ["keyring"]
-csc = ["ort", "tokenizers"]
-cuda = ["csc", "ort/cuda"]
-tensorrt = ["csc", "ort/tensorrt"]
-directml = ["csc", "ort/directml"]
+# CSC dynamic-plugin client side. Pulls in `libloading` only (~50 KB binary cost).
+# The actual ONNX inference engine is downloaded separately at runtime
+# from the RustEpubReader-Model repo.
+csc = ["libloading"]
 
 [dependencies]
 rbook = { version = "0.7.6", default-features = false }
@@ -32,6 +32,5 @@ encoding_rs = "0.8"
 epub-builder = "0.7"
 regex = "1"
 thiserror = "2"
-# CSC (Chinese Spelling Correction)
-ort = { version = "2.0.0-rc.12", features = ["download-binaries", "ndarray"], optional = true }
-tokenizers = { version = "0.21", optional = true }
+# CSC dynamic plugin loader
+libloading = { version = "0.8", optional = true }

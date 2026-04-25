@@ -247,26 +247,34 @@ impl ReaderApp {
         let logs = self.feedback_logs.clone();
 
         std::thread::spawn(move || {
-            let dir = reader_core::csc::model::model_dir(&data_dir);
-            let _ = std::fs::create_dir_all(&dir);
-            let files = reader_core::csc::model::required_files();
+            let model_root = reader_core::csc::model::model_dir(&data_dir);
+            let _ = std::fs::create_dir_all(&model_root);
+            // Model files + the dynamic plugin matched to this platform.
+            // GPU acceleration (DirectML on Windows) is preferred when available.
+            let files = reader_core::csc::model::required_files(&data_dir, true);
             let total = files.len() as f32;
             crate::app::dbg_log(
                 &logs,
                 format!(
-                    "[CSC] download thread: {} files to fetch, dir={}",
+                    "[CSC] download thread: {} files to fetch, data_dir={}",
                     files.len(),
-                    dir.display()
+                    data_dir
                 ),
             );
 
-            for (i, (url, filename)) in files.iter().enumerate() {
+            for (i, (url, dest)) in files.iter().enumerate() {
                 *progress.lock().unwrap() = i as f32 / total;
                 if let Some(ctx) = &ctx {
                     ctx.request_repaint();
                 }
 
-                let dest = dir.join(filename);
+                if let Some(parent) = dest.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let filename = dest
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 crate::app::dbg_log(
                     &logs,
                     format!(
@@ -277,7 +285,7 @@ impl ReaderApp {
                         dest.display()
                     ),
                 );
-                match reqwest::blocking::get(*url) {
+                match reqwest::blocking::get(url.as_str()) {
                     Ok(resp) => {
                         let status = resp.status();
                         if status.is_success() {
@@ -291,7 +299,7 @@ impl ReaderApp {
                                             bytes.len()
                                         ),
                                     );
-                                    if let Err(e) = std::fs::write(&dest, &bytes) {
+                                    if let Err(e) = std::fs::write(dest, &bytes) {
                                         crate::app::dbg_log(
                                             &logs,
                                             format!("[CSC] ERROR writing {}: {}", filename, e),

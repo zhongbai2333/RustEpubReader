@@ -16,6 +16,12 @@ android {
         versionName = (project.findProperty("APP_VERSION_NAME") as String?) ?: "1.0.0"
         // Expose version to Kotlin code via BuildConfig
         buildConfigField("String", "APP_VERSION_NAME", "\"${versionName}\"")
+
+        // Only ship native libs for ABIs we actually build for. Drops ~50% of the
+        // onnxruntime-android AAR (no x86 / armeabi-v7a binaries) right away.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     signingConfigs {
@@ -41,13 +47,77 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.findByName("release")
                 ?: signingConfigs.getByName("debug")
+            ndk {
+                debugSymbolLevel = "NONE"
+            }
         }
+    }
+
+    // Produce one APK per ABI (arm64-v8a, x86_64) instead of a fat universal APK.
+    // This roughly halves the install size for end users.
+    //
+    // splits.abi conflicts with defaultConfig.ndk.abiFilters (AGP refuses to
+    // configure when both are set), so only enable splits for release builds.
+    // Debug builds keep abiFilters and produce a single APK that's debuggable
+    // / installable from Android Studio without picking a per-ABI variant.
+    val enableAbiSplits = gradle.startParameter.taskNames.any { taskName ->
+        taskName.contains("Release", ignoreCase = true) ||
+                taskName.contains("Bundle", ignoreCase = true)
+    }
+    if (enableAbiSplits) {
+        splits {
+            abi {
+                isEnable = true
+                reset()
+                include("arm64-v8a", "x86_64")
+                isUniversalApk = false
+            }
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+            // Ask R8/AGP to keep .so files compressed-and-page-aligned only when needed.
+            keepDebugSymbols += listOf()
+            // Do NOT bundle ONNX Runtime native libs in the APK. They are
+            // downloaded on-demand to filesDir and dlopen'd by CscNativeLoader.
+            // This trims ~25 MB per ABI from the install size.
+            excludes += listOf(
+                "**/libonnxruntime.so",
+                "**/libonnxruntime4j_jni.so"
+            )
+        }
+        resources {
+            excludes += listOf(
+                "META-INF/*.kotlin_module",
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt",
+                "META-INF/NOTICE.md",
+                "META-INF/*.version",
+                "**/*.kotlin_metadata",
+                "kotlin-tooling-metadata.json"
+            )
+        }
+    }
+
+    bundle {
+        language { enableSplit = true }
+        density { enableSplit = true }
+        abi { enableSplit = true }
     }
 
     compileOptions {

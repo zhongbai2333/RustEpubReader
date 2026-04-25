@@ -1030,8 +1030,25 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             android.util.Log.i("CSC", "Model not downloaded yet")
             return
         }
+        if (!com.epub.reader.csc.CscNativeLoader.isAvailable(context)) {
+            android.util.Log.i("CSC", "ONNX Runtime native libs not downloaded yet")
+            return
+        }
         cscModelLoading = true
         viewModelScope.launch(Dispatchers.IO) {
+            // dlopen the runtime libs before any ai.onnxruntime.* class is touched.
+            val nativeResult = com.epub.reader.csc.CscNativeLoader.ensureLoaded(context)
+            if (nativeResult.isFailure) {
+                withContext(Dispatchers.Main) {
+                    cscModelLoading = false
+                    android.util.Log.e(
+                        "CSC",
+                        "Native loader failed",
+                        nativeResult.exceptionOrNull()
+                    )
+                }
+                return@launch
+            }
             val result = cscEngine.load(dataDir)
             withContext(Dispatchers.Main) {
                 cscModelLoading = false
@@ -1053,6 +1070,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         cscModelLoading = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // 1. Pull the ONNX Runtime native libraries that we deliberately
+                //    excluded from the APK to keep the install size small.
+                val nativeRes = com.epub.reader.csc.CscNativeLoader.ensureLoaded(context)
+                if (nativeRes.isFailure) {
+                    throw nativeRes.exceptionOrNull()
+                        ?: IllegalStateException("Native loader failed")
+                }
+                // 2. Pull the model + vocab.
                 downloadFile(CscEngine.MODEL_URL, CscEngine.modelPath(dataDir))
                 downloadFile(CscEngine.VOCAB_URL, CscEngine.vocabPath(dataDir))
                 withContext(Dispatchers.Main) {

@@ -7,3 +7,23 @@ resolver = "2"
 version = "1.0.3"
 authors = ["zhongbai233"]
 license = "Apache-2.0"
+
+# ── Aggressive size-optimized release profile ──
+# Trade compile time for the smallest possible binary.
+# If you need a faster (but larger) binary, build with `--profile release-fast`.
+[profile.release]
+opt-level = "z"        # optimize for size
+lto = "fat"            # cross-crate link-time optimization
+codegen-units = 1      # better inlining / dead-code removal at the cost of compile time
+strip = "symbols"      # remove all symbols from the final binary
+panic = "abort"        # no unwinding tables
+incremental = false
+debug = false
+overflow-checks = false
+
+# A faster-build alternative (used only when explicitly requested).
+[profile.release-fast]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 16

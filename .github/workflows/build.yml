@@ -314,7 +314,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build release binary (macOS amd64)
-        run: cargo build --release -p rust_epub_reader --target x86_64-apple-darwin --no-default-features --features vendored-openssl
+        run: cargo build --release -p rust_epub_reader --target x86_64-apple-darwin --no-default-features --features vendored-openssl,csc
 
       - name: Bundle artifacts
         shell: bash
@@ -420,12 +420,25 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then
+          shopt -s nullglob
+          # ABI splits produce one APK per ABI; copy each, naming by ABI.
+          # Expected names like app-arm64-v8a-release.apk / app-x86_64-release.apk
+          found=0
+          for apk in android/app/build/outputs/apk/release/*.apk; do
+            base=$(basename "$apk" .apk)
+            # Try to extract the abi tag (arm64-v8a, x86_64, ...) from the filename.
+            abi=$(echo "$base" | sed -nE 's/.*-(arm64-v8a|armeabi-v7a|x86_64|x86)-release.*/\1/p')
+            if [ -z "$abi" ]; then
+              abi="universal"
+            fi
+            cp "$apk" "dist/RustEpubReader-Android-${abi}-${GITHUB_REF_NAME}.apk"
+            found=$((found+1))
+          done
+          if [ "$found" -eq 0 ]; then
             echo "ERROR: No APK found"
             exit 1
           fi
-          cp "$APK" "dist/RustEpubReader-Android-${GITHUB_REF_NAME}.apk"
+          ls -la dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
