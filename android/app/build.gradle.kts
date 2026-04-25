@@ -17,11 +17,12 @@ android {
         // Expose version to Kotlin code via BuildConfig
         buildConfigField("String", "APP_VERSION_NAME", "\"${versionName}\"")
 
-        // Only ship native libs for ABIs we actually build for. Drops ~50% of the
-        // onnxruntime-android AAR (no x86 / armeabi-v7a binaries) right away.
-        ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
-        }
+        // NOTE: We do NOT set `ndk.abiFilters` here on purpose. AGP 8 + Gradle 9
+        // refuses to start when defaultConfig.ndk.abiFilters and splits.abi
+        // filters are both set ("Conflicting configuration"). The ABI list is
+        // declared once in the `splits { abi { include(...) } }` block below;
+        // that single source of truth controls both packaging and which native
+        // libs ship in each per-ABI APK.
     }
 
     signingConfigs {
@@ -62,23 +63,12 @@ android {
 
     // Produce one APK per ABI (arm64-v8a, x86_64) instead of a fat universal APK.
     // This roughly halves the install size for end users.
-    //
-    // splits.abi conflicts with defaultConfig.ndk.abiFilters (AGP refuses to
-    // configure when both are set), so only enable splits for release builds.
-    // Debug builds keep abiFilters and produce a single APK that's debuggable
-    // / installable from Android Studio without picking a per-ABI variant.
-    val enableAbiSplits = gradle.startParameter.taskNames.any { taskName ->
-        taskName.contains("Release", ignoreCase = true) ||
-                taskName.contains("Bundle", ignoreCase = true)
-    }
-    if (enableAbiSplits) {
-        splits {
-            abi {
-                isEnable = true
-                reset()
-                include("arm64-v8a", "x86_64")
-                isUniversalApk = false
-            }
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = false
         }
     }
 

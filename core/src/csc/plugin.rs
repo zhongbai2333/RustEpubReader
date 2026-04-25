@@ -6,11 +6,12 @@
 //! `libloading` and exposes a safe Rust wrapper around its C ABI.
 //!
 //! ABI version is checked at load time; mismatch returns an error.
+#![cfg(feature = "csc")]
 
 use crate::epub::{CorrectionInfo, CorrectionStatus};
 use libloading::{Library, Symbol};
 use serde::Deserialize;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
 
 /// Bumped when the C ABI surface changes incompatibly.
@@ -36,7 +37,8 @@ type FnEngineLoad = unsafe extern "C" fn(
 ) -> i32;
 type FnEngineLastError = unsafe extern "C" fn(*const CscEngineFfi) -> *const c_char;
 type FnEngineEp = unsafe extern "C" fn(*const CscEngineFfi) -> *const c_char;
-type FnEngineCheck = unsafe extern "C" fn(*mut CscEngineFfi, *const c_char, f32) -> *mut c_char;
+type FnEngineCheck =
+    unsafe extern "C" fn(*mut CscEngineFfi, *const c_char, f32) -> *mut c_char;
 type FnStringFree = unsafe extern "C" fn(*mut c_char);
 
 struct VTable {
@@ -185,8 +187,9 @@ impl PluginHandle {
         let model_c = path_to_cstring(model_path);
         let vocab_c = path_to_cstring(vocab_path);
         let ep_c = CString::new(ep_hint.replace('\0', "")).unwrap_or_default();
-        let rc =
-            unsafe { (fns.engine_load)(engine, model_c.as_ptr(), vocab_c.as_ptr(), ep_c.as_ptr()) };
+        let rc = unsafe {
+            (fns.engine_load)(engine, model_c.as_ptr(), vocab_c.as_ptr(), ep_c.as_ptr())
+        };
         if rc != 0 {
             let msg = read_last_error(&fns, engine).unwrap_or_else(|| format!("rc={rc}"));
             unsafe { (fns.engine_free)(engine) };
@@ -217,7 +220,8 @@ impl PluginHandle {
         let Ok(text_c) = CString::new(cleaned) else {
             return Vec::new();
         };
-        let resp_ptr = unsafe { (self.fns.engine_check)(self.engine, text_c.as_ptr(), threshold) };
+        let resp_ptr =
+            unsafe { (self.fns.engine_check)(self.engine, text_c.as_ptr(), threshold) };
         if resp_ptr.is_null() {
             return Vec::new();
         }
@@ -226,7 +230,8 @@ impl PluginHandle {
             .into_owned();
         unsafe { (self.fns.string_free)(resp_ptr) };
 
-        let entries: Vec<WireCorrection> = serde_json::from_str(&resp_json).unwrap_or_default();
+        let entries: Vec<WireCorrection> =
+            serde_json::from_str(&resp_json).unwrap_or_default();
         entries
             .into_iter()
             .map(|e| CorrectionInfo {
