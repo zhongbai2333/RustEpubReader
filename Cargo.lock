@@ -4740,7 +4740,7 @@ dependencies = [
 
 [[package]]
 name = "rust_epub_reader"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "base64",
