@@ -38,6 +38,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -63,6 +64,9 @@ internal fun ReaderTopBar(
     chapterTitle: String?,
     currentChapter: Int,
     totalChapters: Int,
+    chapterProgress: Float,
+    statusText: String,
+    @Suppress("UNUSED_PARAMETER") batteryPercent: Int? = null,
     isDarkMode: Boolean,
     previousChapter: Int?,
     isBookmarked: Boolean = false,
@@ -83,8 +87,26 @@ internal fun ReaderTopBar(
                 )
                 if (chapterTitle != null) {
                     Text(
-                        "${currentChapter + 1}/$totalChapters  $chapterTitle",
+                        "${currentChapter + 1}/$totalChapters  ·  $chapterTitle",
                         fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { chapterProgress.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .height(2.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+                if (statusText.isNotBlank()) {
+                    Text(
+                        statusText,
+                        fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -194,7 +216,7 @@ internal fun ReaderBottomBar(
                 }
 
                 // 日/夜间模式
-                IconButton(onClick = { onToggleDarkMode(); onOpenSettings() }) {
+                IconButton(onClick = onToggleDarkMode) {
                     if (isDarkMode) {
                         Icon(Icons.Default.DarkMode, I18n.t("nav.dark_mode"))
                     } else {

@@ -27,12 +27,18 @@ impl ReaderApp {
                 let title_height = if first_is_heading {
                     TITLE_SPACING
                 } else {
-                    self.font_size * 2.0 + TITLE_SPACING
+                    self.font_size * self.title_font_scale * 1.2 + TITLE_SPACING
                 };
                 let usable = (available_height - FRAME_MARGIN).max(100.0);
                 let mut first_page = true;
                 for (i, block) in blocks.iter().enumerate() {
-                    let bh = estimate_block_height(block, self.font_size, line_height, max_width);
+                    let bh = estimate_block_height(
+                        block,
+                        self.font_size,
+                        self.title_font_scale,
+                        line_height,
+                        max_width,
+                    );
                     let page_budget = if first_page {
                         usable - title_height
                     } else {
@@ -139,23 +145,13 @@ impl ReaderApp {
                     self.last_avail_width = available_width;
                     self.last_avail_height = available_height;
                 }
-                let dual_column = !self.scroll_mode && available_width > DUAL_COLUMN_THRESHOLD;
+                let layout =
+                    reader_text_layout(available_width, available_height, self.scroll_mode);
+                let dual_column = layout.is_dual_column;
                 is_dual_column = dual_column;
                 self.is_dual_column = dual_column;
-                let (text_width, h_margin) = if dual_column {
-                    let col_w = (available_width - DUAL_COLUMN_GAP) / 2.0;
-                    let tw = (col_w - DUAL_COLUMN_PADDING).min(MAX_COLUMN_WIDTH);
-                    let hm = ((col_w - tw) / 2.0).max(MIN_COLUMN_MARGIN);
-                    (tw, hm)
-                } else {
-                    let hm = if available_width > MAX_TEXT_WIDTH_SINGLE {
-                        (available_width - MAX_TEXT_WIDTH_SINGLE) / 2.0
-                    } else {
-                        SINGLE_MIN_MARGIN
-                    };
-                    let tw = MAX_TEXT_WIDTH_SINGLE.min(available_width - SINGLE_TEXT_PADDING);
-                    (tw, hm)
-                };
+                let text_width = layout.text_width;
+                let h_margin = layout.h_margin;
                 let title = chapter.title.clone();
                 let blocks = chapter.blocks.clone();
                 let total_ch = book.chapters.len();
@@ -226,6 +222,7 @@ impl ReaderApp {
                             block_end,
                             show_title,
                             self.font_size,
+                            self.title_font_scale,
                             self.reader_bg_color,
                             self.current_chapter,
                             total_ch,
@@ -307,6 +304,7 @@ impl ReaderApp {
                                                 fle,
                                                 from_left == 0,
                                                 self.font_size,
+                                                self.title_font_scale,
                                                 self.reader_bg_color,
                                                 self.current_chapter,
                                                 total_ch,
@@ -353,6 +351,7 @@ impl ReaderApp {
                                                     fre,
                                                     false,
                                                     self.font_size,
+                                                    self.title_font_scale,
                                                     self.reader_bg_color,
                                                     self.current_chapter,
                                                     total_ch,
@@ -401,6 +400,7 @@ impl ReaderApp {
                                                 fle,
                                                 from_left == 0,
                                                 self.font_size,
+                                                self.title_font_scale,
                                                 self.reader_bg_color,
                                                 self.current_chapter,
                                                 total_ch,
@@ -448,6 +448,7 @@ impl ReaderApp {
                                                     fre,
                                                     false,
                                                     self.font_size,
+                                                    self.title_font_scale,
                                                     self.reader_bg_color,
                                                     self.current_chapter,
                                                     total_ch,
@@ -523,6 +524,7 @@ impl ReaderApp {
                                     tle,
                                     to_left == 0,
                                     self.font_size,
+                                    self.title_font_scale,
                                     self.reader_bg_color,
                                     self.current_chapter,
                                     total_ch,
@@ -563,6 +565,7 @@ impl ReaderApp {
                                             tre,
                                             false,
                                             self.font_size,
+                                            self.title_font_scale,
                                             self.reader_bg_color,
                                             self.current_chapter,
                                             total_ch,
@@ -592,6 +595,7 @@ impl ReaderApp {
                                     block_end,
                                     show_title,
                                     self.font_size,
+                                    self.title_font_scale,
                                     self.reader_bg_color,
                                     self.current_chapter,
                                     total_ch,
@@ -625,6 +629,7 @@ impl ReaderApp {
                                         re,
                                         right_page == 0,
                                         self.font_size,
+                                        self.title_font_scale,
                                         self.reader_bg_color,
                                         self.current_chapter,
                                         total_ch,
@@ -737,6 +742,7 @@ impl ReaderApp {
                                                 fe.min(snap_blocks.len()),
                                                 from_idx == 0,
                                                 self.font_size,
+                                                self.title_font_scale,
                                                 self.reader_bg_color,
                                                 self.current_chapter,
                                                 total_ch,
@@ -782,6 +788,7 @@ impl ReaderApp {
                                                 fe.min(blocks.len()),
                                                 from_idx == 0,
                                                 self.font_size,
+                                                self.title_font_scale,
                                                 self.reader_bg_color,
                                                 self.current_chapter,
                                                 total_ch,
@@ -847,6 +854,7 @@ impl ReaderApp {
                                     te.min(blocks.len()),
                                     to_idx == 0,
                                     self.font_size,
+                                    self.title_font_scale,
                                     self.reader_bg_color,
                                     self.current_chapter,
                                     total_ch,
@@ -873,6 +881,7 @@ impl ReaderApp {
                                 block_end,
                                 show_title,
                                 self.font_size,
+                                self.title_font_scale,
                                 self.reader_bg_color,
                                 self.current_chapter,
                                 total_ch,
@@ -1026,7 +1035,7 @@ impl ReaderApp {
                     None
                 };
                 if let Some(idx) = target_idx {
-                    // Check if target is a review chapter (段评) — show overlay instead of navigating
+                    // Check if target is a review chapter (娈佃瘎) 鈥?show overlay instead of navigating
                     if self
                         .book
                         .as_ref()
@@ -1075,7 +1084,7 @@ impl ReaderApp {
             }
         }
 
-        // ── Custom text selection state machine ──
+        // 鈹€鈹€ Custom text selection state machine 鈹€鈹€
         let block_galleys: Vec<BlockGalleyEntry> =
             BLOCK_GALLEYS.with(|bg| bg.borrow_mut().drain(..).collect());
 
@@ -1120,7 +1129,7 @@ impl ReaderApp {
                         self.clicked_highlight_id = None;
                     }
                 } else {
-                    // Clicked outside any block → clear everything
+                    // Clicked outside any block 鈫?clear everything
                     self.sel_press_origin = None;
                     self.text_selection = None;
                     self.clicked_highlight_id = None;
@@ -1129,7 +1138,7 @@ impl ReaderApp {
                 // If we have a pending press origin but no selection yet, check threshold
                 if let Some((origin, block_idx, char_idx)) = self.sel_press_origin {
                     if (pos - origin).length() >= DRAG_THRESHOLD {
-                        // Threshold exceeded → promote to real selection
+                        // Threshold exceeded 鈫?promote to real selection
                         let cur_hit = hit_test(pos).unwrap_or((block_idx, char_idx));
                         self.text_selection = Some(TextSelection {
                             start_block: block_idx,
@@ -1148,18 +1157,18 @@ impl ReaderApp {
                             sel.end_block = block_idx;
                             sel.end_char = char_idx;
                         } else {
-                            // Pointer is outside any block — find the closest block
+                            // Pointer is outside any block 鈥?find the closest block
                             // above or below to extend selection
                             let mut best: Option<(usize, usize)> = None;
                             for (idx, galley, rect, _) in &block_galleys {
                                 if pos.y < rect.min.y {
-                                    // Above this block → first char
+                                    // Above this block 鈫?first char
                                     if best.as_ref().is_none_or(|(best_idx, _)| *idx < *best_idx) {
                                         best = Some((*idx, 0));
                                     }
                                     break;
                                 } else if pos.y > rect.max.y {
-                                    // Below this block → last char
+                                    // Below this block 鈫?last char
                                     let end = galley.text().chars().count();
                                     best = Some((*idx, end));
                                 }
@@ -1185,7 +1194,7 @@ impl ReaderApp {
                                 && press_char >= h.start_offset
                                 && press_char < h.end_offset
                         }) {
-                            // Found a highlight under the click → show note popup
+                            // Found a highlight under the click 鈫?show note popup
                             handled_as_highlight = true;
                             self.clicked_highlight_id = Some(hl.id.clone());
                             self.hl_note_just_opened = true;
@@ -1206,7 +1215,7 @@ impl ReaderApp {
                             self.text_selection = None;
                         }
                     }
-                    // Plain click on text (no highlight, no drag) → page turn
+                    // Plain click on text (no highlight, no drag) 鈫?page turn
                     let hit_csc_rect = CSC_RECTS
                         .with(|rects| rects.borrow().iter().any(|cr| cr.rect.contains(press_pos)));
                     if !handled_as_highlight
@@ -1241,12 +1250,12 @@ impl ReaderApp {
                                 } else if is_dual_column {
                                     if self.current_page + 2 < self.total_pages {
                                         self.trigger_page_animation_to(self.current_page + 2, 1.0);
-                                    } else {
+                                    } else if self.current_chapter + 1 < self.total_chapters() {
                                         self.capture_cross_chapter_snapshot();
                                         self.next_chapter();
                                         self.start_cross_chapter_animation(1.0);
                                     }
-                                } else {
+                                } else if self.current_page + 1 < self.total_pages {
                                     self.next_page();
                                 }
                             }
@@ -1275,7 +1284,7 @@ impl ReaderApp {
             }
         }
 
-        // ── Draw selection highlight overlay (blue rectangles) ──
+        // 鈹€鈹€ Draw selection highlight overlay (blue rectangles) 鈹€鈹€
         if let Some(sel) = &self.text_selection {
             let (sb, sc, eb, ec) = sel.normalized_range();
             for (idx, galley, rect, text) in &block_galleys {
@@ -1324,7 +1333,7 @@ impl ReaderApp {
             }
         }
 
-        // ── Extract selected text from block galleys ──
+        // 鈹€鈹€ Extract selected text from block galleys 鈹€鈹€
         let selected_text: String = self
             .text_selection
             .as_ref()
@@ -1354,7 +1363,7 @@ impl ReaderApp {
             })
             .unwrap_or_default();
 
-        // ── Show floating selection toolbar (when selection finalized) ──
+        // 鈹€鈹€ Show floating selection toolbar (when selection finalized) 鈹€鈹€
         if let Some(sel) = &self.text_selection {
             if !sel.is_dragging && !selected_text.is_empty() && !self.csc_custom_replace_active {
                 let (sb, _, eb, _) = sel.normalized_range();
@@ -1423,7 +1432,7 @@ impl ReaderApp {
                         self.text_selection = None;
                     }
                     SelToolbarResult::CustomReplace => {
-                        // Activate custom replacement popup — keep selection for reference
+                        // Activate custom replacement popup 鈥?keep selection for reference
                         self.csc_custom_replace_buf.clear();
                         self.csc_custom_replace_active = true;
                     }
@@ -1431,7 +1440,7 @@ impl ReaderApp {
             }
         }
 
-        // ── Custom CSC replacement popup (ReadWrite mode) ──
+        // 鈹€鈹€ Custom CSC replacement popup (ReadWrite mode) 鈹€鈹€
         if self.csc_custom_replace_active {
             if let Some(sel) = &self.text_selection {
                 let popup_pos = self.sel_toolbar_pos;
@@ -1558,7 +1567,7 @@ impl ReaderApp {
             }
         }
 
-        // ── Floating note popup for clicked highlight ──
+        // 鈹€鈹€ Floating note popup for clicked highlight 鈹€鈹€
         if let Some(hl_id) = self.clicked_highlight_id.clone() {
             let popup_pos = self.hl_note_toolbar_pos;
 
@@ -1585,7 +1594,7 @@ impl ReaderApp {
                                 |ui| {
                                     // Delete highlight button
                                     if ui
-                                        .small_button("🗑")
+                                        .small_button("馃棏")
                                         .on_hover_text(self.i18n.t("context.delete_highlight"))
                                         .clicked()
                                     {
@@ -1671,7 +1680,7 @@ impl ReaderApp {
             }
         }
 
-        // ── CSC correction click detection + popup ──
+        // 鈹€鈹€ CSC correction click detection + popup 鈹€鈹€
         {
             // Check if user clicked on a correction rect (ReadWrite mode)
             let any_click = ui.ctx().input(|i| i.pointer.primary_clicked());
@@ -1710,13 +1719,13 @@ impl ReaderApp {
                     .interactable(true)
                     .show(ui.ctx(), |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            // Info line: original → corrected (confidence%)
+                            // Info line: original 鈫?corrected (confidence%)
                             ui.horizontal(|ui| {
                                 ui.colored_label(Color32::from_rgb(220, 60, 50), &popup.original);
                                 ui.label("→");
                                 ui.colored_label(Color32::from_rgb(60, 180, 80), &popup.corrected);
                                 ui.label(format!(
-                                    "  {}：{:.1}%",
+                                    "  {}: {:.1}%",
                                     self.i18n.t("csc.confidence"),
                                     popup.confidence * 100.0
                                 ));

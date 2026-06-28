@@ -146,15 +146,55 @@ pub(crate) fn build_csc_char_mapping(
 
 // Layout constants
 pub(crate) const DUAL_COLUMN_THRESHOLD: f32 = 1050.0;
-pub(crate) const MAX_TEXT_WIDTH_SINGLE: f32 = 850.0;
 pub(crate) const DUAL_COLUMN_GAP: f32 = 30.0;
-pub(crate) const DUAL_COLUMN_PADDING: f32 = 64.0;
-pub(crate) const MAX_COLUMN_WIDTH: f32 = 600.0;
-pub(crate) const MIN_COLUMN_MARGIN: f32 = 28.0;
-pub(crate) const SINGLE_MIN_MARGIN: f32 = 40.0;
-pub(crate) const SINGLE_TEXT_PADDING: f32 = 80.0;
+pub(crate) const DUAL_COLUMN_PADDING: f32 = 48.0;
+pub(crate) const MIN_COLUMN_MARGIN: f32 = 20.0;
+pub(crate) const SINGLE_MIN_MARGIN: f32 = 24.0;
+pub(crate) const SINGLE_TEXT_PADDING: f32 = 48.0;
 pub(crate) const TITLE_SPACING: f32 = 40.0;
-pub(crate) const FRAME_MARGIN: f32 = 104.0;
+pub(crate) const READER_CONTENT_TOP_PADDING: f32 = 48.0;
+pub(crate) const READER_CONTENT_BOTTOM_PADDING: f32 = 80.0;
+pub(crate) const FRAME_MARGIN: f32 = READER_CONTENT_TOP_PADDING + READER_CONTENT_BOTTOM_PADDING;
+
+/// Computed reader content layout for the current viewport.
+pub(crate) struct ReaderTextLayout {
+    pub(crate) is_dual_column: bool,
+    pub(crate) text_width: f32,
+    pub(crate) h_margin: f32,
+}
+
+/// Choose dual-column layout only when the viewport is both wide enough and landscape-like.
+///
+/// The original fixed width caps (`850px` for single column and `600px` for each dual column)
+/// made text occupy less than half of the page on high-DPI / 4K displays. This responsive
+/// calculation keeps a modest visual margin while allowing the text area to scale with the
+/// actual egui point width.
+pub(crate) fn reader_text_layout(
+    available_width: f32,
+    available_height: f32,
+    scroll_mode: bool,
+) -> ReaderTextLayout {
+    let landscape_enough = available_width >= available_height * 1.15;
+    let is_dual_column =
+        !scroll_mode && available_width > DUAL_COLUMN_THRESHOLD && landscape_enough;
+
+    if is_dual_column {
+        let col_w = ((available_width - DUAL_COLUMN_GAP) / 2.0).max(1.0);
+        let margin = (col_w * 0.04).clamp(MIN_COLUMN_MARGIN, DUAL_COLUMN_PADDING / 2.0);
+        ReaderTextLayout {
+            is_dual_column,
+            text_width: (col_w - margin * 2.0).max(1.0),
+            h_margin: margin,
+        }
+    } else {
+        let margin = (available_width * 0.06).clamp(SINGLE_MIN_MARGIN, SINGLE_TEXT_PADDING);
+        ReaderTextLayout {
+            is_dual_column,
+            text_width: (available_width - margin * 2.0).max(1.0),
+            h_margin: margin,
+        }
+    }
+}
 
 /// Semi-transparent highlighter colours (fluorescent pen effect).
 pub(crate) fn highlight_bg_color(color: &reader_core::library::HighlightColor) -> Color32 {
@@ -293,4 +333,35 @@ pub(crate) fn normalize_epub_href(href: &str) -> String {
         return String::new();
     }
     s.trim_start_matches("./").trim_matches('/').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dual_column_scales_on_4k_width() {
+        let layout = reader_text_layout(2560.0, 1440.0, false);
+
+        assert!(layout.is_dual_column);
+        assert!(layout.text_width > 900.0);
+        assert!(layout.h_margin <= DUAL_COLUMN_PADDING / 2.0);
+    }
+
+    #[test]
+    fn portrait_view_stays_single_column_and_uses_width() {
+        let layout = reader_text_layout(1200.0, 2000.0, false);
+
+        assert!(!layout.is_dual_column);
+        assert!(layout.text_width > 1000.0);
+        assert_eq!(layout.h_margin, SINGLE_TEXT_PADDING);
+    }
+
+    #[test]
+    fn scroll_mode_stays_single_column() {
+        let layout = reader_text_layout(2560.0, 1440.0, true);
+
+        assert!(!layout.is_dual_column);
+        assert!(layout.text_width > 2400.0);
+    }
 }

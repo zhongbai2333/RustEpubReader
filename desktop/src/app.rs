@@ -254,6 +254,10 @@ fn default_text_indent() -> u8 {
     2
 }
 
+fn default_title_font_scale() -> f32 {
+    1.5
+}
+
 fn generate_pin() -> String {
     use rand::RngCore;
     let val = rand::rngs::OsRng.next_u32() % 10000;
@@ -290,6 +294,8 @@ struct AppSettings {
     para_spacing: f32,
     #[serde(default = "default_text_indent")]
     text_indent: u8,
+    #[serde(default = "default_title_font_scale")]
+    title_font_scale: f32,
     #[serde(default)]
     auto_scroll_speed: f32,
     #[serde(default)]
@@ -367,6 +373,7 @@ impl AppSettings {
             line_spacing: app.line_spacing,
             para_spacing: app.para_spacing,
             text_indent: app.text_indent,
+            title_font_scale: app.title_font_scale,
             auto_scroll_speed: app.auto_scroll_speed,
             tts_voice_name: app.tts_voice_name.clone(),
             tts_rate: app.tts_rate,
@@ -398,6 +405,7 @@ impl AppSettings {
         app.line_spacing = self.line_spacing.clamp(0.8, 2.5);
         app.para_spacing = self.para_spacing.clamp(0.0, 2.0);
         app.text_indent = self.text_indent.min(4);
+        app.title_font_scale = self.title_font_scale.clamp(1.0, 2.5);
         app.auto_scroll_speed = self.auto_scroll_speed.clamp(0.0, 200.0);
         app.i18n.set_language(Language::from_code(&self.language));
         if !self.tts_voice_name.is_empty() {
@@ -571,6 +579,7 @@ pub struct ReaderApp {
     pub line_spacing: f32,
     pub para_spacing: f32,
     pub text_indent: u8,
+    pub title_font_scale: f32,
     // ── Search ──
     pub show_search: bool,
     pub search_query: String,
@@ -852,6 +861,7 @@ impl Default for ReaderApp {
             line_spacing: default_line_spacing(),
             para_spacing: default_para_spacing(),
             text_indent: default_text_indent(),
+            title_font_scale: default_title_font_scale(),
             // Search
             show_search: false,
             search_query: String::new(),

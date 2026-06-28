@@ -34,6 +34,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import android.util.Base64
 
@@ -88,6 +89,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var readerLanguage by mutableStateOf("auto")
         private set
+    var showImmersiveStatus by mutableStateOf(false)
+        private set
     var systemFonts by mutableStateOf<List<FontItem>>(emptyList())
         private set
 
@@ -97,6 +100,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var paraSpacing by mutableFloatStateOf(0.5f)
         private set
     var textIndent by mutableIntStateOf(2)
+        private set
+    var titleFontScale by mutableFloatStateOf(1.5f)
         private set
 
     // ---- API 设置 ----
@@ -175,6 +180,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var isLoading by mutableStateOf(false)
         private set
     var errorMessage by mutableStateOf<String?>(null)
+        private set
+    var loadingMessage by mutableStateOf<String?>(null)
         private set
 
     // ---- ����״̬ ----
@@ -328,6 +335,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         const val BG_IMAGE_URI = "reader_bg_image_uri"
         const val BG_IMAGE_ALPHA = "reader_bg_image_alpha"
         const val LANGUAGE = "reader_language"
+        const val SHOW_IMMERSIVE_STATUS = "show_immersive_status"
         const val LAST_BOOK_URI = "last_book_uri"
         const val LAST_BOOK_CHAPTER = "last_book_chapter"
         const val AUTO_START_SHARING = "auto_start_sharing"
@@ -336,6 +344,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         const val LINE_SPACING = "line_spacing"
         const val PARA_SPACING = "para_spacing"
         const val TEXT_INDENT = "text_indent"
+        const val TITLE_FONT_SCALE = "title_font_scale"
         const val TRANSLATE_API_URL = "translate_api_url"
         const val TRANSLATE_API_KEY = "translate_api_key"
         const val DICTIONARY_API_URL = "dictionary_api_url"
@@ -363,6 +372,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         readerBgImageUri = prefs.getString(PrefKeys.BG_IMAGE_URI, null)
         readerBgImageAlpha = prefs.getFloat(PrefKeys.BG_IMAGE_ALPHA, 0.22f).coerceIn(0f, 1f)
         readerLanguage = prefs.getString(PrefKeys.LANGUAGE, "auto") ?: "auto"
+        showImmersiveStatus = prefs.getBoolean(PrefKeys.SHOW_IMMERSIVE_STATUS, false)
         I18n.setLanguage(readerLanguage)
         autoStartSharing = prefs.getBoolean(PrefKeys.AUTO_START_SHARING, false)
         githubToken = prefs.getString(PrefKeys.GITHUB_TOKEN, null)
@@ -370,6 +380,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         lineSpacing = prefs.getFloat(PrefKeys.LINE_SPACING, 1.5f).coerceIn(1.0f, 3.0f)
         paraSpacing = prefs.getFloat(PrefKeys.PARA_SPACING, 0.5f).coerceIn(0.0f, 2.0f)
         textIndent = prefs.getInt(PrefKeys.TEXT_INDENT, 2).coerceIn(0, 4)
+        titleFontScale = prefs.getFloat(PrefKeys.TITLE_FONT_SCALE, 1.5f).coerceIn(1.0f, 2.5f)
         translateApiUrl = prefs.getString(PrefKeys.TRANSLATE_API_URL, "") ?: ""
         translateApiKey = prefs.getString(PrefKeys.TRANSLATE_API_KEY, "") ?: ""
         dictionaryApiUrl = prefs.getString(PrefKeys.DICTIONARY_API_URL, "") ?: ""
@@ -395,10 +406,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             .putString(PrefKeys.BG_IMAGE_URI, readerBgImageUri)
             .putFloat(PrefKeys.BG_IMAGE_ALPHA, readerBgImageAlpha)
             .putString(PrefKeys.LANGUAGE, readerLanguage)
+            .putBoolean(PrefKeys.SHOW_IMMERSIVE_STATUS, showImmersiveStatus)
             .putBoolean(PrefKeys.AUTO_START_SHARING, autoStartSharing)
             .putFloat(PrefKeys.LINE_SPACING, lineSpacing)
             .putFloat(PrefKeys.PARA_SPACING, paraSpacing)
             .putInt(PrefKeys.TEXT_INDENT, textIndent)
+            .putFloat(PrefKeys.TITLE_FONT_SCALE, titleFontScale)
             .putString(PrefKeys.TRANSLATE_API_URL, translateApiUrl)
             .putString(PrefKeys.TRANSLATE_API_KEY, translateApiKey)
             .putString(PrefKeys.DICTIONARY_API_URL, dictionaryApiUrl)
@@ -416,7 +429,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private fun loadLibrary() {
         books.clear()
         books.addAll(library.sortedIndicesByRecent().map { library.books[it] })
-        preloadCoversFromLibrary()
     }
 
     /** Public refresh: scan books dir for new files + apply progress + reload library UI */
@@ -473,22 +485,26 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun preloadCoversFromLibrary() {
-        val entries = books.toList()
+    fun requestCover(uri: String) {
+        if (coverCache.containsKey(uri)) return
+
         viewModelScope.launch(Dispatchers.IO) {
-            entries.forEach { entry ->
-                if (coverCache.containsKey(entry.uri)) return@forEach
-                val file = File(entry.uri)
-                if (!file.exists()) return@forEach
-                runCatching {
-                    val coverBase64 = RustBridge.getCover(entry.uri)
-                    if (coverBase64 != null) {
-                        val decoded = Base64.decode(coverBase64, Base64.DEFAULT)
-                        withContext(Dispatchers.Main) {
-                            coverCache[entry.uri] = decoded
-                        }
-                    }
+            val file = File(uri)
+            if (!file.exists()) {
+                withContext(Dispatchers.Main) { coverCache[uri] = null }
+                return@launch
+            }
+
+            runCatching {
+                val coverBase64 = RustBridge.getCover(uri)
+                if (coverBase64 != null) {
+                    val decoded = Base64.decode(coverBase64, Base64.DEFAULT)
+                    withContext(Dispatchers.Main) { coverCache[uri] = decoded }
+                } else {
+                    withContext(Dispatchers.Main) { coverCache[uri] = null }
                 }
+            }.onFailure {
+                withContext(Dispatchers.Main) { coverCache[uri] = null }
             }
         }
     }
@@ -553,9 +569,73 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     // ---- ���鼮 ----
 
+    fun importBooksFromUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (uris.size == 1 && isTxtUri(uris.first())) {
+            openFromUri(uris.first())
+            return
+        }
+
+        viewModelScope.launch {
+            isLoading = true
+            loadingMessage = if (uris.size == 1) "正在导入书本…" else "正在批量导入 ${uris.size} 本书…"
+            errorMessage = null
+
+            var imported = 0
+            var txtCount = 0
+            val failures = mutableListOf<String>()
+
+            try {
+                withContext(Dispatchers.IO) {
+                    uris.forEachIndexed { index, uri ->
+                        withContext(Dispatchers.Main) {
+                            loadingMessage = "正在导入 ${index + 1}/${uris.size}…"
+                        }
+
+                        if (isTxtUri(uri)) {
+                            txtCount++
+                            return@forEachIndexed
+                        }
+
+                        runCatching {
+                            val file = copyUriToTempFile(uri, "epub")
+                            try {
+                                registerImportedEpub(file)
+                            } finally {
+                                runCatching { file.delete() }
+                            }
+                        }.onSuccess {
+                            imported++
+                        }.onFailure { e ->
+                            failures.add(e.message ?: "未知错误")
+                        }
+                    }
+                }
+
+                loadLibrary()
+                val parts = mutableListOf<String>()
+                if (imported > 0) parts.add("已导入 $imported 本书")
+                if (txtCount > 0) parts.add("跳过 $txtCount 个 TXT（TXT 请单独导入）")
+                if (failures.isNotEmpty()) parts.add("失败 ${failures.size} 个")
+                if (parts.isNotEmpty()) {
+                    Toast.makeText(context, parts.joinToString("，"), Toast.LENGTH_SHORT).show()
+                }
+                if (imported == 0 && failures.isNotEmpty()) {
+                    errorMessage = "导入失败: ${failures.first()}"
+                }
+            } catch (e: Exception) {
+                errorMessage = "导入失败: ${e.message}"
+            } finally {
+                loadingMessage = null
+                isLoading = false
+            }
+        }
+    }
+
     fun openFromUri(uri: Uri) {
         viewModelScope.launch {
             isLoading = true
+            loadingMessage = "正在打开书本…"
             errorMessage = null
             var tempFile: File? = null
             val isTxt = isTxtUri(uri)
@@ -580,6 +660,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
+                loadingMessage = null
                 isLoading = false
             }
         }
@@ -610,6 +691,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         android.util.Log.d("READER-RESUME", "openFromPath path=$filePath chapter=$chapter")
         viewModelScope.launch {
             isLoading = true
+            loadingMessage = "正在打开书本…"
             errorMessage = null
             try {
                 val file = File(filePath)
@@ -622,6 +704,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             } catch (e: Exception) {
                 errorMessage = "��ʧ��: ${e.message}"
             } finally {
+                loadingMessage = null
                 isLoading = false
             }
         }
@@ -765,13 +848,25 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun copyUriToTempFile(uri: Uri, ext: String = "epub"): File = withContext(Dispatchers.IO) {
         val importDir = File(context.cacheDir, "imports").also { it.mkdirs() }
-        val dest = File(importDir, "import_${System.currentTimeMillis()}.$ext")
+        val dest = File(importDir, "import_${System.currentTimeMillis()}_${UUID.randomUUID()}.$ext")
         context.contentResolver.openInputStream(uri)?.use { input ->
             FileOutputStream(dest).use { output ->
-                input.copyTo(output)
+                input.copyTo(output, bufferSize = 1024 * 1024)
             }
         } ?: throw Exception("无法读取文件")
         dest
+    }
+
+    private fun registerImportedEpub(file: File): BookEntry {
+        val title = runCatching {
+            val metaJson = RustBridge.readEpubMetadata(file.absolutePath)
+            if (metaJson != null) {
+                val meta = org.json.JSONObject(metaJson)
+                meta.optString("title", "").ifBlank { null }
+            } else null
+        }.getOrNull() ?: file.nameWithoutExtension.ifBlank { "Untitled" }
+
+        return library.addOrUpdate(title, file.absolutePath, 0)
     }
 
     fun goToChapter(index: Int) {
@@ -946,6 +1041,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         persistSettings()
     }
 
+    fun updateShowImmersiveStatus(show: Boolean) {
+        showImmersiveStatus = show
+        persistSettings()
+    }
+
     fun updateLineSpacing(value: Float) {
         lineSpacing = value.coerceIn(1.0f, 3.0f)
         persistSettings()
@@ -958,6 +1058,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateTextIndent(value: Int) {
         textIndent = value.coerceIn(0, 4)
+        persistSettings()
+    }
+
+    fun updateTitleFontScale(value: Float) {
+        titleFontScale = value.coerceIn(1.0f, 2.5f)
         persistSettings()
     }
 

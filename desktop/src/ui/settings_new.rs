@@ -196,6 +196,21 @@ impl ReaderApp {
             }
         });
 
+        // Title font scale
+        ui.horizontal(|ui| {
+            ui.label("标题字号倍率");
+            if ui
+                .add_sized(
+                    [ui.available_width().min(150.0), 18.0],
+                    egui::Slider::new(&mut self.title_font_scale, 1.0..=2.5).fixed_decimals(1),
+                )
+                .changed()
+            {
+                self.title_font_scale = self.title_font_scale.clamp(1.0, 2.5);
+                self.pages_dirty = true;
+            }
+        });
+
         // Latin font family
         ui.horizontal_wrapped(|ui| {
             ui.label(self.i18n.t("settings.font_latin"));

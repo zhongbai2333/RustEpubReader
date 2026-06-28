@@ -1,0 +1,161 @@
+name: Desktop Build
+
+"on":
+    workflow_call:
+        inputs:
+            ref:
+                description: "Git ref to checkout before building. Defaults to the caller ref."
+                required: false
+                type: string
+            version:
+                description: "Version suffix used in uploaded desktop artifacts."
+                required: true
+                type: string
+            artifact-prefix:
+                description: "Prefix for uploaded GitHub Actions artifact names."
+                required: false
+                type: string
+                default: desktop-build
+
+permissions:
+    contents: read
+
+env:
+    BINARY_NAME: rust_epub_reader
+    APP_NAME: RustEpubReader
+
+jobs:
+    build:
+        name: Build ${{ matrix.name }} desktop package
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - name: Windows x64
+                      os: windows-latest
+                      artifact_name: Windows-x64
+                      target: x86_64-pc-windows-msvc
+                      binary_name: rust_epub_reader.exe
+                    - name: Windows arm64
+                      os: windows-11-arm
+                      artifact_name: Windows-arm64
+                      target: aarch64-pc-windows-msvc
+                      binary_name: rust_epub_reader.exe
+                    - name: Linux x64
+                      os: ubuntu-latest
+                      artifact_name: Linux-x64
+                      target: x86_64-unknown-linux-gnu
+                      binary_name: rust_epub_reader
+                    - name: Linux arm64
+                      os: ubuntu-24.04-arm
+                      artifact_name: Linux-arm64
+                      target: aarch64-unknown-linux-gnu
+                      binary_name: rust_epub_reader
+                    - name: macOS x64
+                      os: macos-latest
+                      artifact_name: macOS-x64
+                      target: x86_64-apple-darwin
+                      binary_name: rust_epub_reader
+                    - name: macOS arm64
+                      os: macos-latest
+                      artifact_name: macOS-arm64
+                      target: aarch64-apple-darwin
+                      binary_name: rust_epub_reader
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref || github.ref }}
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+
+            - name: Install Linux dependencies
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+                    libxkbcommon-dev libgtk-3-dev libglib2.0-dev libatk1.0-dev \
+                    libgl1-mesa-dev libegl1-mesa-dev libasound2-dev
+
+            - name: Cache cargo artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-${{ matrix.target }}-cargo-
+                      ${{ runner.os }}-cargo-
+
+            - name: Build release binary
+              run: cargo build --release --locked -p rust_epub_reader --target ${{ matrix.target }}
+
+            - name: Package desktop artifact
+              shell: pwsh
+              run: |
+                  $ErrorActionPreference = 'Stop'
+                  $artifactName = '${{ matrix.artifact_name }}'
+                  $binaryName = '${{ matrix.binary_name }}'
+                  $binaryPath = Join-Path 'target/${{ matrix.target }}/release' $binaryName
+                  $version = '${{ inputs.version }}'
+                  $assetDir = 'desktop-assets'
+                  New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+
+                  if ('${{ runner.os }}' -eq 'macOS') {
+                    $appRoot = 'dist/RustEpubReader.app'
+                    $macOsDir = Join-Path $appRoot 'Contents/MacOS'
+                    $resourcesDir = Join-Path $appRoot 'Contents/Resources'
+                    New-Item -ItemType Directory -Force -Path $macOsDir, $resourcesDir | Out-Null
+                    Copy-Item $binaryPath (Join-Path $macOsDir 'RustEpubReader') -Force
+                    chmod +x (Join-Path $macOsDir 'RustEpubReader')
+                    $appVersion = $version -replace '^v', ''
+                    if ($appVersion -notmatch '^\d+(\.\d+){0,2}([-.+][A-Za-z0-9.-]+)?$') { $appVersion = '0.0.0' }
+                    $plist = @(
+                      '<?xml version="1.0" encoding="UTF-8"?>',
+                      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+                      '<plist version="1.0">',
+                      '<dict>',
+                      '  <key>CFBundleDisplayName</key>',
+                      '  <string>RustEpubReader</string>',
+                      '  <key>CFBundleExecutable</key>',
+                      '  <string>RustEpubReader</string>',
+                      '  <key>CFBundleIdentifier</key>',
+                      '  <string>io.github.zhongbai2333.rustepubreader</string>',
+                      '  <key>CFBundleName</key>',
+                      '  <string>RustEpubReader</string>',
+                      '  <key>CFBundlePackageType</key>',
+                      '  <string>APPL</string>',
+                      '  <key>CFBundleShortVersionString</key>',
+                      "  <string>$appVersion</string>",
+                      '  <key>CFBundleVersion</key>',
+                      '  <string>${{ github.run_number }}</string>',
+                      '  <key>LSMinimumSystemVersion</key>',
+                      '  <string>11.0</string>',
+                      '  <key>NSHighResolutionCapable</key>',
+                      '  <true/>',
+                      '</dict>',
+                      '</plist>'
+                    )
+                    $plist | Set-Content -Path (Join-Path $appRoot 'Contents/Info.plist') -Encoding UTF8
+                    hdiutil create -volname 'RustEpubReader' -srcfolder $appRoot -ov -format UDZO (Join-Path $assetDir "RustEpubReader-$artifactName-$version.dmg")
+                  } else {
+                    $distDir = 'dist'
+                    New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+                    Copy-Item $binaryPath $distDir -Force
+                    Copy-Item README.md $distDir -Force
+                    Compress-Archive -Path (Join-Path $distDir '*') -DestinationPath (Join-Path $assetDir "RustEpubReader-$artifactName-$version.zip") -Force
+                  }
+
+            - name: Upload desktop artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix }}-${{ matrix.artifact_name }}
+                  path: desktop-assets/RustEpubReader-${{ matrix.artifact_name }}-${{ inputs.version }}*
+                  if-no-files-found: error

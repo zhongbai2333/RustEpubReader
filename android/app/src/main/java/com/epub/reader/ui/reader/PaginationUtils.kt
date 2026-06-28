@@ -59,7 +59,8 @@ internal fun paginateContent(
     titleVPaddingDp: Dp = 32.dp,
     lineSpacing: Float = 1.5f,
     paraSpacing: Float = 0.5f,
-    textIndentChars: Int = 2
+    textIndentChars: Int = 2,
+    titleFontScale: Float = 1.5f
 ): List<List<ContentBlock>> {
     val contentWidthPx = with(density) { contentWidth.toPx() }
     // sp → px 需要乘 fontScale（处理系统字体缩放）
@@ -79,9 +80,9 @@ internal fun paginateContent(
     // 第一页有章节标题占的高度
     if (isFirstPage && showChapterTitle) {
         // 标题实际渲染 lineHeight = (fontSize * 2.2f).sp
-        val titleLineHeightPx = fontSize * 2.2f * spToPx
+        val titleLineHeightPx = fontSize * titleFontScale * 1.45f * spToPx
         // 使用 breakTitleIntoLines 保持分行逻辑一致
-        val brokenTitle = breakTitleIntoLines(chapter.title, contentWidthPx, fontSize * 1.5f, spToPx)
+        val brokenTitle = breakTitleIntoLines(chapter.title, contentWidthPx, fontSize * titleFontScale, spToPx)
         val titleLines = brokenTitle.count { it == '\n' } + 1
         // 标题行高 + padding(top = vPadding*0.5 + bottom = vPadding) + 30% 缓冲
         val titlePaddingPx = with(density) { titleVPaddingDp.toPx() } * 1.5f
@@ -89,7 +90,7 @@ internal fun paginateContent(
     }
 
     for (block in chapter.blocks) {
-        val blockHeight = estimateBlockHeight(block, fontSize, lineHeight, contentWidthPx, density, paraSpacing, textIndentChars)
+        val blockHeight = estimateBlockHeight(block, fontSize, lineHeight, contentWidthPx, density, paraSpacing, textIndentChars, titleFontScale)
 
         if (currentHeight + blockHeight > maxHeightPx && currentPage.isNotEmpty()) {
             pages.add(currentPage.toList())
@@ -116,13 +117,18 @@ internal fun estimateBlockHeight(
     contentWidthPx: Float,
     density: androidx.compose.ui.unit.Density,
     paraSpacing: Float = 0.5f,
-    textIndentChars: Int = 2
+    textIndentChars: Int = 2,
+    titleFontScale: Float = 1.5f
 ): Float {
     return when (block) {
         is ContentBlock.Heading -> {
             val scale = when (block.level) {
-                1 -> 2.0f; 2 -> 1.6f; 3 -> 1.3f; else -> 1.2f
+                1 -> titleFontScale * 1.3f
+                2 -> titleFontScale * 1.1f
+                3 -> titleFontScale * 0.9f
+                else -> titleFontScale * 0.8f
             }
+                .coerceAtLeast(1.0f)
             val spToPx = density.fontScale * density.density
             var cjkCount = 0
             var asciiCount = 0

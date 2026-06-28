@@ -14,9 +14,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.zhongbai233.epub.reader.i18n.I18n
 import com.zhongbai233.epub.reader.util.FontItem
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,6 +36,7 @@ internal fun ReaderSettingsSheet(
     bgImageEnabled: Boolean,
     bgImageAlpha: Float,
     language: String,
+    showImmersiveStatus: Boolean = false,
     systemFonts: List<FontItem> = emptyList(),
     onDismiss: () -> Unit,
     onFontSizeChange: (Float) -> Unit,
@@ -46,15 +50,18 @@ internal fun ReaderSettingsSheet(
     onPageAnimationChange: (String) -> Unit,
     onBgImageAlphaChange: (Float) -> Unit,
     onLanguageChange: (String) -> Unit,
+    onShowImmersiveStatusChange: (Boolean) -> Unit = {},
     onPickBackgroundImage: () -> Unit,
     onClearBackgroundImage: () -> Unit,
     // 排版
     lineSpacing: Float = 1.5f,
     paraSpacing: Float = 0.5f,
     textIndent: Int = 2,
+    titleFontScale: Float = 1.5f,
     onLineSpacingChange: (Float) -> Unit = {},
     onParaSpacingChange: (Float) -> Unit = {},
     onTextIndentChange: (Int) -> Unit = {},
+    onTitleFontScaleChange: (Float) -> Unit = {},
     // API
     translateApiUrl: String = "",
     translateApiKey: String = "",
@@ -211,7 +218,17 @@ internal fun ReaderSettingsSheet(
                     // 内置字体
                     fontFamilyOptions.filter { q.isEmpty() || it.lowercase().contains(q) }.forEach { fam ->
                         DropdownMenuItem(
-                            text = { Text(fam) },
+                            text = {
+                                Column {
+                                    Text(friendlyFontLabel(fam))
+                                    Text(
+                                        fontPreviewText(fam),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontFamily = previewFontFamily(fam)
+                                    )
+                                }
+                            },
                             onClick = {
                                 onFontFamilyChange(fam)
                                 fontDropdownExpanded = false
@@ -228,7 +245,17 @@ internal fun ReaderSettingsSheet(
                         HorizontalDivider()
                         filteredSystem.forEach { item ->
                             DropdownMenuItem(
-                                text = { Text(item.displayName) },
+                                text = {
+                                    Column {
+                                        Text(item.displayName)
+                                        Text(
+                                            fontPreviewText(item.displayName),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontFamily = previewFontFamily(item.displayName, item.path)
+                                        )
+                                    }
+                                },
                                 onClick = {
                                     onFontFamilyChange(item.displayName)
                                     fontDropdownExpanded = false
@@ -303,6 +330,25 @@ internal fun ReaderSettingsSheet(
                 }
             }
 
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("沉浸状态信息")
+                    Text(
+                        "在阅读界面左下角显示时间和电量",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = showImmersiveStatus,
+                    onCheckedChange = onShowImmersiveStatusChange
+                )
+            }
+
             // ─── 排版设置 ───
             Spacer(Modifier.height(16.dp))
             HorizontalDivider()
@@ -332,6 +378,14 @@ internal fun ReaderSettingsSheet(
                 onValueChange = { onTextIndentChange(it.toInt()) },
                 valueRange = 0f..4f,
                 steps = 3
+            )
+
+            Text("标题字号倍率: ${"%.1f".format(titleFontScale)}x")
+            Slider(
+                value = titleFontScale,
+                onValueChange = onTitleFontScaleChange,
+                valueRange = 1.0f..2.5f,
+                steps = 14
             )
 
             // ─── API 设置 ───
@@ -558,6 +612,26 @@ internal fun ReaderSettingsSheet(
             Spacer(Modifier.height(20.dp))
         }
     }
+}
+
+private fun friendlyFontLabel(name: String): String = when (name) {
+    "Sans" -> "系统无衬线"
+    "Serif" -> "系统衬线"
+    "Monospace" -> "等宽字体"
+    else -> name
+}
+
+private fun fontPreviewText(name: String): String = when (name) {
+    "Monospace" -> "Aa 01 中文"
+    "Serif" -> "衬线示例 Aa"
+    else -> "中文预览 Aa"
+}
+
+private fun previewFontFamily(name: String, path: String? = null): FontFamily? = when (name) {
+    "Sans" -> FontFamily.SansSerif
+    "Serif" -> FontFamily.Serif
+    "Monospace" -> FontFamily.Monospace
+    else -> path?.let { runCatching { FontFamily(Font(File(it))) }.getOrNull() }
 }
 
 @Composable

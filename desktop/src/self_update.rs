@@ -185,8 +185,8 @@ fn fetch_latest_release(client: &Client) -> Result<ReleaseInfo> {
 /// 平台关键字，对齐 CI 产物命名：
 /// - Linux:   `Linux_amd64` / `Linux_arm64`
 /// - Windows: `Win64` / `WinArm64`
-/// - macOS:   `macOS_amd64` / `macOS_arm64`
-fn detect_platform_keyword() -> Result<String> {
+/// - macOS:   `macOS-Intel` / `macOS-AppleSilicon` (also matches legacy `macOS_amd64` / `macOS_arm64`)
+fn detect_platform_keywords() -> Result<Vec<String>> {
     let system = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
@@ -197,13 +197,20 @@ fn detect_platform_keyword() -> Result<String> {
     };
 
     match system {
-        "linux" => Ok(format!("Linux_{arch_key}")),
+        "linux" => Ok(vec![format!("Linux_{arch_key}")]),
         "windows" => match arch_key {
-            "arm64" => Ok("WinArm64".to_string()),
-            _ => Ok("Win64".to_string()),
+            "arm64" => Ok(vec!["WinArm64".to_string()]),
+            _ => Ok(vec!["Win64".to_string()]),
         },
-        "macos" => Ok(format!("macOS_{arch_key}")),
-        other => Ok(other.to_string()),
+        "macos" => match arch_key {
+            "arm64" => Ok(vec![
+                "macOS-AppleSilicon".to_string(),
+                "macOS_arm64".to_string(),
+            ]),
+            "amd64" => Ok(vec!["macOS-Intel".to_string(), "macOS_amd64".to_string()]),
+            _ => Ok(vec![format!("macOS_{arch_key}")]),
+        },
+        other => Ok(vec![other.to_string()]),
     }
 }
 
@@ -211,7 +218,7 @@ fn get_latest_release_asset() -> Result<MatchedAsset> {
     let client = build_http_client()?;
     let latest = fetch_latest_release(&client)?;
 
-    let platform_key = detect_platform_keyword()?;
+    let platform_keys = detect_platform_keywords()?;
     let release_name = latest.name.unwrap_or_default();
     let tag_name = latest.tag_name.unwrap_or_default();
 
@@ -224,7 +231,7 @@ fn get_latest_release_asset() -> Result<MatchedAsset> {
         if asset.name.ends_with(".apk") {
             continue;
         }
-        if asset.name.contains(&platform_key) {
+        if platform_keys.iter().any(|key| asset.name.contains(key)) {
             let original_url = asset.browser_download_url;
             let download_urls = build_download_urls(&original_url);
 
@@ -246,7 +253,8 @@ fn get_latest_release_asset() -> Result<MatchedAsset> {
     }
 
     Err(anyhow!(
-        "no matching release asset for platform_key={platform_key}"
+        "no matching release asset for platform_keys={}",
+        platform_keys.join(",")
     ))
 }
 
@@ -426,7 +434,10 @@ fn compute_file_sha256(path: &Path) -> Result<String> {
 /// 生成规范可执行文件名（不带版本号），对齐发行资产的平台关键字。
 /// 例如：`RustEpubReader-Win64.exe`、`RustEpubReader-Linux_amd64`
 fn canonical_executable_name() -> Result<OsString> {
-    let platform_key = detect_platform_keyword()?;
+    let platform_key = detect_platform_keywords()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("cannot determine platform key"))?;
     let mut name = format!("RustEpubReader-{platform_key}");
     if cfg!(windows) {
         name.push_str(".exe");

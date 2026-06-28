@@ -67,11 +67,13 @@ private fun MainContent(vm: ReaderViewModel) {
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
 
-    // SAF 文件选择器
+    // SAF 文件选择器：支持一次选择多本 EPUB。单个 TXT 仍走 TXT 导入流程。
     val filePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        uri?.let { vm.openFromUri(it) }
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            vm.importBooksFromUris(uris)
+        }
     }
 
     val backgroundImagePicker = rememberLauncherForActivityResult(
@@ -178,6 +180,7 @@ private fun MainContent(vm: ReaderViewModel) {
                     books = vm.books,
                     coverCache = vm.coverCache,
                     language = vm.readerLanguage,
+                    onRequestCover = { uri -> vm.requestCover(uri) },
                     onOpenFilePicker = {
                         filePicker.launch(arrayOf("application/epub+zip", "application/epub", "*/*"))
                     },
@@ -294,6 +297,7 @@ private fun MainContent(vm: ReaderViewModel) {
                         bgImageUri = vm.readerBgImageUri,
                         bgImageAlpha = vm.readerBgImageAlpha,
                         language = vm.readerLanguage,
+                        showImmersiveStatus = vm.showImmersiveStatus,
                         systemFonts = vm.systemFonts,
                         showToc = drawerState.isOpen,
                         onNavigateBack = { vm.closeBook() },
@@ -313,6 +317,7 @@ private fun MainContent(vm: ReaderViewModel) {
                         onUpdatePageAnimation = { vm.updateReaderPageAnimation(it) },
                         onUpdateBgImageAlpha = { vm.updateReaderBgImageAlpha(it) },
                         onUpdateLanguage = { vm.updateLanguage(it) },
+                        onUpdateShowImmersiveStatus = { vm.updateShowImmersiveStatus(it) },
                         onOpenBackgroundPicker = {
                             backgroundImagePicker.launch(arrayOf("image/*"))
                         },
@@ -333,9 +338,11 @@ private fun MainContent(vm: ReaderViewModel) {
                         lineSpacing = vm.lineSpacing,
                         paraSpacing = vm.paraSpacing,
                         textIndent = vm.textIndent,
+                        titleFontScale = vm.titleFontScale,
                         onLineSpacingChange = { vm.updateLineSpacing(it) },
                         onParaSpacingChange = { vm.updateParaSpacing(it) },
                         onTextIndentChange = { vm.updateTextIndent(it) },
+                        onTitleFontScaleChange = { vm.updateTitleFontScale(it) },
                         translateApiUrl = vm.translateApiUrl,
                         translateApiKey = vm.translateApiKey,
                         dictionaryApiUrl = vm.dictionaryApiUrl,
@@ -465,7 +472,17 @@ private fun MainContent(vm: ReaderViewModel) {
                     .background(MaterialTheme.colorScheme.background),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator()
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    vm.loadingMessage?.let { msg ->
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = msg,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
             }
         }
     }

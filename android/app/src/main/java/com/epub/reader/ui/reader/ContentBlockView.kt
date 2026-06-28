@@ -119,6 +119,7 @@ internal fun ContentBlockView(
     lineSpacing: Float = 1.5f,
     paraSpacing: Float = 0.5f,
     textIndentChars: Int = 2,
+    titleFontScale: Float = 1.5f,
     textSelection: TextSelectionState? = null,
     onSelectionChange: (TextSelectionState?) -> Unit = {},
     blockLayoutRegistry: MutableMap<Int, BlockLayoutInfo>? = null,
@@ -133,11 +134,12 @@ internal fun ContentBlockView(
     when (block) {
         is ContentBlock.Heading -> {
             val scale = when (block.level) {
-                1 -> 2.0f
-                2 -> 1.6f
-                3 -> 1.3f
-                else -> 1.2f
+                1 -> titleFontScale * 1.3f
+                2 -> titleFontScale * 1.1f
+                3 -> titleFontScale * 0.9f
+                else -> titleFontScale * 0.8f
             }
+                .coerceAtLeast(1.0f)
             val annotated = buildSpanAnnotatedString(
                 spans = block.spans,
                 fontSize = fontSize * scale,
@@ -251,12 +253,12 @@ internal fun ContentBlockView(
                                     val annotations = annotated.getStringAnnotations(tag = "URL", start = startOffset, end = endOffset)
                                     if (annotations.isNotEmpty()) {
                                         onLinkClick(annotations.first().item)
+                                        down.consume()
+                                        up.consume()
                                     } else {
-                                        onTextTapped()
+                                        // 普通文本点击交给页面级手势处理，避免正文块把整页点击吃掉
                                     }
-                                } ?: onTextTapped()
-                                down.consume()
-                                up.consume()
+                                }
                             }
                         }
                     },
@@ -379,12 +381,12 @@ internal fun ContentBlockView(
                                     val annotations = annotated.getStringAnnotations(tag = "URL", start = startOffset, end = endOffset)
                                     if (annotations.isNotEmpty()) {
                                         onLinkClick(annotations.first().item)
+                                        down.consume()
+                                        up.consume()
                                     } else {
-                                        onTextTapped()
+                                        // 普通文本点击交给页面级手势处理，避免正文块把整页点击吃掉
                                     }
-                                } ?: onTextTapped()
-                                down.consume()
-                                up.consume()
+                                }
                             }
                         }
                     },

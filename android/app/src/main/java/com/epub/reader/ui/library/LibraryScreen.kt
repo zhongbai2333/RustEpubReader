@@ -49,6 +49,7 @@ fun LibraryScreen(
     onOpenFilePicker: () -> Unit,
     onOpenBook: (String, Int) -> Unit,
     onRemoveBook: (String) -> Unit,
+    onRequestCover: (String) -> Unit = {},
     onUpdateLanguage: (String) -> Unit = {},
     onOpenSharing: () -> Unit = {},
     onRefreshLibrary: () -> Unit = {},
@@ -228,6 +229,11 @@ fun LibraryScreen(
                         val colorIdx = entry.title.sumOf { it.code } % palette.size
                         val coverColor = palette[colorIdx]
                         val coverBytes = coverCache[entry.uri]
+                        LaunchedEffect(entry.uri) {
+                            if (!coverCache.containsKey(entry.uri)) {
+                                onRequestCover(entry.uri)
+                            }
+                        }
 
                         BookCard(
                             entry = entry,

@@ -44,9 +44,10 @@ object CscNativeLoader {
     @Volatile private var loaded: Boolean = false
 
     /**
-     * Returns the platform tag used in CDN paths and in the local cache layout.
-     * Android 64-bit only — ABI splits in build.gradle.kts ensure we never run
-     * on 32-bit.
+        * Returns the platform tag used in CDN paths and in the local cache layout.
+        * The optional CSC native runtime is currently published for Android 64-bit
+        * ABIs only. 32-bit APKs can still run the reader; CSC simply remains
+        * unavailable until a matching plugin bundle is published.
      */
     fun currentAbiTag(): String? {
         val abis = Build.SUPPORTED_ABIS

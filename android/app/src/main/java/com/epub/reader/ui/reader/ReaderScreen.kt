@@ -1,5 +1,9 @@
 ﻿package com.zhongbai233.epub.reader.ui.reader
 import android.util.Log
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 
 
 import android.app.Activity
@@ -82,6 +86,9 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.Collections
 import java.util.LinkedHashMap
 import androidx.compose.ui.unit.Dp
@@ -130,6 +137,7 @@ fun ReaderScreen(
     bgImageUri: String?,
     bgImageAlpha: Float,
     language: String,
+    showImmersiveStatus: Boolean = false,
     systemFonts: List<FontItem> = emptyList(),
     showToc: Boolean,
     onNavigateBack: () -> Unit,
@@ -149,6 +157,7 @@ fun ReaderScreen(
     onUpdatePageAnimation: (String) -> Unit,
     onUpdateBgImageAlpha: (Float) -> Unit,
     onUpdateLanguage: (String) -> Unit,
+    onUpdateShowImmersiveStatus: (Boolean) -> Unit = {},
     onOpenBackgroundPicker: () -> Unit,
     onClearBackgroundImage: () -> Unit,
     onToggleToc: () -> Unit,
@@ -164,9 +173,11 @@ fun ReaderScreen(
     lineSpacing: Float = 1.5f,
     paraSpacing: Float = 0.5f,
     textIndent: Int = 2,
+    titleFontScale: Float = 1.5f,
     onLineSpacingChange: (Float) -> Unit = {},
     onParaSpacingChange: (Float) -> Unit = {},
     onTextIndentChange: (Int) -> Unit = {},
+    onTitleFontScaleChange: (Float) -> Unit = {},
     // API
     translateApiUrl: String = "",
     translateApiKey: String = "",
@@ -287,6 +298,7 @@ fun ReaderScreen(
     var activeSelectionAction by remember { mutableStateOf<SelectionAction?>(null) }
     var currentSelectedText by remember { mutableStateOf("") }
     val clipboardManager = LocalClipboardManager.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
 
     val customTextToolbar = remember {
         CustomTextToolbar(
@@ -302,16 +314,28 @@ fun ReaderScreen(
         )
     }
 
-    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-    val handleTextTapped: () -> Unit = {
+    fun hideSelectionMenu() {
+        selectionMenuVisible = false
+        selectionRect = androidx.compose.ui.geometry.Rect.Zero
+        selectionCopyCallback = null
+        if (customTextToolbar.status == androidx.compose.ui.platform.TextToolbarStatus.Shown) {
+            customTextToolbar.hide()
+        }
+    }
+
+    fun clearSelectionUi() {
         focusManager.clearFocus(true)
+        textSelection = null
+        selectionAnchorRange = null
+        draggingHandle = null
+        hideSelectionMenu()
+    }
+
+    val handleTextTapped: () -> Unit = {
         if (textSelection != null) {
-            textSelection = null
-            selectionAnchorRange = null
-            draggingHandle = null
-            selectionMenuVisible = false
+            clearSelectionUi()
         } else {
-            selectionMenuVisible = false
+            hideSelectionMenu()
             if (!showSettingsSheet) {
                 showControls = !showControls
             }
@@ -429,7 +453,7 @@ fun ReaderScreen(
         val sel = textSelection
         if (sel == null) {
             selectionRect = androidx.compose.ui.geometry.Rect.Zero
-            selectionMenuVisible = false
+            hideSelectionMenu()
             return
         }
 
@@ -543,6 +567,32 @@ fun ReaderScreen(
 
     val customBgColor = Color(customBgColorArgb)
     val customFontColor = Color(customFontColorArgb)
+    val chapterProgress = remember(currentChapter, book.chapters.size) {
+        val total = book.chapters.size.coerceAtLeast(1)
+        ((currentChapter + 1).toFloat() / total.toFloat()).coerceIn(0f, 1f)
+    }
+
+    @Composable
+    fun deviceStatusText(): String {
+        val context = LocalView.current.context
+        val batteryPct = context.batteryPercentOrNull()
+        val timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+        return if (batteryPct != null) {
+            "$timeText  ·  电量 $batteryPct%"
+        } else {
+            timeText
+        }
+    }
+
+    @Composable
+    fun immersiveStatusText(): String {
+        val context = LocalView.current.context
+        val batteryPct = context.batteryPercentOrNull()
+        val timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+        return if (batteryPct != null) "$timeText  $batteryPct%" else timeText
+    }
+
+    val batteryPercent = LocalView.current.context.batteryPercentOrNull()
     val selectedBg = when {
         bgColorIndex in bgPalette.indices -> bgPalette[bgColorIndex].second
         bgColorIndex == bgPalette.size -> customBgColor
@@ -615,10 +665,9 @@ fun ReaderScreen(
             val wordSelection = expandSelectionToWord(minBlock, minOffset)
             selectionAnchorRange = wordSelection
             textSelection = wordSelection
-            selectionMenuVisible = false
+            hideSelectionMenu()
         } else {
-            selectionAnchorRange = null
-            textSelection = null
+            clearSelectionUi()
         }
     }
 
@@ -664,10 +713,11 @@ fun ReaderScreen(
     }
 
     val selectionOnDragCancel: () -> Unit = {
-        textSelection = null
-        selectionAnchorRange = null
-        draggingHandle = null
-        selectionMenuVisible = false
+        clearSelectionUi()
+    }
+
+    LaunchedEffect(currentChapter, scrollMode, pageAnimation) {
+        clearSelectionUi()
     }
 
     CompositionLocalProvider(LocalTextToolbar provides customTextToolbar) {
@@ -679,10 +729,7 @@ fun ReaderScreen(
             .pointerInput(textSelection) {
                 detectTapGestures {
                     if (textSelection != null) {
-                        textSelection = null
-                        selectionAnchorRange = null
-                        draggingHandle = null
-                        selectionMenuVisible = false
+                        clearSelectionUi()
                     }
                 }
             }
@@ -759,6 +806,7 @@ fun ReaderScreen(
                     lineSpacing = lineSpacing,
                     paraSpacing = paraSpacing,
                     textIndent = textIndent,
+                    titleFontScale = titleFontScale,
                     textSelection = textSelection,
                     onSelectionChange = { textSelection = it },
                     blockLayoutRegistry = blockLayoutRegistry,
@@ -819,8 +867,11 @@ fun ReaderScreen(
                 pageAnimation = pageAnimation,
                 controlsVisible = showControls,
                 settingsVisible = showSettingsSheet,
+                immersiveStatusText = if (showImmersiveStatus && !showControls) immersiveStatusText() else null,
+                immersiveBatteryPercent = batteryPercent,
                 startAtLastPageRef = startAtLastPageRef,
                 onPrevChapter = {
+                    clearSelectionUi()
                     if (currentChapter > 0) {
                         startAtLastPageRef[0] = true
                         var prev = currentChapter - 1
@@ -829,6 +880,7 @@ fun ReaderScreen(
                     }
                 },
                 onNextChapter = {
+                    clearSelectionUi()
                     if (currentChapter < book.chapters.size - 1) {
                         var next = currentChapter + 1
                         while (next < book.chapters.size && reviewChapterIndices.contains(next)) next++
@@ -845,6 +897,7 @@ fun ReaderScreen(
                 lineSpacing = lineSpacing,
                 paraSpacing = paraSpacing,
                 textIndent = textIndent,
+                titleFontScale = titleFontScale,
                 textSelection = textSelection,
                 onSelectionChange = { textSelection = it },
                 blockLayoutRegistry = blockLayoutRegistry,
@@ -948,6 +1001,9 @@ fun ReaderScreen(
                 chapterTitle = chapter?.title,
                 currentChapter = currentChapter,
                 totalChapters = book.chapters.size,
+                chapterProgress = chapterProgress,
+                statusText = deviceStatusText(),
+                batteryPercent = batteryPercent,
                 isDarkMode = isDarkMode,
                 previousChapter = previousChapter,
                 isBookmarked = isChapterBookmarked,
@@ -1017,6 +1073,7 @@ fun ReaderScreen(
                 bgImageEnabled = !bgImageUri.isNullOrBlank(),
                 bgImageAlpha = bgImageAlpha,
                 language = language,
+                showImmersiveStatus = showImmersiveStatus,
                 systemFonts = systemFonts,
                 onDismiss = { showSettingsSheet = false },
                 onFontSizeChange = onFontSizeChange,
@@ -1030,14 +1087,17 @@ fun ReaderScreen(
                 onPageAnimationChange = onUpdatePageAnimation,
                 onBgImageAlphaChange = onUpdateBgImageAlpha,
                 onLanguageChange = onUpdateLanguage,
+                onShowImmersiveStatusChange = onUpdateShowImmersiveStatus,
                 onPickBackgroundImage = onOpenBackgroundPicker,
                 onClearBackgroundImage = onClearBackgroundImage,
                 lineSpacing = lineSpacing,
                 paraSpacing = paraSpacing,
                 textIndent = textIndent,
+                titleFontScale = titleFontScale,
                 onLineSpacingChange = onLineSpacingChange,
                 onParaSpacingChange = onParaSpacingChange,
                 onTextIndentChange = onTextIndentChange,
+                onTitleFontScaleChange = onTitleFontScaleChange,
                 translateApiUrl = translateApiUrl,
                 translateApiKey = translateApiKey,
                 dictionaryApiUrl = dictionaryApiUrl,
@@ -1088,7 +1148,7 @@ fun ReaderScreen(
                         detectDragGestures(
                             onDragStart = { downOffset ->
                                 draggingHandle = 0
-                                selectionMenuVisible = false
+                                hideSelectionMenu()
                                 dragRootOffset = currentStartHandleTopLeft.value + downOffset
                             },
                             onDrag = { change, dragAmount ->
@@ -1134,7 +1194,7 @@ fun ReaderScreen(
                         detectDragGestures(
                             onDragStart = { downOffset ->
                                 draggingHandle = 1
-                                selectionMenuVisible = false
+                                hideSelectionMenu()
                                 dragRootOffset = currentEndHandleTopLeft.value + downOffset
                             },
                             onDrag = { change, dragAmount ->
@@ -1177,14 +1237,14 @@ fun ReaderScreen(
             selectionRect = selectionRect,
             isDarkMode = isDarkMode,
             onAction = { action, color ->
-                selectionMenuVisible = false
+                val copyCallback = selectionCopyCallback
+                hideSelectionMenu()
                 
                 if (action == SelectionAction.HIGHLIGHT || action == SelectionAction.NOTE) {
-                    selectionMenuVisible = false
                     val sel = textSelection
                     if (action == SelectionAction.HIGHLIGHT && sel != null) {
                         onAddHighlight(currentChapter, sel.startBlock, sel.startChar, sel.endBlock, sel.endChar, color ?: "Yellow")
-                        textSelection = null
+                        clearSelectionUi()
                     } else if (action == SelectionAction.NOTE) {
                         // 收集选区文本用于笔记
                         val selText = if (sel != null) getSelectedText(sel) else ""
@@ -1195,31 +1255,35 @@ fun ReaderScreen(
                 }
 
                 // ONLY trigger native copy fallback when dictionary/translate/correct/copy explicitly need text
-                selectionCopyCallback?.invoke()
+                copyCallback?.invoke()
                 val textFromClipboard = clipboardManager.getText()?.text ?: ""
                 currentSelectedText = textFromClipboard
-                selectionMenuVisible = false
+                hideSelectionMenu()
                 
                 when (action) {
                     SelectionAction.COPY -> {
                         // Already copied to clipboard
+                        clearSelectionUi()
                     }
                     SelectionAction.HIGHLIGHT, SelectionAction.NOTE -> {
                         // Handled above
                     }
                     SelectionAction.DICTIONARY -> {
                         activeSelectionAction = SelectionAction.DICTIONARY
+                        clearSelectionUi()
                     }
                     SelectionAction.TRANSLATE -> {
                         activeSelectionAction = SelectionAction.TRANSLATE
+                        clearSelectionUi()
                     }
                     SelectionAction.CORRECT -> {
                         activeSelectionAction = SelectionAction.CORRECT
+                        clearSelectionUi()
                     }
                 }
             },
             onDismiss = {
-                selectionMenuVisible = false
+                hideSelectionMenu()
             }
         )
 
@@ -1250,7 +1314,7 @@ fun ReaderScreen(
                             onAddHighlight(currentChapter, sel.startBlock, sel.startChar, sel.endBlock, sel.endChar, "Yellow")
                             val hlId = "hl-${System.currentTimeMillis()}-${sel.startBlock}-${sel.startChar}"
                             onSaveNote(hlId, noteContent)
-                            textSelection = null
+                            clearSelectionUi()
                         }
                         activeSelectionAction = null
                     },
@@ -1348,5 +1412,79 @@ private fun fontFamilyFromFile(path: String): FontFamily = try {
     FontFamily(Font(File(path)))
 } catch (_: Exception) {
     FontFamily.SansSerif
+}
+
+private fun Context.batteryPercentOrNull(): Int? {
+    val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return null
+    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+    if (level < 0 || scale <= 0) return null
+    return ((level * 100f) / scale).toInt().coerceIn(0, 100)
+}
+
+@Composable
+internal fun ImmersiveStatusBadge(
+    text: String,
+    batteryPercent: Int?,
+    textColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val subtleColor = textColor.copy(alpha = 0.58f)
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text(
+            text = text,
+            color = subtleColor,
+            fontSize = 11.sp,
+            maxLines = 1
+        )
+        if (batteryPercent != null) {
+            BatteryGlyph(
+                percent = batteryPercent,
+                color = subtleColor,
+                modifier = Modifier.size(width = 18.dp, height = 9.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun BatteryGlyph(
+    percent: Int,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val strokeWidth = 1.2.dp.toPx()
+        val capWidth = 2.dp.toPx()
+        val bodyWidth = size.width - capWidth - strokeWidth
+        val bodyHeight = size.height
+        val corner = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
+        drawRoundRect(
+            color = color,
+            topLeft = Offset.Zero,
+            size = Size(bodyWidth, bodyHeight),
+            cornerRadius = corner,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeWidth)
+        )
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(bodyWidth + 0.8.dp.toPx(), bodyHeight * 0.28f),
+            size = Size(capWidth, bodyHeight * 0.44f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(0.8.dp.toPx(), 0.8.dp.toPx())
+        )
+        val fillWidth = (bodyWidth - strokeWidth * 2f) * (percent.coerceIn(0, 100) / 100f)
+        if (fillWidth > 0f) {
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(strokeWidth, strokeWidth),
+                size = Size(fillWidth, bodyHeight - strokeWidth * 2f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx(), 1.dp.toPx())
+            )
+        }
+    }
 }
 

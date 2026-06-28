@@ -14,6 +14,19 @@ const COVER_PALETTE: [Color32; 6] = [
     Color32::from_rgb(200, 80, 180),
 ];
 
+const LIBRARY_CARD_WIDTH: f32 = 248.0;
+const LIBRARY_CARD_HEIGHT: f32 = 160.0;
+const LIBRARY_COVER_WIDTH: f32 = 78.0;
+const LIBRARY_GRID_PADDING: f32 = 32.0;
+const LIBRARY_GRID_GAP: f32 = 16.0;
+
+fn library_grid_columns(available_width: f32) -> usize {
+    let content_width = (available_width - LIBRARY_GRID_PADDING * 2.0).max(0.0);
+    ((content_width + LIBRARY_GRID_GAP) / (LIBRARY_CARD_WIDTH + LIBRARY_GRID_GAP))
+        .floor()
+        .max(1.0) as usize
+}
+
 impl ReaderApp {
     pub fn render_library(&mut self, ui: &mut egui::Ui) {
         let mut action_open_path: Option<(String, usize)> = None;
@@ -207,32 +220,17 @@ impl ReaderApp {
                 ui.add_space(12.0);
                 // Match the 32px horizontal padding used by the header so the
                 // last card always has a visible right margin.
-                let padding = 32.0_f32;
-                let gap = 16.0_f32;
-                let available_width = (ui.available_width() - padding * 2.0).max(0.0);
-                // Responsive: determine columns first, then compute card width to fill space.
-                // min_card_w 210 ensures the action button row (read + export + delete)
-                // fits within the content area at the smallest size.
-                let min_card_w = 210.0_f32;
-                let max_card_w = 420.0_f32;
-                let cols = ((available_width + gap) / (min_card_w + gap))
-                    .floor()
-                    .max(1.0) as usize;
-                let card_width = if cols == 1 {
-                    available_width.min(max_card_w)
-                } else {
-                    ((available_width - gap * (cols as f32 - 1.0)) / cols as f32)
-                        .clamp(min_card_w, max_card_w)
-                };
+                let padding = LIBRARY_GRID_PADDING;
+                let gap = LIBRARY_GRID_GAP;
+                // Keep every book card at a fixed width. Only the number of columns changes
+                // with the window size, so cards don't stretch/shrink when resizing the window.
+                let card_width = LIBRARY_CARD_WIDTH;
+                let cols = library_grid_columns(ui.available_width());
                 // Fixed card height keeps rows uniform regardless of text wrapping.
-                let card_height = 160.0_f32;
-                // Cover takes a slightly larger share so artwork is more visible.
-                let cover_w = (card_width * 0.36).clamp(72.0, 110.0);
+                let card_height = LIBRARY_CARD_HEIGHT;
+                let cover_w = LIBRARY_COVER_WIDTH;
                 let chunks: Vec<Vec<usize>> = sorted.chunks(cols).map(|c| c.to_vec()).collect();
-                // Total width occupied by a full row; if cards were clamped to max_card_w
-                // there will be leftover space — split it evenly so left/right margins match.
-                let row_width = card_width * cols as f32 + gap * (cols as f32 - 1.0);
-                let leading_pad = padding + ((available_width - row_width).max(0.0) * 0.5);
+                let leading_pad = padding;
                 for chunk in &chunks {
                     ui.horizontal(|ui| {
                         ui.add_space(leading_pad);
@@ -356,20 +354,21 @@ impl ReaderApp {
                                 .truncate(),
                             );
                             child.add_space(8.0);
+                            let read_btn = egui::Button::new(
+                                egui::RichText::new(self.i18n.t("library.continue_reading"))
+                                    .size(12.5)
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(accent)
+                            .stroke(Stroke::NONE)
+                            .corner_radius(CornerRadius::same(5))
+                            .min_size(Vec2::new(0.0, 26.0));
+                            if child.add(read_btn).clicked() {
+                                action_open_path = Some((path.clone(), chapter));
+                            }
+                            child.add_space(4.0);
                             child.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
-                                let read_btn = egui::Button::new(
-                                    egui::RichText::new(self.i18n.t("library.continue_reading"))
-                                        .size(12.5)
-                                        .color(Color32::WHITE),
-                                )
-                                .fill(accent)
-                                .stroke(Stroke::NONE)
-                                .corner_radius(CornerRadius::same(5))
-                                .min_size(Vec2::new(0.0, 26.0));
-                                if ui.add(read_btn).clicked() {
-                                    action_open_path = Some((path.clone(), chapter));
-                                }
                                 let export_btn = egui::Button::new(
                                     egui::RichText::new("↗").size(12.0).color(subtitle_color),
                                 )
@@ -470,5 +469,34 @@ fn apply_rounded_corners_rgba(image: &mut image::RgbaImage, radius: u32) {
                 p.0[3] = 0;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_keeps_one_column_when_width_is_tight() {
+        assert_eq!(library_grid_columns(260.0), 1);
+    }
+
+    #[test]
+    fn grid_columns_change_without_changing_card_width() {
+        assert_eq!(LIBRARY_CARD_WIDTH, 248.0);
+        assert_eq!(library_grid_columns(600.0), 2);
+        assert_eq!(library_grid_columns(860.0), 3);
+    }
+
+    #[test]
+    fn grid_leaves_right_space_instead_of_centering() {
+        let window_width = 760.0;
+        let cols = library_grid_columns(window_width);
+        let used_width = LIBRARY_GRID_PADDING * 2.0
+            + LIBRARY_CARD_WIDTH * cols as f32
+            + LIBRARY_GRID_GAP * (cols.saturating_sub(1)) as f32;
+
+        assert_eq!(cols, 2);
+        assert!(window_width - used_width >= LIBRARY_GRID_PADDING);
     }
 }

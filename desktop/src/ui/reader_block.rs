@@ -21,6 +21,7 @@ pub(crate) fn render_content_layout(
     block_end: usize,
     show_title: bool,
     font_size: f32,
+    title_font_scale: f32,
     bg_color: Color32,
     current_chapter: usize,
     total_ch: usize,
@@ -42,8 +43,8 @@ pub(crate) fn render_content_layout(
         .inner_margin(egui::Margin {
             left: 0,
             right: 0,
-            top: 48,
-            bottom: 56,
+            top: READER_CONTENT_TOP_PADDING as i8,
+            bottom: READER_CONTENT_BOTTOM_PADDING as i8,
         })
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -61,7 +62,7 @@ pub(crate) fn render_content_layout(
                         ui.vertical_centered(|ui| {
                             ui.label(
                                 egui::RichText::new(title)
-                                    .size(font_size * 1.8)
+                                    .size(font_size * title_font_scale)
                                     .strong()
                                     .color(title_color)
                                     .family(title_family),
@@ -88,6 +89,7 @@ pub(crate) fn render_content_layout(
                             ui,
                             block,
                             font_size,
+                            title_font_scale,
                             bg_color,
                             text_width,
                             font_color,
@@ -157,6 +159,7 @@ pub(crate) fn render_block(
     ui: &mut egui::Ui,
     block: &ContentBlock,
     font_size: f32,
+    title_font_scale: f32,
     bg_color: Color32,
     max_width: f32,
     font_color: Option<Color32>,
@@ -169,11 +172,12 @@ pub(crate) fn render_block(
     match block {
         ContentBlock::Heading { level, spans, .. } => {
             let scale = match level {
-                1 => 2.0,
-                2 => 1.6,
-                3 => 1.3,
-                _ => 1.2,
-            };
+                1 => title_font_scale * 1.3,
+                2 => title_font_scale * 1.1,
+                3 => title_font_scale * 0.9,
+                _ => title_font_scale * 0.8,
+            }
+            .max(1.0);
             let job = build_layout_job(
                 spans,
                 font_size * scale,
@@ -776,17 +780,19 @@ pub(crate) fn build_layout_job(
 pub(crate) fn estimate_block_height(
     block: &ContentBlock,
     font_size: f32,
+    title_font_scale: f32,
     line_height: f32,
     max_width: f32,
 ) -> f32 {
     match block {
         ContentBlock::Heading { level, spans, .. } => {
             let scale = match level {
-                1 => 2.0,
-                2 => 1.6,
-                3 => 1.3,
-                _ => 1.2,
-            };
+                1 => title_font_scale * 1.3,
+                2 => title_font_scale * 1.1,
+                3 => title_font_scale * 0.9,
+                _ => title_font_scale * 0.8,
+            }
+            .max(1.0);
             let sz = font_size * scale;
             let text_len: f32 = spans.iter().map(|s| estimate_text_width(&s.text, sz)).sum();
             (text_len / max_width).ceil().max(1.0) * sz * line_spacing() + font_size * 1.2

@@ -37,6 +37,7 @@ internal fun ScrollModeContent(
     lineSpacing: Float = 1.5f,
     paraSpacing: Float = 0.5f,
     textIndent: Int = 2,
+    titleFontScale: Float = 1.5f,
     textSelection: TextSelectionState? = null,
     onSelectionChange: (TextSelectionState?) -> Unit = {},
     blockLayoutRegistry: MutableMap<Int, BlockLayoutInfo>? = null,
@@ -113,10 +114,10 @@ internal fun ScrollModeContent(
             // 章节标题
             item {
                 Text(
-                    text = breakTitleIntoLines(chapter.title, scrollContentWidthPx, fontSize * 1.5f, scrollSpToPx),
+                    text = breakTitleIntoLines(chapter.title, scrollContentWidthPx, fontSize * titleFontScale, scrollSpToPx),
                     style = TextStyle(
-                        fontSize = (fontSize * 1.5f).sp,
-                        lineHeight = (fontSize * 2.2f).sp,
+                        fontSize = (fontSize * titleFontScale).sp,
+                        lineHeight = (fontSize * titleFontScale * 1.45f).sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = fontFamily,
                         color = textColor,
@@ -144,6 +145,7 @@ internal fun ScrollModeContent(
                 lineSpacing = lineSpacing,
                 paraSpacing = paraSpacing,
                 textIndentChars = textIndent,
+                titleFontScale = titleFontScale,
                 textSelection = textSelection,
                 onSelectionChange = onSelectionChange,
                 blockLayoutRegistry = blockLayoutRegistry,

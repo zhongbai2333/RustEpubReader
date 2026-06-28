@@ -61,13 +61,13 @@ android {
         }
     }
 
-    // Produce one APK per ABI (arm64-v8a, x86_64) instead of a fat universal APK.
+    // Produce one APK per ABI (armeabi-v7a, arm64-v8a, x86_64) instead of a fat universal APK.
     // This roughly halves the install size for end users.
     splits {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "x86_64")
+            include("armeabi-v7a", "arm64-v8a", "x86_64")
             isUniversalApk = false
         }
     }
@@ -169,11 +169,12 @@ dependencies {
 tasks.register<Exec>("cargoBuild") {
     // Requires cargo-ndk to be installed globally on developer's machine:
     // cargo install cargo-ndk
-    // rustup target add aarch64-linux-android x86_64-linux-android
+    // rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
     workingDir = file("../../android-bridge")
     commandLine(
         "cargo", "ndk",
-        "-t", "arm64-v8a", 
+        "-t", "armeabi-v7a",
+        "-t", "arm64-v8a",
         "-t", "x86_64",
         "-o", "../android/app/src/main/jniLibs",
         "build", "--release"

@@ -5,8 +5,9 @@ mod app;
 mod self_update;
 mod ui;
 
-use app::ReaderApp;
+use app::{ReaderApp, TxtImportState};
 use eframe::egui;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 fn load_app_icon() -> Option<Arc<egui::viewport::IconData>> {
@@ -142,12 +143,32 @@ where
         .any(|arg| matches!(arg.as_str(), "--debug" | "-d"))
 }
 
+fn startup_open_path_from_args<I>(args: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    args.into_iter().map(PathBuf::from).find(|path| {
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "epub" | "txt"))
+                .unwrap_or(false)
+    })
+}
+
+fn startup_open_path_from_process_args() -> Option<PathBuf> {
+    startup_open_path_from_args(std::env::args_os().skip(1))
+}
+
 fn main() -> eframe::Result {
     let debug_enabled = debug_enabled_from_args(std::env::args().skip(1));
     reader_core::sharing::set_debug_logging_enabled(debug_enabled);
     if debug_enabled {
         eprintln!("[APP-DBG] Debug console logging enabled via --debug");
     }
+
+    let startup_open_path = startup_open_path_from_process_args();
 
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1200.0, 800.0])
@@ -165,16 +186,31 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Rust EPUB Reader",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(ReaderApp::default()))
+            let mut app = ReaderApp::default();
+            if let Some(path) = &startup_open_path {
+                if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("txt"))
+                    .unwrap_or(false)
+                {
+                    app.txt_import = Some(TxtImportState::new(path.clone()));
+                } else {
+                    let path_str = path.to_string_lossy().to_string();
+                    app.open_book_from_path(&path_str, None);
+                }
+            }
+            Ok(Box::new(app))
         }),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::debug_enabled_from_args;
+    use super::{debug_enabled_from_args, startup_open_path_from_args};
+    use std::ffi::OsString;
 
     #[test]
     fn debug_flag_should_be_detected() {
@@ -187,5 +223,24 @@ mod tests {
     fn debug_flag_should_be_disabled_by_default() {
         assert!(!debug_enabled_from_args(std::iter::empty::<&str>()));
         assert!(!debug_enabled_from_args(["--help"]));
+    }
+
+    #[test]
+    fn startup_open_path_should_ignore_nonexistent_paths() {
+        assert!(startup_open_path_from_args([OsString::from(r"C:\temp\missing.epub")]).is_none());
+    }
+
+    #[test]
+    fn startup_open_path_should_pick_existing_epub_or_txt() {
+        let tmp_dir = std::env::temp_dir().join("rust_epub_reader_startup_test");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        let epub = tmp_dir.join("sample.epub");
+        std::fs::write(&epub, b"dummy").unwrap();
+
+        let found = startup_open_path_from_args([epub.clone().into_os_string()]);
+        assert_eq!(found.as_deref(), Some(epub.as_path()));
+
+        let _ = std::fs::remove_file(&epub);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

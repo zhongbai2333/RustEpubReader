@@ -1,0 +1,65 @@
+name: PR 标签触发多平台构建
+
+"on":
+    pull_request:
+        types: [labeled]
+
+permissions:
+    contents: read
+    pull-requests: read
+    issues: write
+
+jobs:
+    cancel-if-unrelated:
+        runs-on: ubuntu-latest
+        if: github.event.label.name != 'run-build' && github.event.label.name != 'Run-Build' && github.event.label.name != 'RUN-BUILD'
+        steps:
+            - name: 非目标标签，取消本次 Workflow
+              uses: styfle/cancel-workflow-action@0.9.1
+              with:
+                  access_token: ${{ secrets.GITHUB_TOKEN }}
+
+    build-desktop:
+        if: github.event.label.name == 'run-build' || github.event.label.name == 'Run-Build' || github.event.label.name == 'RUN-BUILD'
+        name: Build desktop packages
+        uses: ./.github/workflows/desktop-build.yml
+        with:
+            ref: ${{ github.event.pull_request.head.sha }}
+            version: sha-${{ github.event.pull_request.head.sha }}
+            artifact-prefix: rustepubreader-pr-desktop
+
+    build-android:
+        if: github.event.label.name == 'run-build' || github.event.label.name == 'Run-Build' || github.event.label.name == 'RUN-BUILD'
+        name: Build Android APKs
+        uses: ./.github/workflows/android-build.yml
+        with:
+            ref: ${{ github.event.pull_request.head.sha }}
+            version: sha-${{ github.event.pull_request.head.sha }}
+            artifact-prefix: rustepubreader-pr-android
+        secrets: inherit
+
+    build-on-label:
+        needs:
+            - build-desktop
+            - build-android
+        if: github.event.label.name == 'run-build' || github.event.label.name == 'Run-Build' || github.event.label.name == 'RUN-BUILD'
+        runs-on: ubuntu-latest
+        steps:
+            - name: 评论并删除标签
+              uses: actions/github-script@v7
+              continue-on-error: true
+              with:
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  script: |
+                      await github.rest.issues.createComment({
+                        issue_number: context.issue.number,
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        body: '✅ RustEpubReader 多平台构建完成，已生成桌面端安装包与 Android APK。'
+                      });
+                      await github.rest.issues.removeLabel({
+                        issue_number: context.issue.number,
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        name: context.payload.label.name
+                      });

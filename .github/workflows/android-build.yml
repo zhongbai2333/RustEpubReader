@@ -1,0 +1,135 @@
+name: Android Build
+
+"on":
+    workflow_call:
+        inputs:
+            ref:
+                description: "Git ref to checkout before building. Defaults to the caller ref."
+                required: false
+                type: string
+            version:
+                description: "Version suffix used in uploaded Android artifacts."
+                required: true
+                type: string
+            artifact-prefix:
+                description: "Prefix for uploaded GitHub Actions artifact names."
+                required: false
+                type: string
+                default: android-build
+        secrets:
+            ANDROID_KEYSTORE_BASE64:
+                required: false
+            ANDROID_KEY_ALIAS:
+                required: false
+            ANDROID_KEY_PASSWORD:
+                required: false
+            ANDROID_STORE_PASSWORD:
+                required: false
+
+permissions:
+    contents: read
+
+jobs:
+    build-apk:
+        name: Build Android APK
+        runs-on: ubuntu-latest
+        env:
+            ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref || github.ref }}
+
+            - name: Set up JDK 17
+              uses: actions/setup-java@v4
+              with:
+                  java-version: "17"
+                  distribution: temurin
+
+            - name: Install Rust Android targets
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
+
+            - name: Install cargo-ndk
+              run: cargo install cargo-ndk
+
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v3
+
+            - name: Install Android NDK
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  set +o pipefail
+                  yes | sdkmanager --licenses >/dev/null
+                  set -o pipefail
+                  sdkmanager "ndk;26.1.10909125"
+                  echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+            - name: Cache cargo artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-android-${{ hashFiles('Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-android-
+                      ${{ runner.os }}-cargo-
+
+            - name: Cache Gradle
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.gradle/caches
+                      ~/.gradle/wrapper
+                  key: ${{ runner.os }}-gradle-android-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+                  restore-keys: |
+                      ${{ runner.os }}-gradle-android-
+                      ${{ runner.os }}-gradle-
+
+            - name: Decode signing keystore
+              if: env.ANDROID_KEYSTORE_BASE64 != ''
+              shell: bash
+              run: echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+
+            - name: Build Release APK
+              working-directory: android
+              env:
+                  ANDROID_KEYSTORE_FILE: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && 'release.keystore' || '' }}
+                  ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+                  ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+                  ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+              run: |
+                  chmod +x gradlew
+                  ./gradlew :app:assembleRelease --stacktrace
+
+            - name: Package Android artifacts
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  mkdir -p android-assets
+                  shopt -s nullglob
+                  found=0
+                  for apk in android/app/build/outputs/apk/release/*.apk; do
+                    base=$(basename "$apk" .apk)
+                    abi=$(echo "$base" | sed -nE 's/.*-(arm64-v8a|armeabi-v7a|x86_64|x86)-release.*/\1/p')
+                    if [ -z "$abi" ]; then abi="universal"; fi
+                    cp "$apk" "android-assets/RustEpubReader-Android-${abi}-${{ inputs.version }}.apk"
+                    found=$((found+1))
+                  done
+                  if [ "$found" -eq 0 ]; then
+                    echo "ERROR: No APK found"
+                    exit 1
+                  fi
+                  ls -la android-assets
+
+            - name: Upload Android artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix }}-apk
+                  path: android-assets/RustEpubReader-Android-*-${{ inputs.version }}.apk
+                  if-no-files-found: error

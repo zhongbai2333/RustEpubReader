@@ -10,6 +10,9 @@ body:
         - **程序版本**（关于页面可查看）
         - **操作系统与平台**（Windows / macOS / Linux / Android）
         - **复现步骤**
+        - **日志或截图**（如涉及崩溃、渲染异常、Android 安装/启动问题）
+
+        > 如涉及私有电子书内容，请优先提供脱敏片段或可公开复现文件，避免上传完整私有书籍。
 
   - type: dropdown
     id: issue_type
@@ -38,6 +41,25 @@ body:
         - Linux (x64)
         - Linux (ARM64)
         - Android
+    validations:
+      required: true
+
+  - type: dropdown
+    id: affected_area
+    attributes:
+      label: 影响范围
+      description: 问题主要发生在哪一部分？
+      options:
+        - 桌面端阅读 / 书库管理
+        - Android 阅读 / 安装 / 启动
+        - EPUB 解析 / 渲染
+        - TXT 转 EPUB
+        - 搜索 / 导出 / 分享
+        - CSC 校对 / 模型加载
+        - 自更新 / Release 产物
+        - 构建 / CI / 发布
+        - 文档 / 示例
+        - 其他
     validations:
       required: true
 

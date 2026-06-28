@@ -33,12 +33,28 @@ cargo build --release -p rust_epub_reader
 
 Windows 下会自动嵌入应用图标（需要 `rc.exe`）。
 
+### macOS 安装说明
+
+Release 页面目前提供的是可执行文件而不是 DMG 安装包：
+
+- `RustEpubReader-macOS-AppleSilicon-*`：适用于 Apple Silicon 芯片 Mac（M1 / M2 / M3 / M4 等）。
+- `RustEpubReader-macOS-Intel-*`：适用于 Intel 芯片 Mac。
+
+下载后可按以下方式运行：
+
+1. 将文件重命名为 `RustEpubReader`（可选，但更方便）。
+2. 在“终端”中进入下载目录，执行 `chmod +x RustEpubReader`。
+3. 首次运行时如果 macOS 提示来自未识别开发者，可在“系统设置 → 隐私与安全性”中选择“仍要打开”，或在终端执行 `xattr -dr com.apple.quarantine RustEpubReader` 后再运行。
+
+后续若提供 DMG，会在 Release 资产中额外发布。
+
 ### Android
 
 1. 配置 Android NDK，并在 `android/local.properties` 中设置 `sdk.dir`。
 2. 使用 `cargo-ndk` 编译 `android-bridge`：
    ```bash
-   cargo ndk -t arm64-v8a build --release -p android-bridge
+   rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
+   cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 build --release -p android-bridge
    ```
 3. 将产物 `.so` 文件放入 `android/app/src/main/jniLibs/` 对应 ABI 目录。
 4. 在 `android/` 目录下运行：
