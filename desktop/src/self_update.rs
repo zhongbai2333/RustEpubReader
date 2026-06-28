@@ -390,29 +390,6 @@ fn download_and_verify_from_url(
     Ok(out_path)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{build_download_urls, get_accelerated_url};
-
-    #[test]
-    fn accelerated_url_maps_github_release_path() {
-        let original = "https://github.com/zhongbai2333/RustEpubReader/releases/download/v1.0.2/RustEpubReader-Win64-v1.0.2.exe";
-        let accelerated = get_accelerated_url(original);
-        assert_eq!(
-            accelerated,
-            "https://dl.zhongbai233.com/release/v1.0.2/RustEpubReader-Win64-v1.0.2.exe"
-        );
-    }
-
-    #[test]
-    fn download_urls_include_github_fallback() {
-        let original = "https://github.com/zhongbai2333/RustEpubReader/releases/download/v1.0.2/RustEpubReader-Win64-v1.0.2.exe";
-        let urls = build_download_urls(original);
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[1], original);
-    }
-}
-
 fn current_executable_path() -> Result<PathBuf> {
     std::env::current_exe().context("current_exe")
 }
@@ -569,4 +546,27 @@ fn windows_apply_and_restart(tmp_file: &Path) -> Result<()> {
         .context("spawn update bat")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_download_urls, get_accelerated_url};
+
+    #[test]
+    fn accelerated_url_maps_github_release_path() {
+        let original = "https://github.com/zhongbai2333/RustEpubReader/releases/download/v1.0.2/RustEpubReader-Win64-v1.0.2.exe";
+        let accelerated = get_accelerated_url(original);
+        assert_eq!(
+            accelerated,
+            "https://dl.zhongbai233.com/release/v1.0.2/RustEpubReader-Win64-v1.0.2.exe"
+        );
+    }
+
+    #[test]
+    fn download_urls_include_github_fallback() {
+        let original = "https://github.com/zhongbai2333/RustEpubReader/releases/download/v1.0.2/RustEpubReader-Win64-v1.0.2.exe";
+        let urls = build_download_urls(original);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[1], original);
+    }
 }

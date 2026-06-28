@@ -95,7 +95,13 @@ jobs:
                       ${{ runner.os }}-cargo-
 
             - name: Build release binary
-              run: cargo build --release --locked -p rust_epub_reader --target ${{ matrix.target }}
+              shell: bash
+              run: |
+                  if [[ "${{ runner.os }}" == "macOS" ]]; then
+                    cargo build --release --locked -p rust_epub_reader --target ${{ matrix.target }} --features vendored-openssl
+                  else
+                    cargo build --release --locked -p rust_epub_reader --target ${{ matrix.target }}
+                  fi
 
             - name: Package desktop artifact
               shell: pwsh
