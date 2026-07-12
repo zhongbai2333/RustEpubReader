@@ -17,6 +17,8 @@ use reader_core::i18n::{I18n, Language};
 use reader_core::library::Library;
 use reader_core::sharing::{start_listener, DiscoveredPeer, PeerStore};
 
+use crate::ui::reader_state::{BlockKey, ContinuousScrollState};
+
 type FontDiscoveryResult = Arc<Mutex<Option<(Vec<String>, HashMap<String, String>)>>>;
 pub(crate) type TtsAudioResultSlot = Arc<Mutex<Option<Result<Vec<u8>, String>>>>;
 
@@ -438,6 +440,8 @@ pub enum AppView {
 /// Custom text selection state (replaces egui's native selectable label).
 #[derive(Clone, Debug)]
 pub struct TextSelection {
+    /// Chapter containing the selection. Cross-chapter selections are intentionally clamped.
+    pub chapter: usize,
     /// Chapter-level block index where the drag started.
     pub start_block: usize,
     /// Char offset within start_block.
@@ -513,6 +517,7 @@ pub struct ReaderApp {
     pub view: AppView,
     pub library: Library,
     pub scroll_mode: bool,
+    pub(crate) continuous_scroll: ContinuousScrollState,
     pub current_page: usize,
     pub total_pages: usize,
     pub page_block_ranges: Vec<(usize, usize)>,
@@ -609,9 +614,9 @@ pub struct ReaderApp {
     // ── Custom text selection ──
     pub text_selection: Option<TextSelection>,
     pub sel_toolbar_pos: egui::Pos2,
-    /// Pending drag origin: (press_pos, block_idx, char_idx). Created on press, promoted to
+    /// Pending drag origin: (press_pos, block key, char_idx). Created on press, promoted to
     /// TextSelection only when pointer moves > threshold. Cleared on release if no drag occurred.
-    pub sel_press_origin: Option<(egui::Pos2, usize, usize)>,
+    pub(crate) sel_press_origin: Option<(egui::Pos2, BlockKey, usize)>,
     /// When set, the user clicked on a highlighted region → show note popup for this highlight.
     pub clicked_highlight_id: Option<String>,
     pub hl_note_toolbar_pos: egui::Pos2,
@@ -625,6 +630,7 @@ pub struct ReaderApp {
     pub tts_voice_name: String,
     pub tts_rate: i32,   // e.g. 0, -20, +50 (percent)
     pub tts_volume: i32, // e.g. 0, -50, +50 (percent)
+    pub tts_chapter: usize,
     pub tts_current_block: usize,
     pub tts_stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub tts_audio_sink: Option<std::sync::Arc<rodio::Sink>>,
@@ -712,6 +718,7 @@ pub enum UpdateState {
 
 #[derive(Clone)]
 pub struct CrossChapterSnapshot {
+    pub chapter: usize,
     pub blocks: Arc<Vec<reader_core::epub::ContentBlock>>,
     pub block_ranges: Vec<(usize, usize)>,
     pub total_pages: usize,
@@ -809,6 +816,7 @@ impl Default for ReaderApp {
             view: AppView::Library,
             library,
             scroll_mode: false,
+            continuous_scroll: ContinuousScrollState::default(),
             current_page: 0,
             total_pages: 0,
             page_block_ranges: Vec::new(),
@@ -905,6 +913,7 @@ impl Default for ReaderApp {
             tts_voice_name: "zh-CN-XiaoxiaoNeural".to_string(),
             tts_rate: 0,
             tts_volume: 0,
+            tts_chapter: 0,
             tts_current_block: 0,
             tts_stop_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tts_audio_sink: None,
@@ -1448,6 +1457,7 @@ impl ReaderApp {
         if let Some(book) = &self.book {
             if let Some(ch) = book.chapters.get(self.current_chapter) {
                 self.page_anim_cross_chapter_snapshot = Some(CrossChapterSnapshot {
+                    chapter: self.current_chapter,
                     blocks: Arc::new(ch.blocks.clone()),
                     block_ranges: self.page_block_ranges.clone(),
                     total_pages: self.total_pages,
@@ -1480,8 +1490,9 @@ impl ReaderApp {
         }
     }
 
-    pub fn schedule_position_save(&mut self, block: usize) {
-        if self.current_block != block {
+    pub fn schedule_position_save(&mut self, chapter: usize, block: usize) {
+        if self.current_chapter != chapter || self.current_block != block {
+            self.current_chapter = chapter;
             self.current_block = block;
             self.position_save_due =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(400));

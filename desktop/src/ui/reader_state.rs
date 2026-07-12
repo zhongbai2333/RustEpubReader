@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -35,19 +35,38 @@ pub(crate) fn text_indent() -> f32 {
 
 // ── Thread-local deferred actions & per-frame block galley cache ──
 
-/// Per-frame cache entry: (block_idx, galley, screen_rect, plain_text)
-pub(crate) type BlockGalleyEntry = (usize, Arc<egui::Galley>, egui::Rect, String);
+/// A block identifier that remains unique when several chapters share one scroll area.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct BlockKey {
+    pub(crate) chapter: usize,
+    pub(crate) block: usize,
+}
+
+impl BlockKey {
+    pub(crate) const fn new(chapter: usize, block: usize) -> Self {
+        Self { chapter, block }
+    }
+}
+
+/// A text block laid out in the current frame for selection and hit testing.
+#[derive(Clone)]
+pub(crate) struct BlockGalleyEntry {
+    pub(crate) key: BlockKey,
+    pub(crate) galley: Arc<egui::Galley>,
+    pub(crate) rect: egui::Rect,
+    pub(crate) text: String,
+}
 
 pub(crate) type CscCharMapCacheData = (u64, u32, u32, Vec<usize>);
 
 thread_local! {
     /// Collected during render_block, consumed by render_reader for selection state machine.
     pub(crate) static BLOCK_GALLEYS: RefCell<Vec<BlockGalleyEntry>> = const { RefCell::new(Vec::new()) };
-    /// TTS read-along highlight: Some(block_idx) when TTS is actively reading a block.
-    pub(crate) static TTS_HIGHLIGHT_BLOCK: Cell<Option<usize>> = const { Cell::new(None) };
-    /// CSC corrections for the current chapter: block_idx → Vec<CorrectionInfo>.
+    /// TTS read-along highlight for the chapter and block currently being read.
+    pub(crate) static TTS_HIGHLIGHT_BLOCK: Cell<Option<BlockKey>> = const { Cell::new(None) };
+    /// CSC corrections keyed by chapter and block.
     /// Set before rendering, read inside render_block for Ruby annotation painting.
-    pub(crate) static CSC_CORRECTIONS: RefCell<std::collections::HashMap<usize, Vec<reader_core::epub::CorrectionInfo>>>
+    pub(crate) static CSC_CORRECTIONS: RefCell<std::collections::HashMap<BlockKey, Vec<reader_core::epub::CorrectionInfo>>>
         = RefCell::new(std::collections::HashMap::new());
     /// Whether ReadWrite mode is active (enables click-on-correction popups).
     pub(crate) static CSC_READWRITE: Cell<bool> = const { Cell::new(false) };
@@ -59,12 +78,115 @@ thread_local! {
 
 /// A clickable correction rect collected during rendering.
 pub(crate) struct CscRect {
-    pub(crate) block_idx: usize,
+    pub(crate) key: BlockKey,
     pub(crate) char_offset: usize,
     pub(crate) original: String,
     pub(crate) corrected: String,
     pub(crate) confidence: f32,
     pub(crate) rect: egui::Rect,
+}
+
+pub(crate) struct ClickedLink {
+    pub(crate) source_chapter: usize,
+    pub(crate) url: String,
+}
+
+/// Chapter-level lazy loading and virtualization state for continuous scrolling.
+#[derive(Debug, Default)]
+pub(crate) struct ContinuousScrollState {
+    pub(crate) start_chapter: usize,
+    pub(crate) loaded_end: usize,
+    pub(crate) visible_chapter: usize,
+    pub(crate) chapter_heights: HashMap<usize, f32>,
+    layout_signature: Option<u64>,
+    initialized: bool,
+}
+
+impl ContinuousScrollState {
+    pub(crate) fn reset(&mut self, chapter: usize, total_chapters: usize) {
+        let chapter = chapter.min(total_chapters.saturating_sub(1));
+        self.start_chapter = chapter;
+        self.loaded_end = (chapter + 1).min(total_chapters);
+        self.visible_chapter = chapter;
+        self.chapter_heights.clear();
+        self.initialized = total_chapters > 0;
+    }
+
+    pub(crate) fn needs_reset(&self, current_chapter: usize, total_chapters: usize) -> bool {
+        !self.initialized
+            || self.loaded_end > total_chapters
+            || self.start_chapter >= self.loaded_end
+            || current_chapter < self.start_chapter
+            || current_chapter >= self.loaded_end
+            || self.visible_chapter != current_chapter
+    }
+
+    pub(crate) fn append_next(&mut self, total_chapters: usize) -> Option<usize> {
+        if self.loaded_end >= total_chapters {
+            return None;
+        }
+        let appended = self.loaded_end;
+        self.loaded_end += 1;
+        Some(appended)
+    }
+
+    pub(crate) fn set_visible_chapter(&mut self, chapter: usize) {
+        self.visible_chapter = chapter;
+    }
+
+    pub(crate) fn update_layout_signature(&mut self, signature: u64) -> bool {
+        let changed = self
+            .layout_signature
+            .is_some_and(|previous| previous != signature);
+        if changed {
+            self.chapter_heights.clear();
+        }
+        self.layout_signature = Some(signature);
+        changed
+    }
+
+    pub(crate) fn record_height(&mut self, chapter: usize, height: f32) {
+        if height.is_finite() && height > 0.0 {
+            self.chapter_heights.insert(chapter, height);
+        }
+    }
+}
+
+pub(crate) struct ContinuousLayoutSettings<'a> {
+    pub(crate) text_width: f32,
+    pub(crate) font_size: f32,
+    pub(crate) title_font_scale: f32,
+    pub(crate) line_spacing: f32,
+    pub(crate) para_spacing: f32,
+    pub(crate) text_indent: f32,
+    pub(crate) latin_font: &'a str,
+    pub(crate) cjk_font: &'a str,
+}
+
+pub(crate) fn continuous_layout_signature(settings: ContinuousLayoutSettings<'_>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    settings.text_width.to_bits().hash(&mut hasher);
+    settings.font_size.to_bits().hash(&mut hasher);
+    settings.title_font_scale.to_bits().hash(&mut hasher);
+    settings.line_spacing.to_bits().hash(&mut hasher);
+    settings.para_spacing.to_bits().hash(&mut hasher);
+    settings.text_indent.to_bits().hash(&mut hasher);
+    settings.latin_font.hash(&mut hasher);
+    settings.cjk_font.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(crate) fn remaining_scroll_height(
+    content_height: f32,
+    viewport_height: f32,
+    offset: f32,
+) -> f32 {
+    let max_offset = (content_height - viewport_height).max(0.0);
+    (max_offset - offset).max(0.0)
+}
+
+pub(crate) fn continuous_load_threshold(viewport_height: f32) -> f32 {
+    viewport_height.clamp(600.0, 1600.0)
 }
 
 /// Selection highlight colour (temporary blue overlay while dragging / toolbar open).
@@ -363,5 +485,54 @@ mod tests {
 
         assert!(!layout.is_dual_column);
         assert!(layout.text_width > 2400.0);
+    }
+
+    #[test]
+    fn continuous_scroll_handles_two_and_hundred_chapter_books() {
+        for total_chapters in [2, 100] {
+            let mut state = ContinuousScrollState::default();
+            state.reset(0, total_chapters);
+            let mut appended = Vec::new();
+
+            while let Some(chapter) = state.append_next(total_chapters) {
+                appended.push(chapter);
+            }
+
+            assert_eq!(appended, (1..total_chapters).collect::<Vec<_>>());
+            assert_eq!(state.loaded_end, total_chapters);
+            assert_eq!(state.append_next(total_chapters), None);
+        }
+    }
+
+    #[test]
+    fn continuous_scroll_detects_external_chapter_navigation() {
+        let mut state = ContinuousScrollState::default();
+        state.reset(4, 10);
+        assert!(!state.needs_reset(4, 10));
+
+        assert_eq!(state.append_next(10), Some(5));
+        state.set_visible_chapter(5);
+        assert!(!state.needs_reset(5, 10));
+        assert!(state.needs_reset(7, 10));
+    }
+
+    #[test]
+    fn remaining_height_is_clamped_for_short_and_completed_content() {
+        assert_eq!(remaining_scroll_height(400.0, 800.0, 0.0), 0.0);
+        assert_eq!(remaining_scroll_height(2400.0, 800.0, 1200.0), 400.0);
+        assert_eq!(remaining_scroll_height(2400.0, 800.0, 2000.0), 0.0);
+    }
+
+    #[test]
+    fn layout_change_invalidates_measured_chapter_heights() {
+        let mut state = ContinuousScrollState::default();
+        state.reset(0, 2);
+        state.update_layout_signature(10);
+        state.record_height(0, 1200.0);
+
+        assert!(!state.update_layout_signature(10));
+        assert_eq!(state.chapter_heights.get(&0), Some(&1200.0));
+        assert!(state.update_layout_signature(11));
+        assert!(state.chapter_heights.is_empty());
     }
 }

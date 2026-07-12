@@ -47,6 +47,8 @@ impl ReaderApp {
                             if label.clicked() && entry.chapter_index != self.current_chapter {
                                 self.previous_chapter = Some(self.current_chapter);
                                 self.current_chapter = entry.chapter_index;
+                                self.current_block = 0;
+                                self.pending_restore_block = None;
                                 self.scroll_to_top = true;
                                 self.pages_dirty = true;
                                 self.current_page = 0;

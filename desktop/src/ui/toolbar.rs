@@ -83,7 +83,10 @@ impl ReaderApp {
                     .on_hover_text(&mode_tip)
                     .clicked()
                 {
+                    let entering_scroll = !self.scroll_mode;
+                    self.pending_restore_block = Some(self.current_block);
                     self.scroll_mode = !self.scroll_mode;
+                    self.scroll_to_top = entering_scroll;
                     self.pages_dirty = true;
                 }
 

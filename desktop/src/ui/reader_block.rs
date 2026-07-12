@@ -23,7 +23,7 @@ pub(crate) fn render_content_layout(
     font_size: f32,
     title_font_scale: f32,
     bg_color: Color32,
-    current_chapter: usize,
+    chapter_idx: usize,
     total_ch: usize,
     action_prev: &mut bool,
     action_next: &mut bool,
@@ -33,7 +33,7 @@ pub(crate) fn render_content_layout(
     font_color: Option<Color32>,
     font_family_name: &str,
     i18n: &reader_core::i18n::I18n,
-    clicked_link: &mut Option<String>,
+    clicked_link: &mut Option<ClickedLink>,
     highlight_ranges: &std::collections::HashMap<
         usize,
         Vec<(usize, usize, reader_core::library::HighlightColor)>,
@@ -96,7 +96,7 @@ pub(crate) fn render_content_layout(
                             font_family_name,
                             i18n,
                             clicked_link,
-                            abs_idx,
+                            BlockKey::new(chapter_idx, abs_idx),
                             hl_ranges,
                         );
                     }
@@ -119,7 +119,7 @@ pub(crate) fn render_content_layout(
                         ui.separator();
                         ui.add_space(30.0);
                         ui.horizontal(|ui| {
-                            if current_chapter > 0
+                            if chapter_idx > 0
                                 && ui
                                     .button(
                                         egui::RichText::new(i18n.t("reader.prev_chapter"))
@@ -132,7 +132,7 @@ pub(crate) fn render_content_layout(
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if current_chapter + 1 < total_ch
+                                    if chapter_idx + 1 < total_ch
                                         && ui
                                             .button(
                                                 egui::RichText::new(i18n.t("reader.next_chapter"))
@@ -165,8 +165,8 @@ pub(crate) fn render_block(
     font_color: Option<Color32>,
     font_family_name: &str,
     i18n: &reader_core::i18n::I18n,
-    clicked_link: &mut Option<String>,
-    chapter_block_idx: usize,
+    clicked_link: &mut Option<ClickedLink>,
+    block_key: BlockKey,
     highlight_ranges: &[(usize, usize, reader_core::library::HighlightColor)],
 ) {
     match block {
@@ -189,7 +189,7 @@ pub(crate) fn render_block(
                 &[],
             );
             ui.add_space(font_size * 0.8);
-            let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx);
+            let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(block_key);
             let galley = ui.painter().layout_job(job);
             let galley_size = galley.size();
             let (rect, response) =
@@ -221,7 +221,10 @@ pub(crate) fn render_block(
                     if let Some(url) = hovered_url {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         if response.clicked() {
-                            *clicked_link = Some(url);
+                            *clicked_link = Some(ClickedLink {
+                                source_chapter: block_key.chapter,
+                                url,
+                            });
                         }
                     }
                 }
@@ -241,7 +244,7 @@ pub(crate) fn render_block(
                     spans.to_vec(),
                     Vec::<(usize, String, String, f32, u8)>::new(),
                 );
-                let corrections = match map.get(&chapter_block_idx) {
+                let corrections = match map.get(&block_key) {
                     Some(c) if !c.is_empty() => c,
                     _ => return empty_result,
                 };
@@ -349,7 +352,7 @@ pub(crate) fn render_block(
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
             // TTS read-along highlight (paint behind text)
-            if TTS_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx) {
+            if TTS_HIGHLIGHT_BLOCK.get() == Some(block_key) {
                 paint_tts_highlight(ui, rect);
             }
             ui.painter()
@@ -429,7 +432,7 @@ pub(crate) fn render_block(
                             );
                             CSC_RECTS.with(|r| {
                                 r.borrow_mut().push(CscRect {
-                                    block_idx: chapter_block_idx,
+                                    key: block_key,
                                     char_offset,
                                     original: _main_text.clone(), // original text
                                     corrected: top_text.clone(),  // corrected text
@@ -455,8 +458,12 @@ pub(crate) fn render_block(
 
             // Push into per-frame cache for the selection state machine
             BLOCK_GALLEYS.with(|bg| {
-                bg.borrow_mut()
-                    .push((chapter_block_idx, galley.clone(), rect, text.clone()));
+                bg.borrow_mut().push(BlockGalleyEntry {
+                    key: block_key,
+                    galley: galley.clone(),
+                    rect,
+                    text: text.clone(),
+                });
             });
 
             // Handle individual link clicks via pointer position matching
@@ -479,7 +486,10 @@ pub(crate) fn render_block(
                     if let Some(url) = hovered_url {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         if response.clicked() {
-                            *clicked_link = Some(url);
+                            *clicked_link = Some(ClickedLink {
+                                source_chapter: block_key.chapter,
+                                url,
+                            });
                         }
                     }
                 }
@@ -811,5 +821,40 @@ pub(crate) fn estimate_block_height(
         ContentBlock::Separator => 24.0,
         ContentBlock::BlankLine => font_size * 0.5,
         ContentBlock::Image { .. } => font_size * 3.0,
+    }
+}
+pub(crate) fn estimate_chapter_height(
+    blocks: &[ContentBlock],
+    font_size: f32,
+    title_font_scale: f32,
+    text_width: f32,
+) -> f32 {
+    let first_block = if matches!(blocks.first(), Some(ContentBlock::Heading { .. })) {
+        1
+    } else {
+        0
+    };
+    let line_height = font_size * line_spacing();
+    let body_height: f32 = blocks[first_block..]
+        .iter()
+        .map(|block| {
+            estimate_block_height(block, font_size, title_font_scale, line_height, text_width)
+        })
+        .sum();
+    FRAME_MARGIN + font_size * title_font_scale * line_spacing() + TITLE_SPACING + body_height
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_chapter_height_estimate_stays_finite() {
+        let blocks: Vec<ContentBlock> = (0..100_000).map(|_| ContentBlock::BlankLine).collect();
+
+        let height = estimate_chapter_height(&blocks, 18.0, 1.5, 720.0);
+
+        assert!(height.is_finite());
+        assert!(height > 100_000.0);
     }
 }

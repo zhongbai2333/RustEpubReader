@@ -62,6 +62,9 @@ impl ReaderApp {
                                     // Jump to the chapter
                                     if self.current_chapter != result.chapter_index {
                                         self.current_chapter = result.chapter_index;
+                                        self.current_block = 0;
+                                        self.pending_restore_block = None;
+                                        self.scroll_to_top = true;
                                         self.pages_dirty = true;
                                         self.current_page = 0;
                                     }

@@ -233,6 +233,7 @@ impl ReaderApp {
         self.tts_stop_flag.store(false, Ordering::Relaxed);
         self.tts_playing = true;
         self.tts_paused = false;
+        self.tts_chapter = self.current_chapter;
         self.tts_current_block = 0;
         self.tts_prefetch_audio = None;
         self.tts_prefetch_block = 0;
@@ -265,13 +266,11 @@ impl ReaderApp {
         *self.tts_status.lock().unwrap() = String::new();
     }
 
-    /// Return the total number of blocks in the current chapter.
+    /// Return the total number of blocks in the chapter captured at playback start.
     fn tts_block_count(&self) -> Option<usize> {
-        self.book.as_ref().and_then(|b| {
-            b.chapters
-                .get(self.current_chapter)
-                .map(|ch| ch.blocks.len())
-        })
+        self.book
+            .as_ref()
+            .and_then(|b| b.chapters.get(self.tts_chapter).map(|ch| ch.blocks.len()))
     }
 
     /// Starting from `from`, find the next block index that is a Paragraph or Heading.
@@ -281,7 +280,7 @@ impl ReaderApp {
         while idx < total {
             if let Some(block) = self.book.as_ref().and_then(|b| {
                 b.chapters
-                    .get(self.current_chapter)
+                    .get(self.tts_chapter)
                     .and_then(|ch| ch.blocks.get(idx))
             }) {
                 if matches!(
@@ -302,7 +301,7 @@ impl ReaderApp {
         self.book
             .as_ref()
             .and_then(|b| {
-                b.chapters.get(self.current_chapter).and_then(|ch| {
+                b.chapters.get(self.tts_chapter).and_then(|ch| {
                     ch.blocks.get(block_idx).map(|block| match block {
                         reader_core::epub::ContentBlock::Paragraph { spans, .. } => {
                             spans.iter().map(|s| s.text.as_str()).collect::<String>()

@@ -140,6 +140,10 @@ impl ReaderApp {
                 .selectable_label(self.scroll_mode, self.i18n.t("settings.scroll"))
                 .clicked()
             {
+                if !self.scroll_mode {
+                    self.pending_restore_block = Some(self.current_block);
+                    self.scroll_to_top = true;
+                }
                 self.scroll_mode = true;
                 self.pages_dirty = true;
             }
@@ -147,6 +151,9 @@ impl ReaderApp {
                 .selectable_label(!self.scroll_mode, self.i18n.t("settings.paging"))
                 .clicked()
             {
+                if self.scroll_mode {
+                    self.pending_restore_block = Some(self.current_block);
+                }
                 self.scroll_mode = false;
                 self.pages_dirty = true;
             }

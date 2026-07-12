@@ -50,6 +50,9 @@ impl ReaderApp {
                                     .unwrap_or_else(|| format!("Ch.{}", bm.chapter));
                                 if ui.link(&title).clicked() {
                                     self.current_chapter = bm.chapter;
+                                    self.current_block = 0;
+                                    self.pending_restore_block = None;
+                                    self.scroll_to_top = true;
                                     self.pages_dirty = true;
                                     self.current_page = 0;
                                 }
@@ -151,6 +154,9 @@ impl ReaderApp {
                                         };
                                         if ui.link(&label_text).clicked() {
                                             self.current_chapter = hl.chapter;
+                                            self.current_block = 0;
+                                            self.pending_restore_block = None;
+                                            self.scroll_to_top = true;
                                             self.pages_dirty = true;
                                             self.current_page = 0;
                                         }
