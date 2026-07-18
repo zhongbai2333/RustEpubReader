@@ -63,6 +63,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var currentPage by mutableIntStateOf(0)
         private set
+    var currentBlock by mutableIntStateOf(0)
+        private set
     var previousChapter by mutableStateOf<Int?>(null)
         private set
 
@@ -446,6 +448,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             if (arr.length() == 0) return
             data class SyncedProgress(
                 val chapter: Int,
+                val block: Int,
+                val charOffset: Int,
                 val chapterTitle: String?,
                 val timestamp: Long,
             )
@@ -456,10 +460,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 val obj = arr.getJSONObject(i)
                 val hash = obj.getString("book_hash")
                 val chapter = obj.getInt("chapter")
+                val block = obj.optInt("block", 0)
+                val charOffset = obj.optInt("char_offset", 0)
                 val chapterTitle = obj.optString("chapter_title", "")
                     .takeIf { it.isNotBlank() }
                 val ts = obj.optLong("timestamp", 0)
-                progressMap[hash] = SyncedProgress(chapter, chapterTitle, ts)
+                progressMap[hash] = SyncedProgress(chapter, block, charOffset, chapterTitle, ts)
             }
             // Match library books by hash
             var updated = 0
@@ -468,12 +474,20 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 val remote = progressMap[hash] ?: continue
                 val shouldUpdate =
                     book.lastChapter != remote.chapter ||
+                        book.lastBlock != remote.block ||
+                        book.lastCharOffset != remote.charOffset ||
                         (book.lastChapter == remote.chapter &&
                             remote.chapterTitle != null &&
                             remote.chapterTitle != book.lastChapterTitle)
 
                 if (shouldUpdate) {
-                    library.updateChapter(book.uri, remote.chapter, remote.chapterTitle)
+                    library.updatePosition(
+                        book.uri,
+                        remote.chapter,
+                        remote.chapterTitle,
+                        remote.block,
+                        remote.charOffset
+                    )
                     updated++
                 }
             }
@@ -699,8 +713,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     errorMessage = "�ļ�������: $filePath"
                     return@launch
                 }
-                val resolvedChapter = resolveStartChapter(filePath, chapter)
-                parseAndOpen(file, resolvedChapter)
+                val (resolvedChapter, resolvedBlock) = resolveStartPosition(filePath, chapter)
+                parseAndOpen(file, resolvedChapter, resolvedBlock)
             } catch (e: Exception) {
                 errorMessage = "��ʧ��: ${e.message}"
             } finally {
@@ -710,7 +724,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun resolveStartChapter(filePath: String, chapter: Int): Int {
+    private fun resolveStartPosition(filePath: String, chapter: Int): Pair<Int, Int> {
         val requested = chapter.coerceAtLeast(0)
         val entry = library.books.firstOrNull { it.uri == filePath }
         val fromLibrary = entry?.lastChapter?.coerceAtLeast(0) ?: 0
@@ -735,10 +749,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         android.util.Log.d("READER-RESUME",
             "resolveStartChapter path=$filePath requested=$requested " +
                 "fromLibrary=$fromLibrary fromPrefs=$fromPrefs fromConfig=$fromConfig => $resolved")
-        return resolved
+        val resolvedBlock = if (entry?.lastChapter == resolved) entry.lastBlock else 0
+        return resolved to resolvedBlock.coerceAtLeast(0)
     }
 
-    private suspend fun parseAndOpen(file: File, startChapter: Int = 0) {
+    private suspend fun parseAndOpen(file: File, startChapter: Int = 0, startBlock: Int = 0) {
         val inputPath = file.absolutePath
         val managedEntry = withContext(Dispatchers.IO) {
             val fallbackTitle = file.nameWithoutExtension.ifBlank { "Untitled" }
@@ -813,6 +828,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         currentBookUri = managedPath
         currentChapter = startChapter.coerceIn(0, (book.chapters.size - 1).coerceAtLeast(0))
         currentPage = 0
+        currentBlock = startBlock.coerceIn(
+            0,
+            (book.chapters.getOrNull(currentChapter)?.blocks?.lastIndex ?: 0).coerceAtLeast(0)
+        )
         android.util.Log.d("READER-RESUME",
             "parseAndOpen startChapter=$startChapter chapterCount=${book.chapters.size} => currentChapter=$currentChapter")
 
@@ -881,6 +900,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
         currentChapter = target
         currentPage = 0
+        currentBlock = 0
         // Close review panel if open so a stale panel doesn't linger after TOC navigation
         showReviewPanel = false
         reviewPanelChapter = null
@@ -896,6 +916,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         previousChapter = null
         currentChapter = target
         currentPage = 0
+        currentBlock = 0
         saveProgress()
     }
 
@@ -913,6 +934,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 currentChapter = next
                 currentPage = 0
+                currentBlock = 0
                 saveProgress()
                 updateBookmarkState()
                 checkContributionPrompt()
@@ -936,6 +958,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 currentChapter = prev
                 currentPage = 0
+                currentBlock = 0
                 saveProgress()
                 updateBookmarkState()
                 checkContributionPrompt()
@@ -968,6 +991,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setPage(page: Int) {
         currentPage = page
+    }
+
+    fun updateReadingPosition(block: Int) {
+        val maxBlock = currentBook?.chapters?.getOrNull(currentChapter)?.blocks?.lastIndex ?: 0
+        val next = block.coerceIn(0, maxBlock.coerceAtLeast(0))
+        if (next == currentBlock) return
+        currentBlock = next
+        saveProgress()
     }
 
     fun adjustFontSize(delta: Float) {
@@ -1290,6 +1321,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         currentBookUri = null
         currentChapter = 0
         currentPage = 0
+        currentBlock = 0
     }
 
     private fun saveProgress() {
@@ -1297,7 +1329,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val chapterTitle = try {
             currentBook?.chapters?.get(currentChapter)?.title
         } catch (_: Exception) { null }
-        library.updateChapter(uri, currentChapter, chapterTitle)
+        library.updatePosition(uri, currentChapter, chapterTitle, currentBlock, 0)
 
         // Write chapter to SharedPreferences: global key + per-book key (resilient backup)
         val bookId = library.books.firstOrNull { it.uri == uri }?.id

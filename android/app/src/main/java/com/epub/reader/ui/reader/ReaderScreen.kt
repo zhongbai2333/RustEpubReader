@@ -125,6 +125,7 @@ import kotlin.math.ceil
 fun ReaderScreen(
     book: EpubBook,
     currentChapter: Int,
+    currentBlock: Int = 0,
     fontSize: Float,
     isDarkMode: Boolean,
     scrollMode: Boolean,
@@ -142,6 +143,7 @@ fun ReaderScreen(
     showToc: Boolean,
     onNavigateBack: () -> Unit,
     onChapterChange: (Int) -> Unit,
+    onPositionChange: (Int) -> Unit = {},
     previousChapter: Int?,
     onGoBackChapter: () -> Unit,
     onFontSizeChange: (Float) -> Unit,
@@ -825,7 +827,9 @@ fun ReaderScreen(
                         } else {
                             cscPopupPosition = localPos
                         }
-                    }
+                    },
+                    initialBlock = currentBlock,
+                    onPositionChange = onPositionChange
                 )
 
                 // 书签下拉指示文字
@@ -920,7 +924,9 @@ fun ReaderScreen(
                     } else {
                         cscPopupPosition = localPos
                     }
-                }
+                },
+                initialBlock = currentBlock,
+                onPositionChange = onPositionChange
             )
         }
 

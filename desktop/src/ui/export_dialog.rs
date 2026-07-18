@@ -72,6 +72,8 @@ impl ReaderApp {
                     title: String::new(),
                     epub_path: book_path.to_string(),
                     last_chapter: 0,
+                    last_block: 0,
+                    last_char_offset: 0,
                     last_chapter_title: None,
                     last_opened: 0,
                     created_at: 0,

@@ -738,14 +738,24 @@ impl ReaderApp {
             let mut matched_paths = Vec::new();
             for entry in &self.library.books {
                 if let Ok(h) = reader_core::epub::EpubBook::file_hash(&entry.path) {
-                    if h == pe.book_hash && entry.last_chapter != pe.chapter {
+                    if h == pe.book_hash
+                        && (entry.last_chapter != pe.chapter
+                            || entry.last_block != pe.block
+                            || entry.last_char_offset != pe.char_offset)
+                    {
                         matched_paths.push(entry.path.clone());
                     }
                 }
             }
             for p in matched_paths {
-                self.library
-                    .update_chapter(&self.data_dir, &p, pe.chapter, None);
+                self.library.update_position(
+                    &self.data_dir,
+                    &p,
+                    pe.chapter,
+                    pe.chapter_title.clone(),
+                    pe.block,
+                    pe.char_offset,
+                );
                 progress_updates_applied += 1;
             }
         }

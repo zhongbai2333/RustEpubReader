@@ -20,6 +20,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.model.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 // ─── 滚动模式 ───
 
@@ -46,9 +48,12 @@ internal fun ScrollModeContent(
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> }
+    ,initialBlock: Int = 0
+    ,onPositionChange: (Int) -> Unit = {}
 ) {
-    val listState = rememberLazyListState()
     val showChapterTitle = remember(chapter) { shouldRenderChapterTitle(chapter) }
+    val titleOffset = if (showChapterTitle) 1 else 0
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialBlock.coerceAtLeast(0) + titleOffset)
     val configuration = LocalConfiguration.current
     val scrollDensity = LocalDensity.current
     val hPaddingDp = configuration.screenWidthDp.dp * 0.065f
@@ -61,6 +66,21 @@ internal fun ScrollModeContent(
     var pullTotal by remember { mutableFloatStateOf(0f) }
     var pullTriggered by remember { mutableStateOf(false) }
     val pullThreshold = with(scrollDensity) { 120.dp.toPx() }
+
+    LaunchedEffect(chapter, showChapterTitle) {
+        listState.scrollToItem(initialBlock.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0)) + titleOffset)
+    }
+
+    LaunchedEffect(chapter, showChapterTitle) {
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collect { itemIndex ->
+                delay(350)
+                val block = (itemIndex - titleOffset)
+                    .coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
+                onPositionChange(block)
+            }
+    }
 
     val nestedScrollConnection = remember {
         object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {

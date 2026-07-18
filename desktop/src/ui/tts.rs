@@ -1,5 +1,5 @@
 //! Text-to-Speech (TTS) control floating UI and settings.
-use crate::app::ReaderApp;
+use crate::app::{ReaderApp, TtsAudioResultSlot};
 use eframe::egui;
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 use std::sync::atomic::Ordering;
@@ -23,12 +23,14 @@ const VOICE_PRESETS: &[(&str, &str)] = &[
 ];
 
 const RATE_OPTIONS: &[(i32, &str)] = &[
-    (-50, "-50%"),
-    (-25, "-25%"),
-    (0, "正常"),
-    (25, "+25%"),
-    (50, "+50%"),
-    (100, "+100%"),
+    (-50, "0.5×"),
+    (-25, "0.75×"),
+    (0, "1×"),
+    (25, "1.25×"),
+    (50, "1.5×"),
+    (100, "2×"),
+    (150, "2.5×"),
+    (200, "3×"),
 ];
 const VOLUME_OPTIONS: &[(i32, &str)] = &[
     (-50, "-50%"),
@@ -217,13 +219,7 @@ impl ReaderApp {
                     });
                 });
 
-                // Poll playback completion
                 if self.tts_playing {
-                    if let Some(sink) = &self.tts_audio_sink {
-                        if sink.empty() && !self.tts_paused {
-                            self.tts_advance_to_next_block();
-                        }
-                    }
                     ui.ctx().request_repaint();
                 }
             });
@@ -337,21 +333,30 @@ impl ReaderApp {
         if let Some(prefetch) = self.tts_prefetch_audio.take() {
             if self.tts_prefetch_block == self.tts_current_block {
                 let data = prefetch.lock().unwrap().take();
-                if let Some(bytes) = data {
-                    // Prefetch ready — play immediately with no gap!
-                    if let Some(sink) = self.tts_audio_sink.take() {
-                        sink.stop();
+                match data {
+                    Some(Ok(bytes)) => {
+                        if let Some(sink) = self.tts_audio_sink.take() {
+                            sink.stop();
+                        }
+                        if let Err(e) = self.tts_play_bytes(&bytes) {
+                            *self.tts_status.lock().unwrap() = format!("Play error: {}", e);
+                            self.tts_playing = false;
+                        }
+                        self.tts_start_prefetch();
+                        return;
                     }
-                    if let Err(e) = self.tts_play_bytes(&bytes) {
-                        *self.tts_status.lock().unwrap() = format!("Play error: {}", e);
+                    Some(Err(error)) => {
+                        *self.tts_status.lock().unwrap() = format!("TTS Error: {error}");
                         self.tts_playing = false;
+                        return;
                     }
-                    // Start prefetching the NEXT block
-                    self.tts_start_prefetch();
-                    return;
+                    None => {
+                        // Promote the in-flight prefetch instead of synthesizing the same block twice.
+                        self.tts_pending_audio = Some(prefetch);
+                        self.tts_start_prefetch();
+                        return;
+                    }
                 }
-                // Prefetch not ready yet — fall through to synthesize normally
-                // (the prefetch thread is still running, but we'll ignore it)
             }
         }
         // No prefetch available — synthesize the current block
@@ -399,7 +404,7 @@ impl ReaderApp {
     }
 
     /// Spawn a background thread to synthesize `text` and return a handle to poll.
-    fn tts_spawn_synthesis(&self, text: String) -> Arc<std::sync::Mutex<Option<Vec<u8>>>> {
+    fn tts_spawn_synthesis(&self, text: String) -> TtsAudioResultSlot {
         let voice_name = self.tts_voice_name.clone();
         let rate = self.tts_rate;
         let volume = self.tts_volume;
@@ -408,8 +413,7 @@ impl ReaderApp {
         let ctx = self.last_egui_ctx.clone();
         let logs = self.feedback_logs.clone();
 
-        let audio_ready: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
-            Arc::new(std::sync::Mutex::new(None));
+        let audio_ready: TtsAudioResultSlot = Arc::new(std::sync::Mutex::new(None));
         let audio_ready2 = audio_ready.clone();
 
         let text_preview: String = text.chars().take(30).collect();
@@ -465,11 +469,12 @@ impl ReaderApp {
                             elapsed.as_secs_f64()
                         ),
                     );
-                    *audio_ready2.lock().unwrap() = Some(bytes);
+                    *audio_ready2.lock().unwrap() = Some(Ok(bytes));
                 }
                 Err(e) => {
                     crate::app::dbg_log(&logs, format!("[TTS] ERROR synthesis: {}", e));
                     *status.lock().unwrap() = format!("TTS Error: {}", e);
+                    *audio_ready2.lock().unwrap() = Some(Err(e.to_string()));
                 }
             }
             if let Some(ctx) = ctx {
@@ -484,26 +489,51 @@ impl ReaderApp {
     pub fn tts_poll_audio(&mut self) {
         if let Some(pending) = &self.tts_pending_audio {
             let data = pending.lock().unwrap().take();
-            if let Some(bytes) = data {
+            if let Some(result) = data {
                 self.tts_pending_audio = None;
-                // Play the audio
-                if let Err(e) = self.tts_play_bytes(&bytes) {
-                    *self.tts_status.lock().unwrap() = format!("Play error: {}", e);
-                    self.tts_playing = false;
+                match result {
+                    Ok(bytes) => {
+                        if let Err(e) = self.tts_play_bytes(&bytes) {
+                            *self.tts_status.lock().unwrap() = format!("Play error: {}", e);
+                            self.tts_playing = false;
+                        }
+                    }
+                    Err(error) => {
+                        *self.tts_status.lock().unwrap() = format!("TTS Error: {error}");
+                        self.tts_playing = false;
+                    }
                 }
             }
+        }
+        let finished = self.tts_playing
+            && !self.tts_paused
+            && self
+                .tts_audio_sink
+                .as_ref()
+                .is_some_and(|sink| sink.empty());
+        if finished {
+            if let Some(sink) = self.tts_audio_sink.take() {
+                sink.stop();
+            }
+            self.tts_advance_to_next_block();
         }
     }
 
     fn tts_play_bytes(&mut self, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         self.push_feedback_log(format!("[TTS] play_bytes: {} bytes", bytes.len()));
-        let (_stream, stream_handle) = rodio::OutputStream::try_default()?;
-        let sink = rodio::Sink::try_new(&stream_handle)?;
+        if self.tts_output_handle.is_none() {
+            let (stream, handle) = rodio::OutputStream::try_default()?;
+            self.tts_output_stream = Some(stream);
+            self.tts_output_handle = Some(handle);
+        }
+        let stream_handle = self
+            .tts_output_handle
+            .as_ref()
+            .ok_or("Audio output is unavailable")?;
+        let sink = rodio::Sink::try_new(stream_handle)?;
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let source = rodio::Decoder::new(cursor)?;
         sink.append(source);
-        // Keep stream alive by leaking it (rodio requires OutputStream to stay alive)
-        std::mem::forget(_stream);
         let sink = Arc::new(sink);
         self.tts_audio_sink = Some(sink);
         *self.tts_status.lock().unwrap() = self.i18n.t("tts.playing").to_string();

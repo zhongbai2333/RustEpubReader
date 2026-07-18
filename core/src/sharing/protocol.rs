@@ -106,6 +106,10 @@ pub struct ProgressEntry {
     pub book_hash: String,
     pub title: String,
     pub chapter: usize,
+    #[serde(default, skip_serializing_if = "crate::library::is_zero")]
+    pub block: usize,
+    #[serde(default, skip_serializing_if = "crate::library::is_zero")]
+    pub char_offset: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chapter_title: Option<String>,
     pub timestamp: u64,

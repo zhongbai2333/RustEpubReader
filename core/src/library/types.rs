@@ -87,6 +87,10 @@ pub struct BookEntry {
     pub title: String,
     pub path: String,
     pub last_chapter: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_block: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_char_offset: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_chapter_title: Option<String>,
     pub last_opened: u64,
@@ -108,6 +112,10 @@ pub struct BookConfig {
     pub title: String,
     pub epub_path: String,
     pub last_chapter: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_block: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_char_offset: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_chapter_title: Option<String>,
     pub last_opened: u64,

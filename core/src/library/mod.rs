@@ -169,6 +169,10 @@ impl Library {
 
         if let Some(idx) = existing_idx {
             let entry = &mut self.books[idx];
+            if entry.last_chapter != chapter {
+                entry.last_block = 0;
+                entry.last_char_offset = 0;
+            }
             entry.id = id.clone();
             entry.title = title;
             entry.path = final_path;
@@ -183,6 +187,8 @@ impl Library {
                 title,
                 path: final_path,
                 last_chapter: chapter,
+                last_block: 0,
+                last_char_offset: 0,
                 last_chapter_title: chapter_title,
                 last_opened: now,
             });
@@ -235,6 +241,10 @@ impl Library {
 
         if let Some(idx) = existing_idx {
             let entry = &mut self.books[idx];
+            if entry.last_chapter != chapter {
+                entry.last_block = 0;
+                entry.last_char_offset = 0;
+            }
             entry.id = id.clone();
             entry.title = title;
             entry.path = managed_epub.to_string_lossy().to_string();
@@ -249,6 +259,8 @@ impl Library {
                 title,
                 path: managed_epub.to_string_lossy().to_string(),
                 last_chapter: chapter,
+                last_block: 0,
+                last_char_offset: 0,
                 last_chapter_title: chapter_title,
                 last_opened: now,
             });
@@ -288,9 +300,23 @@ impl Library {
         chapter: usize,
         chapter_title: Option<String>,
     ) {
+        self.update_position(data_dir, path, chapter, chapter_title, 0, 0);
+    }
+
+    pub fn update_position(
+        &mut self,
+        data_dir: &str,
+        path: &str,
+        chapter: usize,
+        chapter_title: Option<String>,
+        block: usize,
+        char_offset: usize,
+    ) {
         if let Some(idx) = self.find_by_path(path) {
             let entry = &mut self.books[idx];
             entry.last_chapter = chapter;
+            entry.last_block = block;
+            entry.last_char_offset = char_offset;
             if chapter_title.is_some() {
                 entry.last_chapter_title = chapter_title;
             }
@@ -436,6 +462,8 @@ impl Library {
             title: entry.title.clone(),
             epub_path: entry.path.clone(),
             last_chapter: entry.last_chapter,
+            last_block: entry.last_block,
+            last_char_offset: entry.last_char_offset,
             last_chapter_title: entry.last_chapter_title.clone(),
             last_opened: entry.last_opened,
             created_at,
@@ -489,5 +517,66 @@ impl Library {
                 let _ = std::fs::remove_file(managed_epub);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rust_epub_reader_{name}_{}_{}",
+            std::process::id(),
+            now_secs()
+        ))
+    }
+
+    #[test]
+    fn old_library_json_defaults_locator_to_chapter_start() {
+        let json = r#"{
+            "books": [{
+                "id": "",
+                "title": "Legacy",
+                "path": "legacy.epub",
+                "last_chapter": 7,
+                "last_opened": 1
+            }]
+        }"#;
+        let library: Library = serde_json::from_str(json).unwrap();
+        assert_eq!(library.books[0].last_chapter, 7);
+        assert_eq!(library.books[0].last_block, 0);
+        assert_eq!(library.books[0].last_char_offset, 0);
+    }
+
+    #[test]
+    fn update_position_round_trips_library_and_book_config() {
+        let dir = test_dir("position_round_trip");
+        let books = books_dir(dir.to_string_lossy().as_ref());
+        std::fs::create_dir_all(&books).unwrap();
+        let epub = books.join("00000000-0000-4000-8000-000000000001.epub");
+        std::fs::write(&epub, b"placeholder").unwrap();
+        let data_dir = dir.to_string_lossy().to_string();
+        let path = epub.to_string_lossy().to_string();
+
+        let mut library = Library::default();
+        let entry = library.add_or_update(
+            &data_dir,
+            "Book".into(),
+            path.clone(),
+            2,
+            Some("Chapter".into()),
+        );
+        library.update_position(&data_dir, &entry.path, 2, Some("Chapter".into()), 9, 3);
+
+        let reloaded = Library::load_from(&data_dir);
+        assert_eq!(reloaded.books[0].last_block, 9);
+        assert_eq!(reloaded.books[0].last_char_offset, 3);
+        let config = Library::read_book_config(&data_dir, &entry.id).unwrap();
+        assert_eq!(config.last_chapter, 2);
+        assert_eq!(config.last_block, 9);
+        assert_eq!(config.last_char_offset, 3);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

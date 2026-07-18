@@ -58,6 +58,13 @@ impl ReaderApp {
             }
         }
         self.total_pages = self.page_block_ranges.len().max(1);
+        if let Some(block) = self.pending_restore_block.take() {
+            self.current_page = self
+                .page_block_ranges
+                .iter()
+                .position(|(start, end)| *start <= block && block < *end)
+                .unwrap_or_else(|| self.total_pages.saturating_sub(1));
+        }
         if self.current_page >= self.total_pages {
             self.current_page = self.total_pages.saturating_sub(1);
         }
@@ -211,7 +218,7 @@ impl ReaderApp {
                         scroll_area = scroll_area.vertical_scroll_offset(0.0);
                         self.scroll_to_top = false;
                     }
-                    scroll_area.show(ui, |ui| {
+                    let scroll_output = scroll_area.show(ui, |ui| {
                         render_content_layout(
                             ui,
                             h_margin,
@@ -237,7 +244,31 @@ impl ReaderApp {
                             &mut clicked_link,
                             &highlight_ranges,
                         );
+                        if let Some(target) = self.pending_restore_block {
+                            BLOCK_GALLEYS.with(|galleys| {
+                                if let Some((_, _, rect, _)) = galleys
+                                    .borrow()
+                                    .iter()
+                                    .find(|(idx, _, _, _)| *idx == target)
+                                {
+                                    ui.scroll_to_rect(*rect, Some(egui::Align::Min));
+                                    self.pending_restore_block = None;
+                                }
+                            });
+                        }
                     });
+                    let viewport = scroll_output.inner_rect;
+                    let visible_block = BLOCK_GALLEYS.with(|galleys| {
+                        galleys
+                            .borrow()
+                            .iter()
+                            .filter(|(_, _, rect, _)| rect.intersects(viewport))
+                            .min_by(|a, b| a.2.top().total_cmp(&b.2.top()))
+                            .map(|(idx, _, _, _)| *idx)
+                    });
+                    if let Some(block) = visible_block {
+                        self.schedule_position_save(block);
+                    }
                 } else {
                     let page_rect = ui.available_rect_before_wrap();
                     self.paging_page_rect = Some(page_rect);
@@ -1081,6 +1112,12 @@ impl ReaderApp {
                 }
             } else {
                 self.next_page();
+            }
+        }
+
+        if !self.scroll_mode {
+            if let Some((block, _)) = self.page_block_ranges.get(self.current_page).copied() {
+                self.schedule_position_save(block);
             }
         }
 

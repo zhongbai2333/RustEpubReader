@@ -115,6 +115,10 @@ data class BookEntry(
     @SerialName("config_path") val configPath: String? = null,
     @JsonNames("lastChapter", "last_chapter")
     val lastChapter: Int = 0,
+    @JsonNames("lastBlock", "last_block")
+    val lastBlock: Int = 0,
+    @JsonNames("lastCharOffset", "last_char_offset")
+    val lastCharOffset: Int = 0,
     @SerialName("last_chapter_title") val lastChapterTitle: String? = null,
     @JsonNames("lastOpened", "last_opened")
     val lastOpened: Long = System.currentTimeMillis()
@@ -143,6 +147,8 @@ data class BookConfig(
     val title: String,
     @SerialName("epub_path") val epubPath: String,
     @SerialName("last_chapter") val lastChapter: Int = 0,
+    @SerialName("last_block") val lastBlock: Int = 0,
+    @SerialName("last_char_offset") val lastCharOffset: Int = 0,
     @SerialName("last_chapter_title") val lastChapterTitle: String? = null,
     @SerialName("last_opened") val lastOpened: Long = System.currentTimeMillis(),
     @SerialName("created_at") val createdAt: Long = System.currentTimeMillis(),
@@ -245,6 +251,8 @@ data class FullBookConfig(
     val title: String,
     @SerialName("epub_path") val epubPath: String,
     @SerialName("last_chapter") val lastChapter: Int = 0,
+    @SerialName("last_block") val lastBlock: Int = 0,
+    @SerialName("last_char_offset") val lastCharOffset: Int = 0,
     @SerialName("last_chapter_title") val lastChapterTitle: String? = null,
     @SerialName("last_opened") val lastOpened: Long = 0,
     @SerialName("created_at") val createdAt: Long = 0,

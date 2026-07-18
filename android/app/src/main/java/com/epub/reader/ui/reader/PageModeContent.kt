@@ -109,6 +109,8 @@ internal fun PageModeContent(
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> }
+    ,initialBlock: Int = 0
+    ,onPositionChange: (Int) -> Unit = {}
 ) {
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -169,6 +171,25 @@ internal fun PageModeContent(
     val leadingVirtual = if (hasPrevChapter) 1 else 0
     val trailingVirtual = if (hasNextChapter) 1 else 0
     val totalSlots = (pairedPages.size + leadingVirtual + trailingVirtual).coerceAtLeast(1)
+
+    fun slotForBlock(block: Int): Int {
+        val target = block.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
+        var consumed = 0
+        val pageIndex = pages.indexOfFirst { page ->
+            val contains = target in consumed until (consumed + page.size)
+            consumed += page.size
+            contains
+        }.let { if (it >= 0) it else pages.lastIndex.coerceAtLeast(0) }
+        val pairedIndex = if (isTwoColumn) pageIndex / 2 else pageIndex
+        return (leadingVirtual + pairedIndex).coerceIn(0, totalSlots - 1)
+    }
+
+    fun blockForSlot(slot: Int): Int {
+        val pairedIndex = (slot - leadingVirtual).coerceIn(0, pairedPages.lastIndex.coerceAtLeast(0))
+        val firstPageIndex = if (isTwoColumn) pairedIndex * 2 else pairedIndex
+        return pages.take(firstPageIndex).sumOf { it.size }
+            .coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
+    }
 
     val pagerState = rememberPagerState(pageCount = { totalSlots })
     val pageCurlState = rememberPageCurlState()
@@ -358,7 +379,7 @@ internal fun PageModeContent(
             startAtLastPageRef[0] = false
             leadingVirtual + pairedPages.lastIndex.coerceAtLeast(0)
         } else {
-            leadingVirtual
+            slotForBlock(initialBlock)
         }
         when {
             isRealChapterChange && pageAnimation == "Slide" -> {
@@ -400,6 +421,21 @@ internal fun PageModeContent(
         }
         // 定位完成后解锁边界检测
         chapterJumpTriggered = false
+    }
+
+    LaunchedEffect(currentChapter, pageAnimation, isBookSpread) {
+        snapshotFlow {
+            when {
+                isBookSpread -> bookSpreadPageCurlState.current
+                pageAnimation == "Realistic" -> pageCurlState.current
+                else -> pagerState.currentPage
+            }
+        }.collect { slot ->
+            delay(350)
+            if (!chapterJumpTriggered && slot in leadingVirtual until (leadingVirtual + pairedPages.size)) {
+                onPositionChange(blockForSlot(slot))
+            }
+        }
     }
 
     // 翻页到边界时，自动跨章节

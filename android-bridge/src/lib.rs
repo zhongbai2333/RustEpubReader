@@ -124,6 +124,8 @@ fn book_entry_to_android_json(
         "uri": entry.path.clone(),
         "config_path": config_path,
         "lastChapter": entry.last_chapter,
+        "lastBlock": entry.last_block,
+        "lastCharOffset": entry.last_char_offset,
         "last_chapter_title": entry.last_chapter_title.clone(),
         "lastOpened": to_android_last_opened(entry.last_opened),
     })
@@ -404,6 +406,8 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updateChapter(
         if let Some(local) = s.progress.iter_mut().find(|p| p.book_hash == book_hash) {
             local.title = title;
             local.chapter = chapter as usize;
+            local.block = 0;
+            local.char_offset = 0;
             local.chapter_title = chapter_title_opt;
             local.timestamp = ts;
         } else {
@@ -411,11 +415,84 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updateChapter(
                 book_hash,
                 title,
                 chapter: chapter as usize,
+                block: 0,
+                char_offset: 0,
                 chapter_title: chapter_title_opt,
                 timestamp: ts,
             });
         }
         s.save(&data_dir);
+    }
+}
+
+/// Update the stable content locator for a book.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updatePosition(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    path: JString,
+    chapter: jni::sys::jint,
+    chapter_title: JString,
+    block: jni::sys::jint,
+    char_offset: jni::sys::jint,
+) {
+    let data_dir: String = match env.get_string(&data_dir) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let path: String = match env.get_string(&path) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let chapter_title: String = env
+        .get_string(&chapter_title)
+        .map(Into::into)
+        .unwrap_or_default();
+    let chapter_title = (!chapter_title.trim().is_empty()).then_some(chapter_title);
+    let chapter = chapter.max(0) as usize;
+    let block = block.max(0) as usize;
+    let char_offset = char_offset.max(0) as usize;
+
+    let mut library = Library::load_from(&data_dir);
+    library.update_position(
+        &data_dir,
+        &path,
+        chapter,
+        chapter_title.clone(),
+        block,
+        char_offset,
+    );
+
+    if let Ok(book_hash) = EpubBook::file_hash(&path) {
+        let title = library
+            .books
+            .iter()
+            .find(|b| b.path == path)
+            .map(|b| b.title.clone())
+            .unwrap_or_default();
+        let store = get_peer_store(&data_dir);
+        let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let timestamp = now_secs();
+        if let Some(local) = store.progress.iter_mut().find(|p| p.book_hash == book_hash) {
+            local.title = title;
+            local.chapter = chapter;
+            local.block = block;
+            local.char_offset = char_offset;
+            local.chapter_title = chapter_title;
+            local.timestamp = timestamp;
+        } else {
+            store.progress.push(reader_core::sharing::ProgressEntry {
+                book_hash,
+                title,
+                chapter,
+                block,
+                char_offset,
+                chapter_title,
+                timestamp,
+            });
+        }
+        store.save(&data_dir);
     }
 }
 

@@ -285,6 +285,7 @@ private fun MainContent(vm: ReaderViewModel) {
                     ReaderScreen(
                         book = book,
                         currentChapter = vm.currentChapter,
+                        currentBlock = vm.currentBlock,
                         fontSize = vm.fontSize,
                         isDarkMode = vm.isDarkMode,
                         scrollMode = vm.isScrollMode,
@@ -302,6 +303,7 @@ private fun MainContent(vm: ReaderViewModel) {
                         showToc = drawerState.isOpen,
                         onNavigateBack = { vm.closeBook() },
                         onChapterChange = { vm.goToChapter(it) },
+                        onPositionChange = { vm.updateReadingPosition(it) },
                         previousChapter = vm.previousChapter,
                         onGoBackChapter = { vm.goBackChapter() },
                         onFontSizeChange = { vm.updateFontSize(it) },

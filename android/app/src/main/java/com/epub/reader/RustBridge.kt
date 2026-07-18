@@ -17,6 +17,7 @@ object RustBridge {
     external fun loadLibrary(dataDir: String): String?
     external fun addOrUpdateBook(dataDir: String, title: String, path: String, chapter: Int, chapterTitle: String): String?
     external fun updateChapter(dataDir: String, path: String, chapter: Int, chapterTitle: String)
+    external fun updatePosition(dataDir: String, path: String, chapter: Int, chapterTitle: String, block: Int, charOffset: Int)
     external fun removeBook(dataDir: String, index: Int)
     external fun removeBookByPath(dataDir: String, path: String): Boolean
 

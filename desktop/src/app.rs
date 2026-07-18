@@ -18,6 +18,7 @@ use reader_core::library::Library;
 use reader_core::sharing::{start_listener, DiscoveredPeer, PeerStore};
 
 type FontDiscoveryResult = Arc<Mutex<Option<(Vec<String>, HashMap<String, String>)>>>;
+pub(crate) type TtsAudioResultSlot = Arc<Mutex<Option<Result<Vec<u8>, String>>>>;
 
 /// Push a debug log entry from anywhere (including background threads).
 /// Writes to both the in-memory feedback_logs buffer and stderr (when debug logging is enabled).
@@ -489,7 +490,11 @@ pub struct ReaderApp {
     pub book_path: Option<String>,
     pub current_book_hash: Option<String>,
     pub last_synced_chapter: Option<usize>,
+    pub last_synced_block: Option<usize>,
     pub current_chapter: usize,
+    pub current_block: usize,
+    pub pending_restore_block: Option<usize>,
+    pub position_save_due: Option<std::time::Instant>,
     pub font_size: f32,
     pub dark_mode: bool,
     pub reader_bg_color: Color32,
@@ -623,11 +628,13 @@ pub struct ReaderApp {
     pub tts_current_block: usize,
     pub tts_stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub tts_audio_sink: Option<std::sync::Arc<rodio::Sink>>,
+    pub tts_output_stream: Option<rodio::OutputStream>,
+    pub tts_output_handle: Option<rodio::OutputStreamHandle>,
     pub tts_status: std::sync::Arc<std::sync::Mutex<String>>,
     pub show_tts_panel: bool,
-    pub tts_pending_audio: Option<std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>>,
+    pub tts_pending_audio: Option<TtsAudioResultSlot>,
     /// Prefetched audio for the next block (ready to play immediately when current finishes).
-    pub tts_prefetch_audio: Option<std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>>,
+    pub tts_prefetch_audio: Option<TtsAudioResultSlot>,
     /// Block index that the prefetch corresponds to.
     pub tts_prefetch_block: usize,
     pub last_egui_ctx: Option<egui::Context>,
@@ -779,7 +786,11 @@ impl Default for ReaderApp {
             book_path: None,
             current_book_hash: None,
             last_synced_chapter: None,
+            last_synced_block: None,
             current_chapter: 0,
+            current_block: 0,
+            pending_restore_block: None,
+            position_save_due: None,
             font_size: 16.0,
             dark_mode: true,
             reader_bg_color: Color32::from_rgb(250, 246, 238),
@@ -897,6 +908,8 @@ impl Default for ReaderApp {
             tts_current_block: 0,
             tts_stop_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tts_audio_sink: None,
+            tts_output_stream: None,
+            tts_output_handle: None,
             tts_status: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
             show_tts_panel: false,
             tts_pending_audio: None,
@@ -1150,7 +1163,10 @@ impl ReaderApp {
                 self.book_path = Some(entry.path.clone());
                 self.current_chapter = ch;
                 self.last_synced_chapter = None; // Reset so progress is pushed immediately on first update
-                self.scroll_to_top = true;
+                self.last_synced_block = None;
+                self.current_block = entry.last_block;
+                self.pending_restore_block = Some(entry.last_block);
+                self.scroll_to_top = entry.last_block == 0;
                 self.pages_dirty = true;
                 self.current_page = 0;
                 self.view = AppView::Reader;
@@ -1202,6 +1218,8 @@ impl ReaderApp {
             self.scroll_to_top = true;
             self.pages_dirty = true;
             self.current_page = 0;
+            self.current_block = 0;
+            self.pending_restore_block = None;
             if let Some(p) = &self.book_path {
                 let chap_title = self
                     .book
@@ -1230,6 +1248,8 @@ impl ReaderApp {
             self.scroll_to_top = true;
             self.pages_dirty = true;
             self.current_page = 0;
+            self.current_block = 0;
+            self.pending_restore_block = None;
             if let Some(p) = &self.book_path {
                 let chap_title = self
                     .book
@@ -1460,6 +1480,39 @@ impl ReaderApp {
         }
     }
 
+    pub fn schedule_position_save(&mut self, block: usize) {
+        if self.current_block != block {
+            self.current_block = block;
+            self.position_save_due =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
+        }
+    }
+
+    fn flush_reading_position_if_due(&mut self) {
+        let Some(due) = self.position_save_due else {
+            return;
+        };
+        if std::time::Instant::now() < due {
+            return;
+        }
+        self.position_save_due = None;
+        if let Some(path) = &self.book_path {
+            let chapter_title = self
+                .book
+                .as_ref()
+                .and_then(|b| b.chapters.get(self.current_chapter))
+                .map(|c| c.title.clone());
+            self.library.update_position(
+                &self.data_dir,
+                path,
+                self.current_chapter,
+                chapter_title,
+                self.current_block,
+                0,
+            );
+        }
+    }
+
     pub fn prev_page(&mut self) {
         if self.current_page > 0 {
             self.trigger_page_animation_to(self.current_page - 1, -1.0);
@@ -1671,6 +1724,7 @@ impl eframe::App for ReaderApp {
         self.last_egui_ctx = Some(ctx.clone());
         // --- Poll TTS audio ---
         self.tts_poll_audio();
+        self.flush_reading_position_if_due();
         // --- Poll CSC model download ---
         self.csc_poll_download();
         // --- Poll GitHub OAuth ---
@@ -1765,10 +1819,17 @@ impl eframe::App for ReaderApp {
                 // If the update applies to the currently opened book
                 if let Some(hash) = &self.current_book_hash {
                     if &update.book_hash == hash {
-                        if update.chapter != self.current_chapter {
-                            self.previous_chapter = Some(self.current_chapter);
+                        if update.chapter != self.current_chapter
+                            || update.block != self.current_block
+                        {
+                            if update.chapter != self.current_chapter {
+                                self.previous_chapter = Some(self.current_chapter);
+                            }
                             self.current_chapter = update.chapter;
                             self.last_synced_chapter = Some(update.chapter); // Don't bounce it back
+                            self.last_synced_block = Some(update.block);
+                            self.current_block = update.block;
+                            self.pending_restore_block = Some(update.block);
                             self.pages_dirty = true;
                             self.current_page = 0;
                         }
@@ -1780,11 +1841,13 @@ impl eframe::App for ReaderApp {
                                     .and_then(|b| b.chapters.get(self.current_chapter))
                                     .map(|c| c.title.clone())
                             });
-                            self.library.update_chapter(
+                            self.library.update_position(
                                 &self.data_dir,
                                 p,
                                 self.current_chapter,
                                 chap_title,
+                                update.block,
+                                update.char_offset,
                             );
                         }
                         continue;
@@ -1796,6 +1859,8 @@ impl eframe::App for ReaderApp {
                     if let Ok(h) = reader_core::epub::EpubBook::file_hash(&entry.path) {
                         if h == update.book_hash
                             && (entry.last_chapter != update.chapter
+                                || entry.last_block != update.block
+                                || entry.last_char_offset != update.char_offset
                                 || (update.chapter_title.is_some()
                                     && entry.last_chapter_title != update.chapter_title))
                         {
@@ -1804,11 +1869,13 @@ impl eframe::App for ReaderApp {
                     }
                 }
                 for p in matched_paths {
-                    self.library.update_chapter(
+                    self.library.update_position(
                         &self.data_dir,
                         &p,
                         update.chapter,
                         update.chapter_title.clone(),
+                        update.block,
+                        update.char_offset,
                     );
                 }
             }
@@ -1851,7 +1918,9 @@ impl eframe::App for ReaderApp {
         }
 
         // --- Push outgoing local progress to PeerStore ---
-        if Some(self.current_chapter) != self.last_synced_chapter {
+        if Some(self.current_chapter) != self.last_synced_chapter
+            || Some(self.current_block) != self.last_synced_block
+        {
             if let Some(hash) = &self.current_book_hash {
                 let mut store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
                 let now = std::time::SystemTime::now()
@@ -1871,6 +1940,8 @@ impl eframe::App for ReaderApp {
 
                 if let Some(local) = store.progress.iter_mut().find(|p| p.book_hash == *hash) {
                     local.chapter = self.current_chapter;
+                    local.block = self.current_block;
+                    local.char_offset = 0;
                     local.chapter_title = chapter_title.clone();
                     local.title = title.clone();
                     local.timestamp = now;
@@ -1879,12 +1950,15 @@ impl eframe::App for ReaderApp {
                         book_hash: hash.clone(),
                         title,
                         chapter: self.current_chapter,
+                        block: self.current_block,
+                        char_offset: 0,
                         chapter_title,
                         timestamp: now,
                     });
                 }
                 store.save(&self.data_dir);
                 self.last_synced_chapter = Some(self.current_chapter);
+                self.last_synced_block = Some(self.current_block);
             }
         }
 

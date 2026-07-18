@@ -170,6 +170,8 @@ impl PeerStore {
                 let should_replace = r.timestamp > local.timestamp
                     || (r.timestamp == local.timestamp
                         && (r.chapter != local.chapter
+                            || r.block != local.block
+                            || r.char_offset != local.char_offset
                             || (local.chapter_title.is_none() && r.chapter_title.is_some())));
 
                 if should_replace {
@@ -1439,6 +1441,8 @@ mod tests {
             book_hash: "h1".into(),
             title: "Book".into(),
             chapter: 17,
+            block: 0,
+            char_offset: 0,
             chapter_title: None,
             timestamp: 100,
         });
@@ -1447,6 +1451,8 @@ mod tests {
             book_hash: "h1".into(),
             title: "Book".into(),
             chapter: 17,
+            block: 0,
+            char_offset: 0,
             chapter_title: Some("第16章 被妹妹讨厌了".into()),
             timestamp: 100,
         }]);
@@ -1457,6 +1463,34 @@ mod tests {
             store.progress[0].chapter_title.as_deref(),
             Some("第16章 被妹妹讨厌了")
         );
+    }
+
+    #[test]
+    fn test_merge_progress_should_update_block_in_same_chapter() {
+        let mut store = PeerStore::default();
+        store.progress.push(ProgressEntry {
+            book_hash: "h1".into(),
+            title: "Book".into(),
+            chapter: 17,
+            block: 3,
+            char_offset: 0,
+            chapter_title: None,
+            timestamp: 100,
+        });
+
+        let changed = store.merge_progress(&[ProgressEntry {
+            book_hash: "h1".into(),
+            title: "Book".into(),
+            chapter: 17,
+            block: 12,
+            char_offset: 4,
+            chapter_title: None,
+            timestamp: 100,
+        }]);
+
+        assert_eq!(changed.len(), 1);
+        assert_eq!(store.progress[0].block, 12);
+        assert_eq!(store.progress[0].char_offset, 4);
     }
 
     #[test]

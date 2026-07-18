@@ -115,6 +115,36 @@ class Library(private val context: Context) {
         }
     }
 
+    fun updatePosition(
+        uri: String,
+        chapter: Int,
+        chapterTitle: String? = null,
+        block: Int = 0,
+        charOffset: Int = 0
+    ) {
+        val safeBlock = block.coerceAtLeast(0)
+        val safeOffset = charOffset.coerceAtLeast(0)
+        RustBridge.updatePosition(
+            dataDir,
+            uri,
+            chapter,
+            chapterTitle ?: "",
+            safeBlock,
+            safeOffset
+        )
+        val idx = books.indexOfFirst { it.uri == uri }
+        if (idx >= 0) {
+            val previous = books[idx]
+            books[idx] = previous.copy(
+                lastChapter = chapter,
+                lastBlock = safeBlock,
+                lastCharOffset = safeOffset,
+                lastChapterTitle = chapterTitle ?: previous.lastChapterTitle,
+                lastOpened = System.currentTimeMillis()
+            )
+        }
+    }
+
     /** 按最近打开时间排序，返回索引列表 */
     fun sortedIndicesByRecent(): List<Int> {
         return books.indices.sortedByDescending { books[it].lastOpened }
