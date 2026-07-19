@@ -420,7 +420,7 @@ impl ReaderApp {
                     .fill(p)
                     .min_size(Vec2::new(22.0, 22.0));
                 if self.reader_bg_color == p {
-                    btn = btn.stroke(egui::Stroke::new(2.0, Color32::LIGHT_BLUE));
+                    btn = btn.stroke(egui::Stroke::new(2.0_f32, Color32::LIGHT_BLUE));
                 }
                 if ui.add(btn).clicked() {
                     self.reader_bg_color = p;

@@ -394,7 +394,7 @@ pub(crate) fn render_block(
                             let underline_y = y_bottom - 1.0;
                             ui.painter().line_segment(
                                 [egui::pos2(x, underline_y), egui::pos2(x2, underline_y)],
-                                egui::Stroke::new(2.0, Color32::from_rgb(220, 60, 50)),
+                                egui::Stroke::new(2.0_f32, Color32::from_rgb(220, 60, 50)),
                             );
 
                             // Hover tooltip: show corrected char + confidence
@@ -683,7 +683,7 @@ pub(crate) fn build_layout_job(
                 color: normal_color,
                 italics: is_italic,
                 underline: if is_link {
-                    egui::Stroke::new(1.0, link_color)
+                    egui::Stroke::new(1.0_f32, link_color)
                 } else {
                     egui::Stroke::NONE
                 },
@@ -719,7 +719,7 @@ pub(crate) fn build_layout_job(
                         color: fg,
                         italics: is_italic,
                         underline: if is_link {
-                            egui::Stroke::new(1.0, link_color)
+                            egui::Stroke::new(1.0_f32, link_color)
                         } else {
                             egui::Stroke::NONE
                         },
@@ -746,7 +746,7 @@ pub(crate) fn build_layout_job(
                 color: fg,
                 italics: is_italic,
                 underline: if is_link {
-                    egui::Stroke::new(1.0, link_color)
+                    egui::Stroke::new(1.0_f32, link_color)
                 } else {
                     egui::Stroke::NONE
                 },

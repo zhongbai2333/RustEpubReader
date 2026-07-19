@@ -67,7 +67,7 @@ impl ReaderApp {
                         bottom: 6,
                     })
                     .stroke(Stroke::new(
-                        0.5,
+                        0.5_f32,
                         if dark {
                             Color32::from_gray(55)
                         } else {

@@ -685,7 +685,7 @@ impl ReaderApp {
                                     egui::pos2(sep_x, page_rect.top() + 20.0),
                                     egui::pos2(sep_x, page_rect.bottom() - 20.0),
                                 ],
-                                egui::Stroke::new(1.0, Color32::from_gray(80)),
+                                egui::Stroke::new(1.0_f32, Color32::from_gray(80)),
                             );
                         }
                         let page_info = if right_page < self.total_pages {

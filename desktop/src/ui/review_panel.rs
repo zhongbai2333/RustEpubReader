@@ -52,10 +52,9 @@ fn parse_review_card(text: &str) -> Option<ReviewCard> {
     const AUTHOR_ASCII: &str = "作者:"; // ASCII colon (7 bytes)
     let (author_pos, author_marker_len) = if let Some(p) = first_part.rfind(AUTHOR_FULL) {
         (p, AUTHOR_FULL.len())
-    } else if let Some(p) = first_part.rfind(AUTHOR_ASCII) {
-        (p, AUTHOR_ASCII.len())
     } else {
-        return None;
+        let p = first_part.rfind(AUTHOR_ASCII)?;
+        (p, AUTHOR_ASCII.len())
     };
     let content = first_part[..author_pos].trim().to_string();
     let author = first_part[author_pos + author_marker_len..]

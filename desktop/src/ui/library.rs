@@ -146,7 +146,7 @@ impl ReaderApp {
                 egui::pos2(separator_rect.left() + 32.0, separator_rect.top()),
                 egui::pos2(separator_rect.right() - 32.0, separator_rect.top()),
             ],
-            Stroke::new(1.0, border_color),
+            Stroke::new(1.0_f32, border_color),
         );
         ui.add_space(12.0);
 
@@ -257,7 +257,7 @@ impl ReaderApp {
                                 card_rect,
                                 CornerRadius::same(10),
                                 Stroke::new(
-                                    1.0,
+                                    1.0_f32,
                                     if hovered {
                                         accent.linear_multiply(0.5)
                                     } else {
@@ -373,7 +373,7 @@ impl ReaderApp {
                                     egui::RichText::new("↗").size(12.0).color(subtitle_color),
                                 )
                                 .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::new(1.0, border_color))
+                                .stroke(Stroke::new(1.0_f32, border_color))
                                 .corner_radius(CornerRadius::same(5))
                                 .min_size(Vec2::new(24.0, 26.0));
                                 if ui
@@ -387,7 +387,7 @@ impl ReaderApp {
                                     egui::RichText::new("🗑").size(12.0).color(subtitle_color),
                                 )
                                 .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::new(1.0, border_color))
+                                .stroke(Stroke::new(1.0_f32, border_color))
                                 .corner_radius(CornerRadius::same(5))
                                 .min_size(Vec2::new(24.0, 26.0));
                                 if ui.add(del_btn).clicked() {
