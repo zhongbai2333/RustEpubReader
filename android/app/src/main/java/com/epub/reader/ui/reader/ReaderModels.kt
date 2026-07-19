@@ -29,5 +29,6 @@ data class TextSelectionState(
 data class BlockLayoutInfo(
     val text: String,
     val layoutResult: TextLayoutResult,
-    val coordinates: LayoutCoordinates
+    val coordinates: LayoutCoordinates,
+    val sourceCharOffset: Int = 0
 )

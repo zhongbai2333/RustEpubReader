@@ -382,7 +382,8 @@ fun ReaderScreen(
                 if (dist < minDistance) {
                     minDistance = dist
                     minBlock = idx
-                    minOffset = info.layoutResult.getOffsetForPosition(Offset(clampedX, clampedY))
+                    minOffset = info.sourceCharOffset +
+                        info.layoutResult.getOffsetForPosition(Offset(clampedX, clampedY))
                 }
             } catch (_: Exception) {
             }
@@ -408,7 +409,8 @@ fun ReaderScreen(
             val nearest = candidates.firstOrNull()
             if (nearest != null) {
                 actualBlock = nearest.key
-                actualOffset = if (nearest.key < blockIndex) nearest.value.text.length else 0
+                actualOffset = nearest.value.sourceCharOffset +
+                    if (nearest.key < blockIndex) nearest.value.text.length else 0
             } else {
                 return TextSelectionState(blockIndex, 0, blockIndex, 0)
             }
@@ -420,16 +422,17 @@ fun ReaderScreen(
 
         if (actualInfo != null) {
             val len = actualInfo.text.length
-            val safeOffset = actualOffset.coerceIn(0, if (len > 0) len - 1 else 0)
+            val safeOffset = (actualOffset - actualInfo.sourceCharOffset)
+                .coerceIn(0, if (len > 0) len - 1 else 0)
             try {
                 val wordBoundary = actualInfo.layoutResult.getWordBoundary(safeOffset)
-                wordStart = wordBoundary.start
-                wordEnd = wordBoundary.end
+                wordStart = wordBoundary.start + actualInfo.sourceCharOffset
+                wordEnd = wordBoundary.end + actualInfo.sourceCharOffset
             } catch (_: Exception) {
             }
             if (wordStart >= wordEnd) {
-                wordStart = safeOffset
-                wordEnd = (safeOffset + 1).coerceAtMost(len)
+                wordStart = safeOffset + actualInfo.sourceCharOffset
+                wordEnd = (safeOffset + 1).coerceAtMost(len) + actualInfo.sourceCharOffset
             }
         }
 
@@ -441,8 +444,12 @@ fun ReaderScreen(
         for (blockIdx in sel.startBlock..sel.endBlock) {
             val info = blockLayoutRegistry[blockIdx] ?: continue
             val text = info.text
-            val start = if (blockIdx == sel.startBlock) sel.startChar.coerceIn(0, text.length) else 0
-            val end = if (blockIdx == sel.endBlock) sel.endChar.coerceIn(0, text.length) else text.length
+            val start = if (blockIdx == sel.startBlock) {
+                (sel.startChar - info.sourceCharOffset).coerceIn(0, text.length)
+            } else 0
+            val end = if (blockIdx == sel.endBlock) {
+                (sel.endChar - info.sourceCharOffset).coerceIn(0, text.length)
+            } else text.length
             if (start < end) {
                 if (sb.isNotEmpty()) sb.append("\n")
                 sb.append(text.substring(start, end))
@@ -488,8 +495,10 @@ fun ReaderScreen(
         if (startInfo.text.isEmpty() || endInfo.text.isEmpty()) return null
 
         return try {
-            val startIndex = sel.startChar.coerceIn(0, (startInfo.text.length - 1).coerceAtLeast(0))
-            val endIndex = (sel.endChar - 1).coerceIn(0, (endInfo.text.length - 1).coerceAtLeast(0))
+            val startIndex = (sel.startChar - startInfo.sourceCharOffset)
+                .coerceIn(0, (startInfo.text.length - 1).coerceAtLeast(0))
+            val endIndex = (sel.endChar - endInfo.sourceCharOffset - 1)
+                .coerceIn(0, (endInfo.text.length - 1).coerceAtLeast(0))
             val startBox = startInfo.layoutResult.getBoundingBox(startIndex)
             val endBox = endInfo.layoutResult.getBoundingBox(endIndex)
             val startHandle = root.localPositionOf(startInfo.coordinates, Offset(startBox.left, startBox.bottom))

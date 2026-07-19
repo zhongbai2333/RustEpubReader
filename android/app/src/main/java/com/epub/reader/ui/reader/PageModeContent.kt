@@ -134,8 +134,8 @@ internal fun PageModeContent(
     val showChapterTitle = remember(chapter) { shouldRenderChapterTitle(chapter) }
 
     // 预加载缓存（以章节索引为 key，布局参数变化时清空，LRU 限制最多 10 章防止 OOM）
-    val paginationCache = remember { lruCache<Int, List<List<ContentBlock>>>(PAGINATION_CACHE_MAX_SIZE) }
-    val layoutTag = "$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale"
+    val paginationCache = remember { lruCache<Int, List<List<PaginatedBlock>>>(PAGINATION_CACHE_MAX_SIZE) }
+    val layoutTag = "$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale-${fontFamily.hashCode()}"
     val prevLayoutTag = remember { mutableStateOf(layoutTag) }
     if (prevLayoutTag.value != layoutTag) {
         prevLayoutTag.value = layoutTag
@@ -143,7 +143,7 @@ internal fun PageModeContent(
     }
 
     // 将内容分页（优先从缓存取，避免主线程重复计算）
-    val pages = remember(currentChapter, fontSize, availableHeightDp, contentWidthDp, showChapterTitle, lineSpacing, paraSpacing, textIndent, titleFontScale) {
+    val pages = remember(currentChapter, fontSize, availableHeightDp, contentWidthDp, showChapterTitle, lineSpacing, paraSpacing, textIndent, titleFontScale, fontFamily) {
         paginationCache.getOrPut(currentChapter) {
             paginateContent(chapter, fontSize, availableHeightDp, contentWidthDp, density, showChapterTitle, titleVPaddingDp, lineSpacing, paraSpacing, textIndent, titleFontScale)
         }
@@ -154,7 +154,7 @@ internal fun PageModeContent(
     }
 
     // 预加载相邻章节，消除跨章翻页时的白屏闪烁
-    LaunchedEffect(currentChapter, fontSize, availableHeightDp, contentWidthDp, lineSpacing, paraSpacing, textIndent, titleFontScale) {
+    LaunchedEffect(currentChapter, fontSize, availableHeightDp, contentWidthDp, lineSpacing, paraSpacing, textIndent, titleFontScale, fontFamily) {
         withContext(Dispatchers.Default) {
             for (adjIdx in listOf(currentChapter - 1, currentChapter + 1)) {
                 val adjChapter = allChapters.getOrNull(adjIdx) ?: continue
@@ -174,11 +174,8 @@ internal fun PageModeContent(
 
     fun slotForBlock(block: Int): Int {
         val target = block.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
-        var consumed = 0
         val pageIndex = pages.indexOfFirst { page ->
-            val contains = target in consumed until (consumed + page.size)
-            consumed += page.size
-            contains
+            page.any { it.sourceBlockIndex == target }
         }.let { if (it >= 0) it else pages.lastIndex.coerceAtLeast(0) }
         val pairedIndex = if (isTwoColumn) pageIndex / 2 else pageIndex
         return (leadingVirtual + pairedIndex).coerceIn(0, totalSlots - 1)
@@ -187,7 +184,7 @@ internal fun PageModeContent(
     fun blockForSlot(slot: Int): Int {
         val pairedIndex = (slot - leadingVirtual).coerceIn(0, pairedPages.lastIndex.coerceAtLeast(0))
         val firstPageIndex = if (isTwoColumn) pairedIndex * 2 else pairedIndex
-        return pages.take(firstPageIndex).sumOf { it.size }
+        return pages.getOrNull(firstPageIndex)?.firstOrNull()?.sourceBlockIndex ?: 0
             .coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
     }
 
@@ -599,7 +596,7 @@ internal fun PageModeContent(
                 val isLeadingVirtual = leadingVirtual > 0 && actualSpreadIndex < 0
                 val isTrailingVirtual = trailingVirtual > 0 && actualSpreadIndex >= pairedPages.size
 
-                val slotColumns: List<List<ContentBlock>>
+                val slotColumns: List<List<PaginatedBlock>>
                 val slotTitle: String
                 val slotShowTitle: Boolean
                 val slotPageLabel: String
@@ -607,7 +604,7 @@ internal fun PageModeContent(
                 val isTransitioning = prevChapterKey != currentChapter
                 val isGoingBack = currentChapter < prevChapterKey
 
-                fun getPageLabelLocal(columns: List<List<ContentBlock>>, startIdx: Int, totalP: Int): String {
+                fun getPageLabelLocal(columns: List<List<PaginatedBlock>>, startIdx: Int, totalP: Int): String {
                     if (columns.isEmpty()) return ""
                     if (columns.size == 1) return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
                     return I18n.tf2("reader.page_info", "${startIdx + 1}-${startIdx + 2}", "$totalP")
@@ -704,7 +701,7 @@ internal fun PageModeContent(
                 val isTrailingVirtual = trailingVirtual > 0 && actualPageIndex >= pairedPages.size
 
                 // 虚拟槽显示相邻章节内容，消除跨章空白页
-                val slotColumns: List<List<ContentBlock>>
+                val slotColumns: List<List<PaginatedBlock>>
                 val slotTitle: String
                 val slotShowTitle: Boolean
                 val slotPageLabel: String
@@ -712,7 +709,7 @@ internal fun PageModeContent(
                 val isTransitioning = prevChapterKey != currentChapter
                 val isGoingBack = currentChapter < prevChapterKey
 
-                fun getPageLabelLocal(columns: List<List<ContentBlock>>, startIdx: Int, totalP: Int): String {
+                fun getPageLabelLocal(columns: List<List<PaginatedBlock>>, startIdx: Int, totalP: Int): String {
                     if (columns.isEmpty()) return ""
                     if (columns.size == 1) return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
                     return I18n.tf2("reader.page_info", "${startIdx + 1}-${startIdx + 2}", "$totalP")
@@ -806,7 +803,7 @@ internal fun PageModeContent(
                 val isTrailingVirtual = trailingVirtual > 0 && actualPageIndex >= pairedPages.size
 
                 // 虚拟槽显示相邻章节内容
-                val slotColumns: List<List<ContentBlock>>
+                val slotColumns: List<List<PaginatedBlock>>
                 val slotTitle: String
                 val slotShowTitle: Boolean
                 val slotPageLabel: String
@@ -814,7 +811,7 @@ internal fun PageModeContent(
                 val isTransitioning = prevChapterKey != currentChapter
                 val isGoingBack = currentChapter < prevChapterKey
 
-                fun getPageLabelLocal(columns: List<List<ContentBlock>>, startIdx: Int, totalP: Int): String {
+                fun getPageLabelLocal(columns: List<List<PaginatedBlock>>, startIdx: Int, totalP: Int): String {
                     if (columns.isEmpty()) return ""
                     if (columns.size == 1) return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
                     return I18n.tf2("reader.page_info", "${startIdx + 1}-${startIdx + 2}", "$totalP")
@@ -971,7 +968,7 @@ internal fun PageModeContent(
 private fun PageRenderLayer(
     slotShowTitle: Boolean,
     slotTitle: String,
-    slotColumns: List<List<ContentBlock>>,
+    slotColumns: List<List<PaginatedBlock>>,
     contentWidthPx: Float,
     fontSize: Float,
     spToPx: Float,
@@ -1041,11 +1038,13 @@ private fun PageRenderLayer(
                                 .padding(top = topPaddingDp * 0.5f, bottom = topPaddingDp * 2.0f)
                         )
                     }
-                    colBlock.forEach { block ->
-                        val blockIndex = chapter?.blocks?.indexOf(block)
+                    colBlock.forEach { paginatedBlock ->
+                        val block = paginatedBlock.block
+                        val blockIndex = paginatedBlock.sourceBlockIndex
                         ContentBlockView(
-                            blockIndex = if(blockIndex != null && blockIndex >= 0) blockIndex else null,
+                            blockIndex = blockIndex,
                             block = block,
+                            sourceCharOffset = paginatedBlock.sourceCharOffset,
                             fontSize = fontSize,
                             textColor = textColor,
                             linkColor = linkColor,
@@ -1061,7 +1060,7 @@ private fun PageRenderLayer(
                             onSelectionChange = onSelectionChange,
                             blockLayoutRegistry = blockLayoutRegistry,
                             highlights = highlights,
-                            cscBlockCorrections = if (blockIndex != null && blockIndex >= 0) cscBlockCorrections[blockIndex] ?: emptyList() else emptyList(),
+                            cscBlockCorrections = cscBlockCorrections[blockIndex] ?: emptyList(),
                             cscMode = cscMode,
                             ttsCurrentBlock = ttsCurrentBlock,
                             onCscCorrectionClick = onCscCorrectionClick
