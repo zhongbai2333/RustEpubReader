@@ -201,6 +201,17 @@ pub(crate) fn render_block(
             ui.painter()
                 .galley(rect.min, galley.clone(), Color32::PLACEHOLDER);
 
+            let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+            BLOCK_GALLEYS.with(|galleys| {
+                galleys.borrow_mut().push((
+                    chapter_block_idx,
+                    galley.clone(),
+                    rect,
+                    text,
+                    response.clone(),
+                ));
+            });
+
             // Handle individual link clicks via pointer position matching
             if let Some(hover_pos) = ui.ctx().pointer_hover_pos() {
                 if rect.contains(hover_pos) {
@@ -455,8 +466,13 @@ pub(crate) fn render_block(
 
             // Push into per-frame cache for the selection state machine
             BLOCK_GALLEYS.with(|bg| {
-                bg.borrow_mut()
-                    .push((chapter_block_idx, galley.clone(), rect, text.clone()));
+                bg.borrow_mut().push((
+                    chapter_block_idx,
+                    galley.clone(),
+                    rect,
+                    text.clone(),
+                    response.clone(),
+                ));
             });
 
             // Handle individual link clicks via pointer position matching

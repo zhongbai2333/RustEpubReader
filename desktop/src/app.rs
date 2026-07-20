@@ -627,6 +627,7 @@ pub struct ReaderApp {
     pub tts_volume: i32, // e.g. 0, -50, +50 (percent)
     pub tts_current_chapter: usize,
     pub tts_current_block: usize,
+    pub tts_current_char: usize,
     pub tts_stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub tts_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub tts_audio_sink: Option<std::sync::Arc<rodio::Sink>>,
@@ -914,6 +915,7 @@ impl Default for ReaderApp {
             tts_volume: 0,
             tts_current_chapter: 0,
             tts_current_block: 0,
+            tts_current_char: 0,
             tts_stop_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tts_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tts_audio_sink: None,

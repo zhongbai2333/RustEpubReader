@@ -255,6 +255,8 @@
   "tts.pause": "⏸ 暂停",
   "tts.resume": "▶ 继续",
   "tts.stop": "⏹ 停止",
+  "tts.read_from_here": "从此处开始朗读",
+  "tts.follow_reading": "跟随阅读",
   "tts.synthesizing": "合成中…",
   "tts.playing": "正在朗读…",
   "tts.paused": "已暂停",

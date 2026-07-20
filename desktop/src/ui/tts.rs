@@ -60,6 +60,10 @@ fn next_readable_block(blocks: &[ContentBlock], from: usize) -> usize {
         .map_or(blocks.len(), |offset| from + offset)
 }
 
+fn text_from_char(text: &str, char_offset: usize) -> String {
+    text.chars().skip(char_offset).collect()
+}
+
 impl ReaderApp {
     /// Render TTS as a horizontal bar between toolbar and content (Edge-style).
     pub fn render_tts_bar(&mut self, ctx: &egui::Context) {
@@ -258,10 +262,15 @@ impl ReaderApp {
                 .map(|(start, _)| *start)
                 .unwrap_or(self.current_block)
         };
-        self.tts_start_from_block(self.current_chapter, start_block);
+        self.tts_start_from_position(self.current_chapter, start_block, 0);
     }
 
-    fn tts_start_from_block(&mut self, chapter: usize, block: usize) {
+    pub(crate) fn tts_start_from_position(
+        &mut self,
+        chapter: usize,
+        block: usize,
+        char_offset: usize,
+    ) {
         self.tts_cancel_audio();
         self.tts_stop_flag.store(false, Ordering::Relaxed);
         self.tts_playing = true;
@@ -269,6 +278,11 @@ impl ReaderApp {
         self.tts_follow_view = true;
         self.tts_current_chapter = chapter;
         self.tts_current_block = self.tts_next_readable_block(chapter, block);
+        self.tts_current_char = if self.tts_current_block == block {
+            char_offset
+        } else {
+            0
+        };
         if let Some(total) = self.tts_block_count(chapter) {
             self.push_feedback_log(format!(
                 "[TTS] chapter {} has {} blocks, first readable={}",
@@ -307,6 +321,13 @@ impl ReaderApp {
         if self.tts_playing && !self.tts_syncing_navigation {
             self.tts_follow_view = false;
             self.pending_restore_block = None;
+        }
+    }
+
+    pub(crate) fn tts_follow_playback(&mut self) {
+        if self.tts_playing {
+            self.tts_follow_view = true;
+            self.tts_follow_current_position();
         }
     }
 
@@ -409,6 +430,7 @@ impl ReaderApp {
         };
         self.tts_current_chapter = chapter;
         self.tts_current_block = block;
+        self.tts_current_char = 0;
         self.tts_follow_current_position();
 
         // Check if we have prefetched audio for this block
@@ -453,7 +475,10 @@ impl ReaderApp {
             sink.stop();
         }
 
-        let text = self.tts_block_text(self.tts_current_chapter, self.tts_current_block);
+        let text = text_from_char(
+            &self.tts_block_text(self.tts_current_chapter, self.tts_current_block),
+            self.tts_current_char,
+        );
         if text.trim().is_empty() {
             self.tts_advance_to_next_block();
             return;
@@ -641,7 +666,7 @@ impl ReaderApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_readable_block, page_for_block};
+    use super::{next_readable_block, page_for_block, text_from_char};
     use reader_core::epub::ContentBlock;
 
     #[test]
@@ -664,5 +689,10 @@ mod tests {
         ];
         assert_eq!(next_readable_block(&blocks, 0), 2);
         assert_eq!(next_readable_block(&blocks, 3), 3);
+    }
+
+    #[test]
+    fn starts_text_at_unicode_character_offset() {
+        assert_eq!(text_from_char("中文，English!", 3), "English!");
     }
 }
