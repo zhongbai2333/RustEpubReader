@@ -82,8 +82,16 @@ impl ReaderApp {
         // Clear per-frame block galley cache
         BLOCK_GALLEYS.with(|bg| bg.borrow_mut().clear());
 
+        if self.tts_playing
+            && self.current_chapter != self.tts_current_chapter
+            && !self.tts_syncing_navigation
+        {
+            self.tts_detach_view();
+        }
+
         // Set TTS read-along highlight block
-        if self.tts_playing && !self.tts_paused {
+        if self.tts_playing && !self.tts_paused && self.current_chapter == self.tts_current_chapter
+        {
             TTS_HIGHLIGHT_BLOCK.set(Some(self.tts_current_block));
         } else {
             TTS_HIGHLIGHT_BLOCK.set(None);
@@ -213,6 +221,11 @@ impl ReaderApp {
                     .unwrap_or_default();
 
                 if self.scroll_mode {
+                    if ui.rect_contains_pointer(ui.available_rect_before_wrap())
+                        && ui.input(|i| i.raw_scroll_delta.y != 0.0)
+                    {
+                        self.tts_detach_view();
+                    }
                     let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
                     if self.scroll_to_top {
                         scroll_area = scroll_area.vertical_scroll_offset(0.0);
@@ -251,7 +264,9 @@ impl ReaderApp {
                                     .iter()
                                     .find(|(idx, _, _, _)| *idx == target)
                                 {
-                                    ui.scroll_to_rect(*rect, Some(egui::Align::Min));
+                                    if !rect.intersects(ui.clip_rect()) {
+                                        ui.scroll_to_rect(*rect, Some(egui::Align::Min));
+                                    }
                                     self.pending_restore_block = None;
                                 }
                             });
