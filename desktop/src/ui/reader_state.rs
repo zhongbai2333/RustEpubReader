@@ -98,6 +98,10 @@ pub(crate) struct ContinuousScrollState {
     pub(crate) loaded_end: usize,
     pub(crate) visible_chapter: usize,
     pub(crate) chapter_heights: HashMap<usize, f32>,
+    scroll_offset: f32,
+    max_scroll_offset: f32,
+    wheel_target_offset: Option<f32>,
+    wheel_suppress_until: f64,
     layout_signature: Option<u64>,
     initialized: bool,
 }
@@ -109,6 +113,10 @@ impl ContinuousScrollState {
         self.loaded_end = (chapter + 1).min(total_chapters);
         self.visible_chapter = chapter;
         self.chapter_heights.clear();
+        self.scroll_offset = 0.0;
+        self.max_scroll_offset = 0.0;
+        self.wheel_target_offset = None;
+        self.wheel_suppress_until = 0.0;
         self.initialized = total_chapters > 0;
     }
 
@@ -148,6 +156,45 @@ impl ContinuousScrollState {
     pub(crate) fn record_height(&mut self, chapter: usize, height: f32) {
         if height.is_finite() && height > 0.0 {
             self.chapter_heights.insert(chapter, height);
+        }
+    }
+
+    pub(crate) fn begin_wheel_scroll(&mut self, raw_delta_y: f32, now: f64) {
+        let current_target = self.wheel_target_offset.unwrap_or(self.scroll_offset);
+        self.wheel_target_offset =
+            Some((current_target - raw_delta_y).clamp(0.0, self.max_scroll_offset));
+        self.wheel_suppress_until = now + 0.35;
+    }
+
+    pub(crate) fn cancel_wheel_scroll(&mut self) {
+        self.wheel_target_offset = None;
+    }
+
+    pub(crate) fn suppress_default_wheel_scroll(&self, now: f64) -> bool {
+        now < self.wheel_suppress_until
+    }
+
+    pub(crate) fn advance_wheel_scroll(&mut self, dt: f32) -> Option<f32> {
+        let target = self.wheel_target_offset?;
+        let factor = 1.0 - (-24.0 * dt.clamp(0.0, 0.05)).exp();
+        self.scroll_offset += (target - self.scroll_offset) * factor;
+        if (target - self.scroll_offset).abs() < 0.5 {
+            self.scroll_offset = target;
+            self.wheel_target_offset = None;
+        }
+        Some(self.scroll_offset)
+    }
+
+    pub(crate) fn record_scroll_output(
+        &mut self,
+        offset: f32,
+        content_height: f32,
+        viewport_height: f32,
+    ) {
+        self.max_scroll_offset = (content_height - viewport_height).max(0.0);
+        self.scroll_offset = offset.clamp(0.0, self.max_scroll_offset);
+        if let Some(target) = &mut self.wheel_target_offset {
+            *target = target.clamp(0.0, self.max_scroll_offset);
         }
     }
 }
@@ -521,6 +568,17 @@ mod tests {
         assert_eq!(remaining_scroll_height(400.0, 800.0, 0.0), 0.0);
         assert_eq!(remaining_scroll_height(2400.0, 800.0, 1200.0), 400.0);
         assert_eq!(remaining_scroll_height(2400.0, 800.0, 2000.0), 0.0);
+    }
+
+    #[test]
+    fn repeated_wheel_steps_accumulate_without_losing_distance() {
+        let mut state = ContinuousScrollState::default();
+        state.record_scroll_output(100.0, 1100.0, 100.0);
+
+        state.begin_wheel_scroll(-40.0, 1.0);
+        state.begin_wheel_scroll(-40.0, 1.01);
+
+        assert_eq!(state.wheel_target_offset, Some(180.0));
     }
 
     #[test]

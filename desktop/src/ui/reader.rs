@@ -324,6 +324,36 @@ impl ReaderApp {
                     if reset_scroll {
                         scroll_area = scroll_area.vertical_scroll_offset(0.0);
                     }
+                    let (now, stable_dt, raw_wheel_delta, modifiers, primary_down) =
+                        ui.ctx().input(|input| {
+                            (
+                                input.time,
+                                input.stable_dt,
+                                input.raw_scroll_delta.y,
+                                input.modifiers,
+                                input.pointer.primary_down(),
+                            )
+                        });
+                    if primary_down {
+                        self.continuous_scroll.cancel_wheel_scroll();
+                    }
+                    let discrete_wheel = ui.rect_contains_pointer(full_rect)
+                        && !modifiers.ctrl
+                        && !modifiers.command
+                        && raw_wheel_delta.abs() >= 8.0;
+                    if discrete_wheel {
+                        self.continuous_scroll
+                            .begin_wheel_scroll(raw_wheel_delta, now);
+                    }
+                    if self.continuous_scroll.suppress_default_wheel_scroll(now) {
+                        ui.ctx()
+                            .input_mut(|input| input.smooth_scroll_delta.y = 0.0);
+                    }
+                    let wheel_scroll_offset =
+                        self.continuous_scroll.advance_wheel_scroll(stable_dt);
+                    if let Some(offset) = wheel_scroll_offset {
+                        scroll_area = scroll_area.vertical_scroll_offset(offset);
+                    }
                     let output = scroll_area.show_viewport(ui, |ui, viewport| {
                         ui.set_min_width(available_width);
                         let content_origin_y = ui.cursor().min.y;
@@ -437,6 +467,14 @@ impl ReaderApp {
                     let (anchored_chapter, measured_heights, restored) = output.inner;
                     for (chapter_idx, height) in measured_heights {
                         self.continuous_scroll.record_height(chapter_idx, height);
+                    }
+                    self.continuous_scroll.record_scroll_output(
+                        output.state.offset.y,
+                        output.content_size.y,
+                        output.inner_rect.height(),
+                    );
+                    if wheel_scroll_offset.is_some() {
+                        ui.ctx().request_repaint();
                     }
                     if restored {
                         self.pending_restore_block = None;

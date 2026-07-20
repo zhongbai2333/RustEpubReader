@@ -1494,8 +1494,11 @@ impl ReaderApp {
         if self.current_chapter != chapter || self.current_block != block {
             self.current_chapter = chapter;
             self.current_block = block;
-            self.position_save_due =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
+            let delay = std::time::Duration::from_millis(400);
+            self.position_save_due = Some(std::time::Instant::now() + delay);
+            if let Some(ctx) = &self.last_egui_ctx {
+                ctx.request_repaint_after(delay);
+            }
         }
     }
 
@@ -1929,8 +1932,9 @@ impl eframe::App for ReaderApp {
         }
 
         // --- Push outgoing local progress to PeerStore ---
-        if Some(self.current_chapter) != self.last_synced_chapter
-            || Some(self.current_block) != self.last_synced_block
+        if self.position_save_due.is_none()
+            && (Some(self.current_chapter) != self.last_synced_chapter
+                || Some(self.current_block) != self.last_synced_block)
         {
             if let Some(hash) = &self.current_book_hash {
                 let mut store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
