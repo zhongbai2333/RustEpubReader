@@ -425,7 +425,7 @@ impl ReaderApp {
         else {
             self.push_feedback_log("[TTS] book finished");
             self.tts_stop_playback();
-            *self.tts_status.lock().unwrap() = self.i18n.t("tts.chapter_done").to_string();
+            *self.tts_status.lock().unwrap() = self.i18n.t("tts.book_done").to_string();
             return;
         };
         self.tts_current_chapter = chapter;
