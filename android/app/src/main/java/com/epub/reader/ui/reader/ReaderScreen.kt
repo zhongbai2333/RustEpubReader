@@ -802,6 +802,13 @@ fun ReaderScreen(
             ) {
                 ScrollModeContent(
                     chapter = chapter,
+                    allChapters = book.chapters,
+                    initialChapter = currentChapter,
+                    onChapterVisible = { visibleChapter ->
+                        if (visibleChapter != currentChapter) {
+                            onChapterChange(visibleChapter)
+                        }
+                    },
                     fontSize = fontSize,
                     textColor = textColor,
                     linkColor = linkColor,
