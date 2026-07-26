@@ -8,8 +8,12 @@ use egui::{Color32, FontId, UiBuilder};
 
 use crate::app::{ReaderApp, TextSelection};
 use reader_core::epub::ContentBlock;
+use reader_core::library::HighlightColor;
 
 use super::{reader_block::*, reader_state::*};
+
+type BlockHighlightRanges = HashMap<usize, Vec<(usize, usize, HighlightColor)>>;
+type ChapterHighlightRanges = HashMap<usize, BlockHighlightRanges>;
 
 impl ReaderApp {
     pub fn recalculate_pages(&mut self, available_height: f32, max_width: f32) {
@@ -263,17 +267,11 @@ impl ReaderApp {
                             .collect()
                     })
                     .unwrap_or_default();
-                let loaded_highlights = self
+                let loaded_highlights: ChapterHighlightRanges = self
                     .book_config
                     .as_ref()
                     .map(|cfg| {
-                        let mut by_chapter: HashMap<
-                            usize,
-                            HashMap<
-                                usize,
-                                Vec<(usize, usize, reader_core::library::HighlightColor)>,
-                            >,
-                        > = HashMap::new();
+                        let mut by_chapter = ChapterHighlightRanges::new();
                         for highlight in cfg.highlights.iter().filter(|highlight| {
                             highlight.chapter >= start_chapter && highlight.chapter < loaded_end
                         }) {
