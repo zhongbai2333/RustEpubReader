@@ -8,6 +8,72 @@ use reader_core::epub::{ContentBlock, InlineStyle, TextSpan};
 
 use super::reader_state::*;
 
+fn family_from_name(name: &str) -> FontFamily {
+    match name {
+        "Monospace" => FontFamily::Monospace,
+        "Serif" => FontFamily::Name("Serif".into()),
+        "Sans" => FontFamily::Proportional,
+        other => FontFamily::Name(other.into()),
+    }
+}
+
+fn uses_cjk_font(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x3040..=0x30FF
+            | 0x2018
+            | 0x2019
+            | 0x201C
+            | 0x201D
+            | 0x3000..=0x303F
+            | 0xFE10..=0xFE1F
+            | 0xFE30..=0xFE4F
+            | 0xFF01..=0xFF65
+    )
+}
+
+fn append_font_runs(
+    job: &mut LayoutJob,
+    text: &str,
+    leading: f32,
+    base_format: TextFormat,
+    cjk_family: &FontFamily,
+) {
+    if base_format.font_id.family == *cjk_family {
+        job.append(text, leading, base_format);
+        return;
+    }
+    let mut chars = text.char_indices();
+    let Some((_, first)) = chars.next() else {
+        return;
+    };
+    let mut run_start = 0;
+    let mut run_is_cjk = uses_cjk_font(first);
+    let mut first_run = true;
+
+    for (index, ch) in chars.chain(std::iter::once((text.len(), '\0'))) {
+        let is_cjk = index < text.len() && uses_cjk_font(ch);
+        if index < text.len() && is_cjk == run_is_cjk {
+            continue;
+        }
+        let mut format = base_format.clone();
+        if run_is_cjk {
+            format.font_id = FontId::new(format.font_id.size, cjk_family.clone());
+        }
+        job.append(
+            &text[run_start..index],
+            if first_run { leading } else { 0.0 },
+            format,
+        );
+        first_run = false;
+        run_start = index;
+        run_is_cjk = is_cjk;
+    }
+}
+
 // ── Content layout (was `ReaderApp::render_content_layout`, no `&self`) ──
 
 #[allow(clippy::too_many_arguments)]
@@ -53,12 +119,7 @@ pub(crate) fn render_content_layout(
                     ui.set_max_width(text_width);
                     if show_title {
                         let title_color = effective_text_color(bg_color, font_color);
-                        let title_family = match font_family_name {
-                            "Monospace" => FontFamily::Monospace,
-                            "Serif" => FontFamily::Name("Serif".into()),
-                            "Sans" => FontFamily::Proportional,
-                            other => FontFamily::Name(other.into()),
-                        };
+                        let title_family = family_from_name(font_family_name);
                         ui.vertical_centered(|ui| {
                             ui.label(
                                 egui::RichText::new(title)
@@ -649,12 +710,12 @@ pub(crate) fn build_layout_job(
         let family = if is_bold {
             FontFamily::Name("Bold".into())
         } else {
-            match font_family_name {
-                "Monospace" => FontFamily::Monospace,
-                "Serif" => FontFamily::Name("Serif".into()),
-                "Sans" => FontFamily::Proportional,
-                other => FontFamily::Name(other.into()),
-            }
+            family_from_name(font_family_name)
+        };
+        let cjk_family = if !is_bold && font_family_name == "ReaderFont" {
+            FontFamily::Name("ReaderCjk".into())
+        } else {
+            family.clone()
         };
         let normal_color = if is_link { link_color } else { base_color };
         let leading = if i == 0 && !is_heading {
@@ -690,7 +751,7 @@ pub(crate) fn build_layout_job(
                 line_height: Some(font_size * line_spacing()),
                 ..Default::default()
             };
-            job.append(&wrapped, leading, format);
+            append_font_runs(&mut job, &wrapped, leading, format, &cjk_family);
         } else {
             // Split span text at highlight boundaries
             let mut first_section = true;
@@ -728,7 +789,7 @@ pub(crate) fn build_layout_job(
                         ..Default::default()
                     };
                     let lead = if first_section { leading } else { 0.0 };
-                    job.append(&seg_text, lead, format);
+                    append_font_runs(&mut job, &seg_text, lead, format, &cjk_family);
                     first_section = false;
                     seg_start = j;
                     cur_hl = this_hl;
@@ -755,7 +816,7 @@ pub(crate) fn build_layout_job(
                 ..Default::default()
             };
             let lead = if first_section { leading } else { 0.0 };
-            job.append(&seg_text, lead, format);
+            append_font_runs(&mut job, &seg_text, lead, format, &cjk_family);
         }
 
         char_offset = span_end;
@@ -811,5 +872,68 @@ pub(crate) fn estimate_block_height(
         ContentBlock::Separator => 24.0,
         ContentBlock::BlankLine => font_size * 0.5,
         ContentBlock::Image { .. } => font_size * 3.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_only_cjk_characters_and_punctuation_to_cjk_font() {
+        for ch in "中文日本語？！：；，。、“”‘’「」".chars() {
+            assert!(uses_cjk_font(ch), "{ch} should use ReaderCjk");
+        }
+        for ch in "English?!:;\"'😀".chars() {
+            assert!(!uses_cjk_font(ch), "{ch} should use ReaderFont");
+        }
+    }
+
+    #[test]
+    fn layout_job_groups_script_runs_into_reader_families() {
+        let mut job = LayoutJob::default();
+        append_font_runs(
+            &mut job,
+            "中文？ English?",
+            0.0,
+            TextFormat {
+                font_id: FontId::new(18.0, FontFamily::Name("ReaderFont".into())),
+                ..Default::default()
+            },
+            &FontFamily::Name("ReaderCjk".into()),
+        );
+
+        let families: Vec<String> = job
+            .sections
+            .iter()
+            .map(|section| match &section.format.font_id.family {
+                FontFamily::Name(name) => name.to_string(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(families, ["ReaderCjk", "ReaderFont"]);
+    }
+
+    #[test]
+    fn highlighted_punctuation_keeps_cjk_font() {
+        let spans = [TextSpan {
+            text: "你好！”".to_owned(),
+            style: InlineStyle::Normal,
+            link_url: None,
+            correction: None,
+        }];
+        let job = build_layout_job(
+            &spans,
+            18.0,
+            Color32::WHITE,
+            false,
+            600.0,
+            None,
+            "ReaderFont",
+            &[(0, 3, reader_core::library::HighlightColor::Yellow)],
+        );
+        assert!(job.sections.iter().all(|section| {
+            section.format.font_id.family == FontFamily::Name("ReaderCjk".into())
+        }));
     }
 }

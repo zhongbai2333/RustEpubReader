@@ -20,6 +20,14 @@ use reader_core::sharing::{start_listener, DiscoveredPeer, PeerStore};
 type FontDiscoveryResult = Arc<Mutex<Option<(Vec<String>, HashMap<String, String>)>>>;
 pub(crate) type TtsAudioResultSlot = Arc<Mutex<Option<Result<Vec<u8>, String>>>>;
 
+fn extend_unique_font_chain(target: &mut Vec<String>, fonts: impl IntoIterator<Item = String>) {
+    for font in fonts {
+        if !target.contains(&font) {
+            target.push(font);
+        }
+    }
+}
+
 /// Push a debug log entry from anywhere (including background threads).
 /// Writes to both the in-memory feedback_logs buffer and stderr (when debug logging is enabled).
 pub fn dbg_log(logs: &Arc<Mutex<Vec<String>>>, msg: impl AsRef<str>) {
@@ -1981,6 +1989,11 @@ impl eframe::App for ReaderApp {
                 .get(&egui::FontFamily::Proportional)
                 .cloned()
                 .unwrap_or_default();
+            let default_monospace = fonts
+                .families
+                .get(&egui::FontFamily::Monospace)
+                .cloned()
+                .unwrap_or_default();
 
             let mut selected_latin_bound = matches!(
                 self.reader_font_family.as_str(),
@@ -2161,57 +2174,68 @@ impl eframe::App for ReaderApp {
                 }
             }
 
-            // Build "ReaderFont" composite family: Latin fonts → CJK fonts → emoji
-            let mut reader_font_chain: Vec<String> = Vec::new();
-
-            // Latin part
+            // Build separate Latin-first and CJK-first reader families. egui picks the first
+            // font containing each glyph, so one shared chain lets Latin fonts consume CJK
+            // punctuation before the user's selected CJK font gets a chance to render it.
+            let mut reader_latin_fonts = Vec::new();
             match self.reader_font_family.as_str() {
-                "Sans" => reader_font_chain.extend(default_proportional.clone()),
+                "Sans" => {
+                    extend_unique_font_chain(&mut reader_latin_fonts, default_proportional.clone())
+                }
                 "Serif" => {
                     if fonts.font_data.contains_key("serif_font") {
-                        reader_font_chain.push("serif_font".to_owned());
+                        reader_latin_fonts.push("serif_font".to_owned());
                     }
-                    reader_font_chain.extend(default_proportional.clone());
+                    extend_unique_font_chain(&mut reader_latin_fonts, default_proportional.clone());
                 }
                 "Monospace" => {
-                    if let Some(mono) = fonts.families.get(&egui::FontFamily::Monospace) {
-                        reader_font_chain.extend(mono.clone());
-                    }
+                    extend_unique_font_chain(&mut reader_latin_fonts, default_monospace.clone());
                 }
                 other => {
                     if fonts.font_data.contains_key(other) {
-                        reader_font_chain.push(other.to_owned());
+                        reader_latin_fonts.push(other.to_owned());
                     }
-                    reader_font_chain.extend(default_proportional.clone());
+                    extend_unique_font_chain(&mut reader_latin_fonts, default_proportional.clone());
                 }
             }
 
-            // CJK part
+            let mut reader_cjk_fonts = Vec::new();
             match self.reader_cjk_font_family.as_str() {
                 "Sans" => {
                     if fonts.font_data.contains_key("cjk_font") {
-                        reader_font_chain.push("cjk_font".to_owned());
+                        reader_cjk_fonts.push("cjk_font".to_owned());
                     }
                 }
                 other => {
                     if fonts.font_data.contains_key(other) {
-                        reader_font_chain.push(other.to_owned());
+                        reader_cjk_fonts.push(other.to_owned());
                     }
                     if fonts.font_data.contains_key("cjk_font") {
-                        reader_font_chain.push("cjk_font".to_owned());
+                        reader_cjk_fonts.push("cjk_font".to_owned());
                     }
                 }
             }
 
-            // Emoji
+            let mut emoji_fallback = Vec::new();
             if fonts.font_data.contains_key("emoji_font") {
-                reader_font_chain.push("emoji_font".to_owned());
+                emoji_fallback.push("emoji_font".to_owned());
             }
+
+            let mut reader_font_chain = reader_latin_fonts.clone();
+            extend_unique_font_chain(&mut reader_font_chain, reader_cjk_fonts.clone());
+            extend_unique_font_chain(&mut reader_font_chain, emoji_fallback.clone());
+
+            let mut reader_cjk_chain = reader_cjk_fonts.clone();
+            extend_unique_font_chain(&mut reader_cjk_chain, reader_latin_fonts.clone());
+            extend_unique_font_chain(&mut reader_cjk_chain, emoji_fallback.clone());
 
             fonts.families.insert(
                 egui::FontFamily::Name("ReaderFont".into()),
                 reader_font_chain,
             );
+            fonts
+                .families
+                .insert(egui::FontFamily::Name("ReaderCjk".into()), reader_cjk_chain);
 
             ctx.set_fonts(fonts);
             self.pages_dirty = true;
