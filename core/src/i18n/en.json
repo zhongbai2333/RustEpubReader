@@ -255,6 +255,8 @@
   "tts.pause": "⏸ Pause",
   "tts.resume": "▶ Resume",
   "tts.stop": "⏹ Stop",
+  "tts.read_from_here": "Read aloud from here",
+  "tts.follow_reading": "Follow current narration",
   "tts.synthesizing": "Synthesizing…",
   "tts.playing": "Playing…",
   "tts.paused": "Paused",

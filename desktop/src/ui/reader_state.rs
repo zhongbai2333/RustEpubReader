@@ -36,7 +36,7 @@ pub(crate) fn text_indent() -> f32 {
 // ── Thread-local deferred actions & per-frame block galley cache ──
 
 /// Per-frame cache entry: (block_idx, galley, screen_rect, plain_text)
-pub(crate) type BlockGalleyEntry = (usize, Arc<egui::Galley>, egui::Rect, String);
+pub(crate) type BlockGalleyEntry = (usize, Arc<egui::Galley>, egui::Rect, String, egui::Response);
 
 pub(crate) type CscCharMapCacheData = (u64, u32, u32, Vec<usize>);
 

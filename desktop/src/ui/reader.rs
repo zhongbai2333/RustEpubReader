@@ -82,8 +82,16 @@ impl ReaderApp {
         // Clear per-frame block galley cache
         BLOCK_GALLEYS.with(|bg| bg.borrow_mut().clear());
 
+        if self.tts_playing
+            && self.current_chapter != self.tts_current_chapter
+            && !self.tts_syncing_navigation
+        {
+            self.tts_detach_view();
+        }
+
         // Set TTS read-along highlight block
-        if self.tts_playing && !self.tts_paused {
+        if self.tts_playing && !self.tts_paused && self.current_chapter == self.tts_current_chapter
+        {
             TTS_HIGHLIGHT_BLOCK.set(Some(self.tts_current_block));
         } else {
             TTS_HIGHLIGHT_BLOCK.set(None);
@@ -213,6 +221,11 @@ impl ReaderApp {
                     .unwrap_or_default();
 
                 if self.scroll_mode {
+                    if ui.rect_contains_pointer(ui.available_rect_before_wrap())
+                        && ui.input(|i| i.raw_scroll_delta.y != 0.0)
+                    {
+                        self.tts_detach_view();
+                    }
                     let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
                     if self.scroll_to_top {
                         scroll_area = scroll_area.vertical_scroll_offset(0.0);
@@ -246,12 +259,14 @@ impl ReaderApp {
                         );
                         if let Some(target) = self.pending_restore_block {
                             BLOCK_GALLEYS.with(|galleys| {
-                                if let Some((_, _, rect, _)) = galleys
+                                if let Some((_, _, rect, _, _)) = galleys
                                     .borrow()
                                     .iter()
-                                    .find(|(idx, _, _, _)| *idx == target)
+                                    .find(|(idx, _, _, _, _)| *idx == target)
                                 {
-                                    ui.scroll_to_rect(*rect, Some(egui::Align::Min));
+                                    if !rect.intersects(ui.clip_rect()) {
+                                        ui.scroll_to_rect(*rect, Some(egui::Align::Min));
+                                    }
                                     self.pending_restore_block = None;
                                 }
                             });
@@ -262,9 +277,9 @@ impl ReaderApp {
                         galleys
                             .borrow()
                             .iter()
-                            .filter(|(_, _, rect, _)| rect.intersects(viewport))
+                            .filter(|(_, _, rect, _, _)| rect.intersects(viewport))
                             .min_by(|a, b| a.2.top().total_cmp(&b.2.top()))
-                            .map(|(idx, _, _, _)| *idx)
+                            .map(|(idx, _, _, _, _)| *idx)
                     });
                     if let Some(block) = visible_block {
                         self.schedule_position_save(block);
@@ -1125,6 +1140,53 @@ impl ReaderApp {
         let block_galleys: Vec<BlockGalleyEntry> =
             BLOCK_GALLEYS.with(|bg| bg.borrow_mut().drain(..).collect());
 
+        let mut start_reading = None;
+        let mut follow_reading = false;
+        let mut tts_context_menu_open = false;
+        for (block_idx, galley, rect, _, response) in &block_galleys {
+            let target_id = response.id.with("tts_read_from_here");
+            if response.secondary_clicked() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let cursor = galley.cursor_from_pos(pos - rect.min);
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            target_id,
+                            (self.current_chapter, *block_idx, cursor.ccursor.index),
+                        );
+                    });
+                }
+            }
+            let target = ui
+                .ctx()
+                .data(|data| data.get_temp::<(usize, usize, usize)>(target_id));
+            let was_open = response.context_menu_opened();
+            response.context_menu(|ui| {
+                if let Some(target) = target {
+                    if ui.button(self.i18n.t("tts.read_from_here")).clicked() {
+                        start_reading = Some(target);
+                        ui.close_menu();
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        self.tts_playing && !self.tts_follow_view,
+                        egui::Button::new(self.i18n.t("tts.follow_reading")),
+                    )
+                    .clicked()
+                {
+                    follow_reading = true;
+                    ui.close_menu();
+                }
+            });
+            tts_context_menu_open |= was_open || response.context_menu_opened();
+        }
+        if let Some((chapter, block_idx, char_offset)) = start_reading {
+            self.show_tts_panel = true;
+            self.tts_start_from_position(chapter, block_idx, char_offset);
+        } else if follow_reading {
+            self.tts_follow_playback();
+        }
+
         // Detect primary pointer press / drag / release for selection
         let pointer_pos = ui.ctx().input(|i| i.pointer.interact_pos());
         let primary_down = ui.ctx().input(|i| i.pointer.primary_down());
@@ -1133,7 +1195,7 @@ impl ReaderApp {
 
         // Helper: find which block a screen position falls into and return (block_idx, char_offset)
         let hit_test = |pos: egui::Pos2| -> Option<(usize, usize)> {
-            for (idx, galley, rect, _text) in &block_galleys {
+            for (idx, galley, rect, _text, _) in &block_galleys {
                 if rect.contains(pos) {
                     let local = egui::vec2(pos.x - rect.min.x, pos.y - rect.min.y);
                     let cursor = galley.cursor_from_pos(local);
@@ -1154,7 +1216,7 @@ impl ReaderApp {
         if let Some(pos) = pointer_pos {
             const DRAG_THRESHOLD: f32 = 5.0;
 
-            if primary_pressed && !over_toolbar {
+            if primary_pressed && !over_toolbar && !tts_context_menu_open {
                 if let Some((block_idx, char_idx)) = hit_test(pos) {
                     // Record press origin; don't create TextSelection yet
                     self.sel_press_origin = Some((pos, block_idx, char_idx));
@@ -1171,7 +1233,7 @@ impl ReaderApp {
                     self.text_selection = None;
                     self.clicked_highlight_id = None;
                 }
-            } else if primary_down && !over_toolbar {
+            } else if primary_down && !over_toolbar && !tts_context_menu_open {
                 // If we have a pending press origin but no selection yet, check threshold
                 if let Some((origin, block_idx, char_idx)) = self.sel_press_origin {
                     if (pos - origin).length() >= DRAG_THRESHOLD {
@@ -1197,7 +1259,7 @@ impl ReaderApp {
                             // Pointer is outside any block 鈥?find the closest block
                             // above or below to extend selection
                             let mut best: Option<(usize, usize)> = None;
-                            for (idx, galley, rect, _) in &block_galleys {
+                            for (idx, galley, rect, _, _) in &block_galleys {
                                 if pos.y < rect.min.y {
                                     // Above this block 鈫?first char
                                     if best.as_ref().is_none_or(|(best_idx, _)| *idx < *best_idx) {
@@ -1219,7 +1281,7 @@ impl ReaderApp {
                 }
             }
 
-            if primary_released {
+            if primary_released && !tts_context_menu_open {
                 // Check if this was a click (no drag) on a highlighted region
                 let mut handled_as_highlight = false;
                 if let Some((press_pos, press_block, press_char)) = self.sel_press_origin.take() {
@@ -1242,9 +1304,9 @@ impl ReaderApp {
                                 self.editing_note_buf.clear();
                             }
                             // Position popup above the click point
-                            if let Some((_, _, rect, _)) = block_galleys
+                            if let Some((_, _, rect, _, _)) = block_galleys
                                 .iter()
-                                .find(|(idx, _, _, _)| *idx == press_block)
+                                .find(|(idx, _, _, _, _)| *idx == press_block)
                             {
                                 self.hl_note_toolbar_pos = egui::pos2(rect.center().x, rect.min.y);
                             }
@@ -1309,9 +1371,9 @@ impl ReaderApp {
                         } else {
                             // Position the toolbar above the start of the selection
                             let (sel_start_block, _) = sel.normalized();
-                            if let Some((_, _, rect, _)) = block_galleys
+                            if let Some((_, _, rect, _, _)) = block_galleys
                                 .iter()
-                                .find(|(idx, _, _, _)| *idx == sel_start_block)
+                                .find(|(idx, _, _, _, _)| *idx == sel_start_block)
                             {
                                 self.sel_toolbar_pos = egui::pos2(rect.center().x, rect.top());
                             }
@@ -1324,7 +1386,7 @@ impl ReaderApp {
         // 鈹€鈹€ Draw selection highlight overlay (blue rectangles) 鈹€鈹€
         if let Some(sel) = &self.text_selection {
             let (sb, sc, eb, ec) = sel.normalized_range();
-            for (idx, galley, rect, text) in &block_galleys {
+            for (idx, galley, rect, text, _) in &block_galleys {
                 if *idx < sb || *idx > eb {
                     continue;
                 }
@@ -1378,7 +1440,7 @@ impl ReaderApp {
             .map(|sel| {
                 let (sb, sc, eb, ec) = sel.normalized_range();
                 let mut result = String::new();
-                for (idx, _, _, text) in &block_galleys {
+                for (idx, _, _, text, _) in &block_galleys {
                     if *idx < sb || *idx > eb {
                         continue;
                     }
@@ -1428,7 +1490,7 @@ impl ReaderApp {
                         let sel_range = sel.normalized_range();
                         if let Some(cfg) = &mut self.book_config {
                             let (sb, sc, eb, ec) = sel_range;
-                            for (idx, _, _, text) in &block_galleys {
+                            for (idx, _, _, text, _) in &block_galleys {
                                 if *idx < sb || *idx > eb {
                                     continue;
                                 }
@@ -1525,7 +1587,7 @@ impl ReaderApp {
                     // Create correction records for each selected character
                     let (sb, sc, eb, ec) = sel_range;
                     let replace_chars: Vec<char> = self.csc_custom_replace_buf.chars().collect();
-                    for (idx, _, _, block_text) in &block_galleys {
+                    for (idx, _, _, block_text, _) in &block_galleys {
                         if *idx < sb || *idx > eb {
                             continue;
                         }

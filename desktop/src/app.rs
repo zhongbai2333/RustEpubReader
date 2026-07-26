@@ -633,8 +633,11 @@ pub struct ReaderApp {
     pub tts_voice_name: String,
     pub tts_rate: i32,   // e.g. 0, -20, +50 (percent)
     pub tts_volume: i32, // e.g. 0, -50, +50 (percent)
+    pub tts_current_chapter: usize,
     pub tts_current_block: usize,
+    pub tts_current_char: usize,
     pub tts_stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub tts_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub tts_audio_sink: Option<std::sync::Arc<rodio::Sink>>,
     pub tts_output_stream: Option<rodio::OutputStream>,
     pub tts_output_handle: Option<rodio::OutputStreamHandle>,
@@ -643,8 +646,13 @@ pub struct ReaderApp {
     pub tts_pending_audio: Option<TtsAudioResultSlot>,
     /// Prefetched audio for the next block (ready to play immediately when current finishes).
     pub tts_prefetch_audio: Option<TtsAudioResultSlot>,
-    /// Block index that the prefetch corresponds to.
+    /// Chapter and block that the prefetch corresponds to.
+    pub tts_prefetch_chapter: usize,
     pub tts_prefetch_block: usize,
+    /// Keep the reader viewport aligned with the current TTS block.
+    pub tts_follow_view: bool,
+    /// Prevent TTS-driven page/chapter navigation from detaching the viewport.
+    pub tts_syncing_navigation: bool,
     pub last_egui_ctx: Option<egui::Context>,
     // ── API Settings ──
     pub translate_api_url: String,
@@ -913,8 +921,11 @@ impl Default for ReaderApp {
             tts_voice_name: "zh-CN-XiaoxiaoNeural".to_string(),
             tts_rate: 0,
             tts_volume: 0,
+            tts_current_chapter: 0,
             tts_current_block: 0,
+            tts_current_char: 0,
             tts_stop_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tts_generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tts_audio_sink: None,
             tts_output_stream: None,
             tts_output_handle: None,
@@ -922,7 +933,10 @@ impl Default for ReaderApp {
             show_tts_panel: false,
             tts_pending_audio: None,
             tts_prefetch_audio: None,
+            tts_prefetch_chapter: 0,
             tts_prefetch_block: 0,
+            tts_follow_view: false,
+            tts_syncing_navigation: false,
             last_egui_ctx: None,
             // API settings
             translate_api_url: String::new(),
@@ -1040,6 +1054,7 @@ impl Default for ReaderApp {
 
 impl ReaderApp {
     pub fn trigger_page_animation_to(&mut self, target_page: usize, direction: f32) {
+        let page_changed = target_page != self.current_page;
         if self.reader_page_animation == "None"
             || self.scroll_mode
             || target_page == self.current_page
@@ -1048,6 +1063,9 @@ impl ReaderApp {
             self.page_anim_progress = 1.0;
             self.page_anim_from = target_page;
             self.page_anim_to = target_page;
+            if page_changed {
+                self.tts_detach_view();
+            }
             return;
         }
 
@@ -1061,6 +1079,7 @@ impl ReaderApp {
         self.page_anim_progress = 0.0;
         self.page_anim_cross_chapter = false;
         self.current_page = target_page;
+        self.tts_detach_view();
     }
 
     pub fn pick_reader_background_image(&mut self) {
@@ -1247,6 +1266,7 @@ impl ReaderApp {
             }
             // Check if user should be prompted to contribute
             self.csc_check_contribution_prompt();
+            self.tts_detach_view();
         }
     }
 
@@ -1278,6 +1298,7 @@ impl ReaderApp {
             }
             // Check if user should be prompted to contribute
             self.csc_check_contribution_prompt();
+            self.tts_detach_view();
         }
     }
 
