@@ -45,6 +45,7 @@ pub(crate) struct ContinuousScrollState {
     pub(crate) max_scroll_offset: f32,
     pending_scroll_adjustment: f32,
     awaiting_prepend_measurement: bool,
+    suppress_prepend_until_scroll: bool,
     layout_signature: Option<u64>,
     initialized: bool,
 }
@@ -64,6 +65,7 @@ impl ContinuousScrollState {
         self.max_scroll_offset = 0.0;
         self.layout_signature = None;
         self.awaiting_prepend_measurement = false;
+        self.suppress_prepend_until_scroll = true;
         self.initialized = true;
     }
 
@@ -167,10 +169,19 @@ impl ContinuousScrollState {
     }
 
     pub(crate) fn near_start(&self) -> bool {
-        !self.awaiting_prepend_measurement
+        !self.suppress_prepend_until_scroll
+            && !self.awaiting_prepend_measurement
             && self.pending_scroll_adjustment == 0.0
             && self.scroll_offset <= self.prefetch_distance()
             && self.start_chapter > 0
+    }
+
+    pub(crate) fn allow_prepend_after_user_scroll(&mut self, delta_y: f32) {
+        // egui uses a positive wheel delta when the content should move down,
+        // i.e. the user is scrolling toward earlier content.
+        if delta_y > 0.0 {
+            self.suppress_prepend_until_scroll = false;
+        }
     }
 }
 
@@ -547,6 +558,18 @@ mod tests {
         assert!(!state.near_start());
         state.record_height(1, 180.0);
         assert_eq!(state.take_scroll_adjustment(), 180.0);
+        state.allow_prepend_after_user_scroll(24.0);
+        assert!(state.near_start());
+    }
+
+    #[test]
+    fn continuous_scroll_does_not_prepend_after_explicit_positioning() {
+        let mut state = ContinuousScrollState::default();
+        state.reset(3, 6);
+        state.record_scroll_output(0.0, 1200.0, 600.0);
+        assert!(!state.near_start());
+
+        state.allow_prepend_after_user_scroll(24.0);
         assert!(state.near_start());
     }
 

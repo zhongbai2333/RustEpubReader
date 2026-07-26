@@ -297,6 +297,9 @@ impl ReaderApp {
                 if ui.rect_contains_pointer(ui.available_rect_before_wrap())
                     && ui.input(|i| i.raw_scroll_delta.y != 0.0)
                 {
+                    let scroll_delta_y = ui.input(|i| i.raw_scroll_delta.y);
+                    self.continuous_scroll
+                        .allow_prepend_after_user_scroll(scroll_delta_y);
                     self.tts_detach_view();
                 }
                 let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
