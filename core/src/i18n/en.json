@@ -262,6 +262,7 @@
   "tts.paused": "Paused",
   "tts.ready": "Ready to play",
   "tts.chapter_done": "Chapter finished",
+  "tts.book_done": "Book finished",
   "tts.rate_normal": "Normal",
   "toolbar.tts": "🔊 TTS",
   "toolbar.api_settings": "⚙ API Settings",

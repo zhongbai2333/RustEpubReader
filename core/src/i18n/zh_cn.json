@@ -262,6 +262,7 @@
   "tts.paused": "已暂停",
   "tts.ready": "等待播放",
   "tts.chapter_done": "本章朗读完毕",
+  "tts.book_done": "全书朗读完毕",
   "tts.rate_normal": "正常",
   "toolbar.tts": "🔊 朗读",
   "toolbar.api_settings": "⚙ API设置",
