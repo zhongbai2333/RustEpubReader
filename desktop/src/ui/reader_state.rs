@@ -44,6 +44,7 @@ pub(crate) struct ContinuousScrollState {
     pub(crate) scroll_offset: f32,
     pub(crate) max_scroll_offset: f32,
     pending_scroll_adjustment: f32,
+    awaiting_prepend_measurement: bool,
     layout_signature: Option<u64>,
     initialized: bool,
 }
@@ -62,6 +63,7 @@ impl ContinuousScrollState {
         self.scroll_offset = 0.0;
         self.max_scroll_offset = 0.0;
         self.layout_signature = None;
+        self.awaiting_prepend_measurement = false;
         self.initialized = true;
     }
 
@@ -88,11 +90,11 @@ impl ContinuousScrollState {
             return None;
         }
         self.start_chapter -= 1;
-        self.pending_scroll_adjustment += self
-            .chapter_heights
-            .get(&self.start_chapter)
-            .copied()
-            .unwrap_or(0.0);
+        if let Some(height) = self.chapter_heights.get(&self.start_chapter).copied() {
+            self.pending_scroll_adjustment += height;
+        } else {
+            self.awaiting_prepend_measurement = true;
+        }
         Some(self.start_chapter)
     }
 
@@ -106,6 +108,15 @@ impl ContinuousScrollState {
             };
             self.pending_scroll_adjustment -= height;
             self.start_chapter += 1;
+        }
+    }
+
+    pub(crate) fn trim_bottom(&mut self) {
+        const MAX_LOADED_CHAPTERS: usize = 4;
+        while self.loaded_end.saturating_sub(self.start_chapter) > MAX_LOADED_CHAPTERS
+            && self.loaded_end > self.visible_chapter + 1
+        {
+            self.loaded_end -= 1;
         }
     }
 
@@ -138,6 +149,10 @@ impl ContinuousScrollState {
     pub(crate) fn record_height(&mut self, chapter: usize, height: f32) {
         if height.is_finite() && height > 0.0 {
             self.chapter_heights.insert(chapter, height);
+            if self.awaiting_prepend_measurement && chapter == self.start_chapter {
+                self.pending_scroll_adjustment += height;
+                self.awaiting_prepend_measurement = false;
+            }
         }
     }
 
@@ -152,7 +167,9 @@ impl ContinuousScrollState {
     }
 
     pub(crate) fn near_start(&self) -> bool {
-        self.scroll_offset <= self.prefetch_distance()
+        !self.awaiting_prepend_measurement
+            && self.scroll_offset <= self.prefetch_distance()
+            && self.visible_chapter > self.start_chapter
     }
 }
 
@@ -518,6 +535,30 @@ mod tests {
         assert_eq!(state.prepend_previous(), Some(1));
         assert_eq!(state.start_chapter, 1);
         assert_eq!(state.take_scroll_adjustment(), 240.0);
+    }
+
+    #[test]
+    fn continuous_scroll_waits_for_prepend_measurement() {
+        let mut state = ContinuousScrollState::default();
+        state.reset(2, 5);
+        state.set_visible_chapter(2);
+        assert_eq!(state.prepend_previous(), Some(1));
+        assert!(!state.near_start());
+        state.record_height(1, 180.0);
+        assert_eq!(state.take_scroll_adjustment(), 180.0);
+        assert!(state.near_start());
+    }
+
+    #[test]
+    fn continuous_scroll_trims_bottom_when_loading_previous() {
+        let mut state = ContinuousScrollState::default();
+        state.reset(2, 8);
+        state.loaded_end = 6;
+        state.set_visible_chapter(2);
+        assert_eq!(state.prepend_previous(), Some(1));
+        state.trim_bottom();
+        assert_eq!(state.start_chapter, 1);
+        assert_eq!(state.loaded_end, 5);
     }
 
     #[test]
