@@ -255,6 +255,11 @@ impl ReaderApp {
                 {
                     self.continuous_scroll.reset(self.current_chapter, total_ch);
                 }
+                if self.continuous_scroll.near_end()
+                    && self.continuous_scroll.append_next(total_ch).is_some()
+                {
+                    ui.ctx().request_repaint();
+                }
                 let loaded_end = self.continuous_scroll.loaded_end;
                 let start_chapter = self.continuous_scroll.start_chapter;
                 let continuous_chapters: Vec<(String, Vec<ContentBlock>)> = self

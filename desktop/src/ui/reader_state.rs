@@ -82,6 +82,15 @@ impl ContinuousScrollState {
         Some(chapter)
     }
 
+    pub(crate) fn near_end(&self) -> bool {
+        self.max_scroll_offset <= 0.0
+            || self.scroll_offset >= self.max_scroll_offset - self.prefetch_distance()
+    }
+
+    fn prefetch_distance(&self) -> f32 {
+        600.0
+    }
+
     pub(crate) fn set_visible_chapter(&mut self, chapter: usize) {
         self.visible_chapter = chapter;
     }
@@ -468,6 +477,10 @@ mod tests {
         state.record_scroll_output(900.0, 1000.0, 400.0);
         assert_eq!(state.max_scroll_offset, 600.0);
         assert_eq!(state.scroll_offset, 600.0);
+        assert!(state.near_end());
+
+        state.record_scroll_output(0.0, 2400.0, 400.0);
+        assert!(!state.near_end());
     }
 
     #[test]
