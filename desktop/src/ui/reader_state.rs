@@ -168,8 +168,9 @@ impl ContinuousScrollState {
 
     pub(crate) fn near_start(&self) -> bool {
         !self.awaiting_prepend_measurement
+            && self.pending_scroll_adjustment == 0.0
             && self.scroll_offset <= self.prefetch_distance()
-            && self.visible_chapter > self.start_chapter
+            && self.start_chapter > 0
     }
 }
 
