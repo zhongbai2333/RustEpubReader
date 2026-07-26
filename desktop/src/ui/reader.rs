@@ -260,8 +260,14 @@ impl ReaderApp {
                 {
                     ui.ctx().request_repaint();
                 }
+                if self.continuous_scroll.near_start()
+                    && self.continuous_scroll.prepend_previous().is_some()
+                {
+                    ui.ctx().request_repaint();
+                }
                 let loaded_end = self.continuous_scroll.loaded_end;
                 let start_chapter = self.continuous_scroll.start_chapter;
+                let scroll_adjustment = self.continuous_scroll.take_scroll_adjustment();
                 let continuous_chapters: Vec<(String, Vec<ContentBlock>)> = self
                     .book
                     .as_ref()
@@ -307,6 +313,10 @@ impl ReaderApp {
                 if self.scroll_to_top {
                     scroll_area = scroll_area.vertical_scroll_offset(0.0);
                     self.scroll_to_top = false;
+                } else if scroll_adjustment != 0.0 {
+                    scroll_area = scroll_area.vertical_scroll_offset(
+                        (self.continuous_scroll.scroll_offset + scroll_adjustment).max(0.0),
+                    );
                 }
                 let scroll_output = scroll_area.show(ui, |ui| {
                     for (offset, (chapter_title, chapter_blocks)) in
@@ -404,6 +414,10 @@ impl ReaderApp {
                     < scroll_output.inner_rect.height().max(600.0)
                     && self.continuous_scroll.append_next(total_ch).is_some()
                 {
+                    ui.ctx().request_repaint();
+                }
+                self.continuous_scroll.trim_window();
+                if self.continuous_scroll.start_chapter != start_chapter {
                     ui.ctx().request_repaint();
                 }
             } else {

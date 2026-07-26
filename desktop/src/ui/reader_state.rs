@@ -43,6 +43,7 @@ pub(crate) struct ContinuousScrollState {
     pub(crate) chapter_heights: HashMap<usize, f32>,
     pub(crate) scroll_offset: f32,
     pub(crate) max_scroll_offset: f32,
+    pending_scroll_adjustment: f32,
     layout_signature: Option<u64>,
     initialized: bool,
 }
@@ -82,6 +83,36 @@ impl ContinuousScrollState {
         Some(chapter)
     }
 
+    pub(crate) fn prepend_previous(&mut self) -> Option<usize> {
+        if !self.initialized || self.start_chapter == 0 {
+            return None;
+        }
+        self.start_chapter -= 1;
+        self.pending_scroll_adjustment += self
+            .chapter_heights
+            .get(&self.start_chapter)
+            .copied()
+            .unwrap_or(0.0);
+        Some(self.start_chapter)
+    }
+
+    pub(crate) fn trim_window(&mut self) {
+        const MAX_LOADED_CHAPTERS: usize = 4;
+        while self.loaded_end.saturating_sub(self.start_chapter) > MAX_LOADED_CHAPTERS
+            && self.start_chapter < self.visible_chapter
+        {
+            let Some(height) = self.chapter_heights.get(&self.start_chapter).copied() else {
+                break;
+            };
+            self.pending_scroll_adjustment -= height;
+            self.start_chapter += 1;
+        }
+    }
+
+    pub(crate) fn take_scroll_adjustment(&mut self) -> f32 {
+        std::mem::take(&mut self.pending_scroll_adjustment)
+    }
+
     pub(crate) fn near_end(&self) -> bool {
         self.max_scroll_offset <= 0.0
             || self.scroll_offset >= self.max_scroll_offset - self.prefetch_distance()
@@ -118,6 +149,10 @@ impl ContinuousScrollState {
     ) {
         self.max_scroll_offset = (content_height - viewport_height).max(0.0);
         self.scroll_offset = offset.clamp(0.0, self.max_scroll_offset);
+    }
+
+    pub(crate) fn near_start(&self) -> bool {
+        self.scroll_offset <= self.prefetch_distance()
     }
 }
 
@@ -457,6 +492,32 @@ mod tests {
         assert_eq!(state.append_next(5), Some(3));
         assert_eq!(state.append_next(5), Some(4));
         assert_eq!(state.append_next(5), None);
+    }
+
+    #[test]
+    fn continuous_scroll_keeps_a_bounded_window() {
+        let mut state = ContinuousScrollState::default();
+        state.reset(0, 8);
+        for chapter in 0..4 {
+            state.record_height(chapter, 100.0);
+            assert_eq!(state.append_next(8), Some(chapter + 1));
+        }
+        state.set_visible_chapter(1);
+        state.trim_window();
+
+        assert_eq!(state.start_chapter, 1);
+        assert_eq!(state.loaded_end, 5);
+        assert_eq!(state.take_scroll_adjustment(), -100.0);
+    }
+
+    #[test]
+    fn continuous_scroll_prepending_restores_scroll_anchor() {
+        let mut state = ContinuousScrollState::default();
+        state.reset(2, 5);
+        state.record_height(1, 240.0);
+        assert_eq!(state.prepend_previous(), Some(1));
+        assert_eq!(state.start_chapter, 1);
+        assert_eq!(state.take_scroll_adjustment(), 240.0);
     }
 
     #[test]
