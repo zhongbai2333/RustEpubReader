@@ -17,6 +17,8 @@ use reader_core::i18n::{I18n, Language};
 use reader_core::library::Library;
 use reader_core::sharing::{start_listener, DiscoveredPeer, PeerStore};
 
+use crate::ui::reader_state::ContinuousScrollState;
+
 type FontDiscoveryResult = Arc<Mutex<Option<(Vec<String>, HashMap<String, String>)>>>;
 pub(crate) type TtsAudioResultSlot = Arc<Mutex<Option<Result<Vec<u8>, String>>>>;
 
@@ -521,6 +523,7 @@ pub struct ReaderApp {
     pub view: AppView,
     pub library: Library,
     pub scroll_mode: bool,
+    pub(crate) continuous_scroll: ContinuousScrollState,
     pub current_page: usize,
     pub total_pages: usize,
     pub page_block_ranges: Vec<(usize, usize)>,
@@ -728,6 +731,7 @@ pub enum UpdateState {
 
 #[derive(Clone)]
 pub struct CrossChapterSnapshot {
+    pub chapter: usize,
     pub blocks: Arc<Vec<reader_core::epub::ContentBlock>>,
     pub block_ranges: Vec<(usize, usize)>,
     pub total_pages: usize,
@@ -825,6 +829,7 @@ impl Default for ReaderApp {
             view: AppView::Library,
             library,
             scroll_mode: false,
+            continuous_scroll: ContinuousScrollState::default(),
             current_page: 0,
             total_pages: 0,
             page_block_ranges: Vec::new(),
@@ -1477,6 +1482,7 @@ impl ReaderApp {
         if let Some(book) = &self.book {
             if let Some(ch) = book.chapters.get(self.current_chapter) {
                 self.page_anim_cross_chapter_snapshot = Some(CrossChapterSnapshot {
+                    chapter: self.current_chapter,
                     blocks: Arc::new(ch.blocks.clone()),
                     block_ranges: self.page_block_ranges.clone(),
                     total_pages: self.total_pages,
@@ -1509,8 +1515,9 @@ impl ReaderApp {
         }
     }
 
-    pub fn schedule_position_save(&mut self, block: usize) {
-        if self.current_block != block {
+    pub fn schedule_position_save(&mut self, chapter: usize, block: usize) {
+        if self.current_chapter != chapter || self.current_block != block {
+            self.current_chapter = chapter;
             self.current_block = block;
             self.position_save_due =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
