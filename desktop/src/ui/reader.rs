@@ -313,6 +313,7 @@ impl ReaderApp {
                         continuous_chapters.iter().enumerate()
                     {
                         let chapter_idx = start_chapter + offset;
+                        let chapter_top = ui.cursor().top();
                         let chapter_ranges = loaded_highlights.get(&chapter_idx).unwrap_or(
                             if chapter_idx == self.current_chapter {
                                 &highlight_ranges
@@ -345,6 +346,9 @@ impl ReaderApp {
                             &mut clicked_link,
                             chapter_ranges,
                         );
+                        let chapter_height = (ui.cursor().top() - chapter_top).max(0.0);
+                        self.continuous_scroll
+                            .record_height(chapter_idx, chapter_height);
                     }
                     if let Some(target) = self.pending_restore_block {
                         BLOCK_GALLEYS.with(|galleys| {
@@ -366,28 +370,6 @@ impl ReaderApp {
                     scroll_output.content_size.y,
                     viewport.height(),
                 );
-                for chapter_idx in start_chapter..loaded_end {
-                    let height = BLOCK_GALLEYS.with(|galleys| {
-                        let entries = galleys.borrow();
-                        let mut min_y = f32::INFINITY;
-                        let mut max_y = f32::NEG_INFINITY;
-                        for entry in entries
-                            .iter()
-                            .filter(|entry| entry.key.chapter == chapter_idx)
-                        {
-                            min_y = min_y.min(entry.rect.min.y);
-                            max_y = max_y.max(entry.rect.max.y);
-                        }
-                        if min_y.is_finite() && max_y.is_finite() {
-                            Some(max_y - min_y)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(height) = height {
-                        self.continuous_scroll.record_height(chapter_idx, height);
-                    }
-                }
                 let visible_block = BLOCK_GALLEYS.with(|galleys| {
                     galleys
                         .borrow()
