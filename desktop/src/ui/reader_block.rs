@@ -157,7 +157,7 @@ pub(crate) fn render_content_layout(
                             font_family_name,
                             i18n,
                             clicked_link,
-                            abs_idx,
+                            BlockKey::new(current_chapter, abs_idx),
                             hl_ranges,
                         );
                     }
@@ -227,7 +227,7 @@ pub(crate) fn render_block(
     font_family_name: &str,
     i18n: &reader_core::i18n::I18n,
     clicked_link: &mut Option<String>,
-    chapter_block_idx: usize,
+    block_key: BlockKey,
     highlight_ranges: &[(usize, usize, reader_core::library::HighlightColor)],
 ) {
     match block {
@@ -250,7 +250,7 @@ pub(crate) fn render_block(
                 &[],
             );
             ui.add_space(font_size * 0.8);
-            let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx);
+            let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(block_key);
             let galley = ui.painter().layout_job(job);
             let galley_size = galley.size();
             let (rect, response) =
@@ -264,13 +264,13 @@ pub(crate) fn render_block(
 
             let text: String = spans.iter().map(|span| span.text.as_str()).collect();
             BLOCK_GALLEYS.with(|galleys| {
-                galleys.borrow_mut().push((
-                    chapter_block_idx,
-                    galley.clone(),
+                galleys.borrow_mut().push(BlockGalleyEntry {
+                    key: block_key,
+                    galley: galley.clone(),
                     rect,
                     text,
-                    response.clone(),
-                ));
+                    response: response.clone(),
+                });
             });
 
             // Handle individual link clicks via pointer position matching
@@ -313,7 +313,7 @@ pub(crate) fn render_block(
                     spans.to_vec(),
                     Vec::<(usize, String, String, f32, u8)>::new(),
                 );
-                let corrections = match map.get(&chapter_block_idx) {
+                let corrections = match map.get(&block_key) {
                     Some(c) if !c.is_empty() => c,
                     _ => return empty_result,
                 };
@@ -421,7 +421,7 @@ pub(crate) fn render_block(
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
             // TTS read-along highlight (paint behind text)
-            if TTS_HIGHLIGHT_BLOCK.get() == Some(chapter_block_idx) {
+            if TTS_HIGHLIGHT_BLOCK.get() == Some(block_key) {
                 paint_tts_highlight(ui, rect);
             }
             ui.painter()
@@ -501,7 +501,7 @@ pub(crate) fn render_block(
                             );
                             CSC_RECTS.with(|r| {
                                 r.borrow_mut().push(CscRect {
-                                    block_idx: chapter_block_idx,
+                                    key: block_key,
                                     char_offset,
                                     original: _main_text.clone(), // original text
                                     corrected: top_text.clone(),  // corrected text
@@ -527,13 +527,13 @@ pub(crate) fn render_block(
 
             // Push into per-frame cache for the selection state machine
             BLOCK_GALLEYS.with(|bg| {
-                bg.borrow_mut().push((
-                    chapter_block_idx,
-                    galley.clone(),
+                bg.borrow_mut().push(BlockGalleyEntry {
+                    key: block_key,
+                    galley: galley.clone(),
                     rect,
-                    text.clone(),
-                    response.clone(),
-                ));
+                    text: text.clone(),
+                    response: response.clone(),
+                });
             });
 
             // Handle individual link clicks via pointer position matching
