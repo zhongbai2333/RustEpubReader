@@ -55,6 +55,8 @@ internal fun ScrollModeContent(
     ,onPositionChange: (Int) -> Unit = {}
 ) {
     val listState = rememberLazyListState()
+    var suppressChapterCallback by remember { mutableStateOf(false) }
+    var lastVisibleChapter by remember { mutableIntStateOf(initialChapter) }
     val configuration = LocalConfiguration.current
     val scrollDensity = LocalDensity.current
     val hPaddingDp = configuration.screenWidthDp.dp * 0.065f
@@ -68,15 +70,34 @@ internal fun ScrollModeContent(
     var pullTriggered by remember { mutableStateOf(false) }
     val pullThreshold = with(scrollDensity) { 120.dp.toPx() }
 
-    LaunchedEffect(allChapters, initialChapter) {
+    LaunchedEffect(allChapters) {
+        suppressChapterCallback = true
         listState.scrollToItem(initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
+        // Let the programmatic positioning settle before user-driven chapter
+        // visibility changes are reported to the parent.
+        withFrameNanos { }
+        suppressChapterCallback = false
+    }
+
+    LaunchedEffect(initialChapter) {
+        if (initialChapter == lastVisibleChapter) return@LaunchedEffect
+        suppressChapterCallback = true
+        listState.scrollToItem(initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
+        lastVisibleChapter = initialChapter
+        withFrameNanos { }
+        suppressChapterCallback = false
     }
 
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index }
             .distinctUntilChanged()
             .collect { chapterIndex ->
-                chapterIndex?.let(onChapterVisible)
+                if (!suppressChapterCallback) {
+                    chapterIndex?.let {
+                        lastVisibleChapter = it
+                        onChapterVisible(it)
+                    }
+                }
             }
     }
 
