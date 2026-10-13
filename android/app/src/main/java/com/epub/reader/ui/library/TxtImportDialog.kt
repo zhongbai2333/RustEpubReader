@@ -13,6 +13,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.i18n.I18n
+import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
 import com.zhongbai233.epub.reader.viewmodel.TxtChapterPreview
 
 @Composable
@@ -40,12 +41,14 @@ fun TxtImportDialog(
         confirmButton = {
             Button(
                 onClick = onConvert,
-                enabled = !converting
+                enabled = !converting,
+                shape = ReaderGeometry.Shape,
+                contentPadding = ReaderGeometry.ButtonPadding,
             ) {
                 if (converting) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp
+                        strokeWidth = 2.dp,
                     )
                     Spacer(Modifier.width(8.dp))
                 }
@@ -54,7 +57,11 @@ fun TxtImportDialog(
         },
         dismissButton = {
             if (!converting) {
-                TextButton(onClick = onDismiss) {
+                TextButton(
+                    onClick = onDismiss,
+                    shape = ReaderGeometry.Shape,
+                    contentPadding = ReaderGeometry.ButtonPadding,
+                ) {
                     Text(I18n.t("error.ok"))
                 }
             }
@@ -68,7 +75,8 @@ fun TxtImportDialog(
                     onValueChange = onTitleChange,
                     label = { Text(I18n.t("txt.book_title")) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ReaderGeometry.Shape,
                 )
                 Spacer(Modifier.height(8.dp))
 
@@ -78,7 +86,8 @@ fun TxtImportDialog(
                     onValueChange = onAuthorChange,
                     label = { Text(I18n.t("txt.author")) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ReaderGeometry.Shape,
                 )
                 Spacer(Modifier.height(12.dp))
 
@@ -91,7 +100,7 @@ fun TxtImportDialog(
                         onCheckedChange = {
                             onHeuristicChange(it)
                             onRefreshPreview()
-                        }
+                        },
                     )
                     Text(I18n.t("txt.mode_heuristic"), fontSize = 14.sp)
                 }
@@ -103,12 +112,18 @@ fun TxtImportDialog(
                     label = { Text(I18n.t("txt.mode_regex")) },
                     placeholder = { Text(I18n.t("txt.regex_hint")) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ReaderGeometry.Shape,
                 )
                 Spacer(Modifier.height(12.dp))
 
                 // 刷新按钮
-                OutlinedButton(onClick = onRefreshPreview, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = onRefreshPreview,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = ReaderGeometry.Shape,
+                    contentPadding = ReaderGeometry.ButtonPadding,
+                ) {
                     Text(I18n.t("txt.preview"))
                 }
                 Spacer(Modifier.height(8.dp))
@@ -119,31 +134,35 @@ fun TxtImportDialog(
                 Text(
                     I18n.t("txt.chapter_count").replace("{}", previews.size.toString()),
                     fontWeight = FontWeight.Medium,
-                    fontSize = 14.sp
+                    fontSize = 14.sp,
                 )
                 Spacer(Modifier.height(4.dp))
 
                 if (previews.isEmpty()) {
-                    Text(I18n.t("txt.no_chapters"), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        I18n.t("txt.no_chapters"),
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 } else {
                     LazyColumn(modifier = Modifier.heightIn(max = 250.dp)) {
                         itemsIndexed(previews) { i, ch ->
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
                                 Text(
                                     "${i + 1}. ${ch.title}",
                                     fontSize = 13.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
                                 )
                                 Text(
                                     "${ch.charCount}字",
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
@@ -156,6 +175,6 @@ fun TxtImportDialog(
                     Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                 }
             }
-        }
+        },
     )
 }

@@ -144,53 +144,10 @@ impl ReaderApp {
         ui.add_space(12.0);
         ui.separator();
 
-        // ── GitHub account (for data contribution) ──
         ui.add_space(8.0);
-        ui.label(self.i18n.t("csc.github_account"));
-        ui.add_space(4.0);
-
-        if let Some(username) = &self.github_username {
-            ui.horizontal(|ui| {
-                ui.label("✓");
-                ui.label(format!("{}: {}", self.i18n.t("csc.logged_in_as"), username));
-            });
-            if ui.button(self.i18n.t("csc.logout")).clicked() {
-                self.push_feedback_log(format!("[GitHub] logout user={}", username));
-                // Remove token from OS credential store
-                reader_core::sharing::keystore::delete_github_token();
-                self.github_token = None;
-                self.github_username = None;
-            }
-        } else if self.github_oauth_polling {
-            // Device Flow — show user code
-            if let Some(user_code) = &self.github_user_code {
-                ui.label(self.i18n.t("csc.visit_github"));
-                ui.hyperlink("https://github.com/login/device");
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(self.i18n.t("csc.enter_code"));
-                    ui.monospace(user_code);
-                    if ui
-                        .small_button("📋")
-                        .on_hover_text(self.i18n.t("csc.copy_code"))
-                        .clicked()
-                    {
-                        ui.ctx().copy_text(user_code.clone());
-                    }
-                });
-            }
-            if !self.github_oauth_status.is_empty() {
-                ui.label(&self.github_oauth_status);
-            }
-            if ui.button(self.i18n.t("csc.cancel")).clicked() {
-                self.github_oauth_polling = false;
-                self.github_device_code = None;
-                self.github_user_code = None;
-                self.github_oauth_status.clear();
-            }
-        } else if ui.button(self.i18n.t("csc.login_github")).clicked() {
-            self.github_start_device_flow();
-        }
+        ui.strong(self.i18n.t("account.contribution"));
+        ui.small(self.i18n.t("account.contribution_hint"));
+        self.render_github_account_summary(ui);
     }
 
     /// Check model status on startup.

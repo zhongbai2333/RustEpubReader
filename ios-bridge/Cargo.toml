@@ -1,0 +1,16 @@
+[package]
+name = "reader_ios"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+[lib]
+crate-type = ["staticlib", "rlib"]
+[dependencies]
+reader_core = { path = "../core", features = ["github-sync", "keychain"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+[dev-dependencies]
+tempfile = "3"

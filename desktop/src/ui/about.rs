@@ -40,7 +40,7 @@ impl ReaderApp {
                         ui.add(
                             egui::Image::new(tex)
                                 .fit_to_exact_size(egui::Vec2::splat(96.0))
-                                .corner_radius(18.0),
+                                .corner_radius(super::design::Geometry::RADIUS),
                         );
                         ui.add_space(10.0);
                     }

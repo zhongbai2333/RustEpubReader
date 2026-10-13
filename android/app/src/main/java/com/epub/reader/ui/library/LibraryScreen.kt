@@ -1,45 +1,37 @@
 package com.zhongbai233.epub.reader.ui.library
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.platform.LocalUriHandler
 import com.zhongbai233.epub.reader.i18n.I18n
 import com.zhongbai233.epub.reader.model.BookEntry
+import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-/**
- * 书库界面 — 对应PC版的 render_library()
- * 网格卡片布局，左侧封面，右侧信息
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
@@ -49,363 +41,391 @@ fun LibraryScreen(
     onOpenFilePicker: () -> Unit,
     onOpenBook: (String, Int) -> Unit,
     onRemoveBook: (String) -> Unit,
+    onExportBooks: (List<String>) -> Unit = {},
     onRequestCover: (String) -> Unit = {},
     onUpdateLanguage: (String) -> Unit = {},
-    onOpenSharing: () -> Unit = {},
     onRefreshLibrary: () -> Unit = {},
-    onOpenAbout: () -> Unit = {}
+    onOpenAbout: () -> Unit = {},
+    onOpenSync: () -> Unit = {},
+    onToggleTheme: () -> Unit = {},
+    syncing: Boolean = false,
 ) {
-    // 读取 I18n.version 以确保语言切换时触发重组
-    @Suppress("UNUSED_VARIABLE")
     val langVersion = I18n.version
-    var showLanguageDialog by remember { mutableStateOf(false) }
-    val uriHandler = LocalUriHandler.current
-    val palette = listOf(
-        Color(0xFF3884FF), Color(0xFF7857FF), Color(0xFFFF6464),
-        Color(0xFF32B482), Color(0xFFFFA032), Color(0xFFC850B4)
-    )
-
+    var managing by rememberSaveable { mutableStateOf(false) }
+    var selected by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    LaunchedEffect(books.map { it.uri }) { selected = selected.filter { uri -> books.any { it.uri == uri } } }
+    BackHandler(enabled = managing) { managing = false; selected = emptyList() }
+    var query by rememberSaveable { mutableStateOf("") }
+    var sortTitle by rememberSaveable { mutableStateOf(false) }
+    var showMore by remember { mutableStateOf(false) }
+    var showLanguage by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val filtered =
+        books
+            .filter { it.title.contains(query, ignoreCase = true) }
+            .let {
+                if (sortTitle) it.sortedBy { b -> b.title.lowercase() }
+                else it.sortedByDescending { b -> b.lastOpened }
+            }
+    val recent = books.maxByOrNull { it.lastOpened }?.takeIf { it.lastOpened > 0 }
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = {
                     Column {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                I18n.t("library.title"),
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            if (syncing) {
+                                Spacer(Modifier.width(4.dp))
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp).semantics { contentDescription = I18n.t("cloud.syncing") },
+                                    strokeWidth = 1.5.dp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(I18n.t("cloud.syncing_indicator"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                         Text(
-                            I18n.t("library.title"),
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            I18n.tf1("library.book_count", "${books.size}"),
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            I18n.tf1("ui.library_count", "${books.size}"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },
                 actions = {
-                    IconButton(onClick = onOpenSharing) {
-                        Icon(Icons.Default.Share, contentDescription = I18n.t("share.toolbar"))
+                    TextButton(onClick = { managing = !managing; if (!managing) selected = emptyList() }, enabled = books.isNotEmpty()) { Text(I18n.t(if (managing) "manage.done" else "manage.books")) }
+                    Box {
+                        IconButton(onClick = { showMore = true }) {
+                            Icon(Icons.Default.MoreVert, I18n.t("ui.more"))
+                        }
+                        DropdownMenu(showMore, { showMore = false }) {
+                            DropdownMenuItem(
+                                text = { Text(I18n.t("ui.language")) },
+                                onClick = {
+                                    showMore = false
+                                    showLanguage = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(I18n.t("ui.appearance")) },
+                                onClick = {
+                                    showMore = false
+                                    onToggleTheme()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(I18n.t("about.title")) },
+                                onClick = {
+                                    showMore = false
+                                    onOpenAbout()
+                                },
+                            )
+                        }
                     }
-                    IconButton(onClick = { showLanguageDialog = true }) {
-                        Icon(Icons.Default.Language, contentDescription = I18n.t("settings.language"))
-                    }
-                    IconButton(onClick = onOpenAbout) {
-                        Icon(Icons.Default.Info, contentDescription = I18n.t("about.title"))
-                    }
-                    FilledTonalButton(
-                        onClick = onOpenFilePicker,
-                        modifier = Modifier.padding(end = 12.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(I18n.t("library.open_new"), fontSize = 14.sp)
-                    }
-                }
+                },
             )
-        }
+        },
+        bottomBar = { HomeNavigation(false, {}, onOpenSync) },
     ) { padding ->
-        var isRefreshing by remember { mutableStateOf(false) }
-        val scope = rememberCoroutineScope()
-        val pullToRefreshState = rememberPullToRefreshState()
-
         PullToRefreshBox(
-            isRefreshing = isRefreshing,
+            isRefreshing = refreshing,
             onRefresh = {
                 scope.launch {
-                    isRefreshing = true
+                    refreshing = true
                     try {
-                        withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            onRefreshLibrary()
-                        }
+                        onRefreshLibrary()
                     } finally {
-                        isRefreshing = false
+                        refreshing = false
                     }
                 }
             },
-            state = pullToRefreshState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+            modifier = Modifier.fillMaxSize().padding(padding),
         ) {
-        if (books.isEmpty()) {
-            // 空状态
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
-                contentAlignment = Alignment.Center
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(144.dp),
+                contentPadding = PaddingValues(ReaderGeometry.PageInset),
+                horizontalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
+                verticalArrangement = Arrangement.spacedBy(ReaderGeometry.SectionGap),
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("📚", fontSize = 48.sp)
-                    Spacer(Modifier.height(16.dp))
-                    Text(I18n.t("library.empty"), fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        I18n.t("library.empty_hint"),
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(18.dp))
-                    FilledTonalButton(
-                        onClick = onOpenFilePicker,
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(I18n.t("library.open_new"))
-                    }
-                }
-            }
-        } else {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                ) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
                     ) {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            placeholder = { Text(I18n.t("ui.search_books")) },
+                            leadingIcon = { Icon(Icons.Default.Search, null) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = ReaderGeometry.Shape,
+                        )
+                        Button(
+                            onClick = onOpenFilePicker,
+                            contentPadding = ReaderGeometry.ButtonPadding,
+                            modifier = Modifier.height(56.dp),
+                            shape = ReaderGeometry.Shape,
+                        ) {
+                            Text(I18n.t("ui.import"))
+                        }
+                    }
+                }
+                if (!managing && query.isEmpty() && recent != null)
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Card(
+                            colors =
+                                CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                ),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(ReaderGeometry.CardInset),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement =
+                                    Arrangement.spacedBy(ReaderGeometry.BlockGap),
+                            ) {
+                                Column(
+                                    Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(ReaderGeometry.Gap),
+                                ) {
+                                    Text(
+                                        I18n.t("ui.recent"),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        recent.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        recent.lastChapterTitle
+                                            ?: I18n.tf1("ui.chapter", "${recent.lastChapter+1}"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                Button(
+                                    onClick = { onOpenBook(recent.uri, recent.lastChapter) },
+                                    contentPadding = ReaderGeometry.ButtonPadding,
+                                    shape = ReaderGeometry.Shape,
+                                ) {
+                                    Text(I18n.t("ui.continue"))
+                                }
+                            }
+                        }
+                    }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = I18n.t("library.author"),
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            I18n.t("ui.all_books"),
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f),
                         )
-                        TextButton(onClick = {
-                            runCatching {
-                                uriHandler.openUri("https://github.com/zhongbai233/RustEpubReader")
-                            }
-                        }) {
-                            Text(I18n.t("library.project_link"), fontSize = 12.sp)
+                        TextButton(
+                            onClick = { sortTitle = !sortTitle },
+                            shape = ReaderGeometry.Shape,
+                            contentPadding = ReaderGeometry.ButtonPadding,
+                        ) {
+                            Text(
+                                I18n.t(if (sortTitle) "ui.sort_title" else "ui.sort_recent"),
+                                style = MaterialTheme.typography.labelMedium,
+                            )
                         }
                     }
                 }
-
-                Text(
-                    I18n.tf1("library.book_count", "${books.size}"),
-                    modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 8.dp),
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                ) {
-                    Text(
-                        text = I18n.t("library.tip"),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                if (filtered.isEmpty())
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.MenuBook,
+                                null,
+                                modifier = Modifier.size(40.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                I18n.t(if (books.isEmpty()) "library.empty" else "ui.no_results"),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            if (books.isEmpty()) {
+                                Text(I18n.t("ui.empty_hint"))
+                                Button(
+                                    onClick = onOpenFilePicker,
+                                    shape = ReaderGeometry.Shape,
+                                    contentPadding = ReaderGeometry.ButtonPadding,
+                                ) {
+                                    Text(I18n.t("ui.import"))
+                                }
+                            } else
+                                TextButton(
+                                    onClick = { query = "" },
+                                    shape = ReaderGeometry.Shape,
+                                    contentPadding = ReaderGeometry.ButtonPadding,
+                                ) {
+                                    Text(I18n.t("ui.clear_search"))
+                                }
+                        }
+                    }
+                if (managing) item(span = { GridItemSpan(maxLineSpan) }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(I18n.tf1("manage.count", "${selected.size}"), style = MaterialTheme.typography.titleSmall)
+                        Row {
+                            TextButton(onClick = { selected = (selected + filtered.map { it.uri }).distinct() }) { Text(I18n.t("manage.all")) }
+                            TextButton(onClick = { selected = emptyList() }) { Text(I18n.t("manage.clear")) }
+                        }
+                        Row {
+                            TextButton(onClick = { onExportBooks(selected) }, enabled = selected.isNotEmpty()) { Text(I18n.t("manage.export")) }
+                            TextButton(onClick = { confirmDelete = true }, enabled = selected.isNotEmpty(), colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(I18n.t("manage.delete")) }
+                        }
+                    }
+                }
+                items(filtered, key = { it.uri }) { entry ->
+                    LaunchedEffect(entry.uri) {
+                        if (!coverCache.containsKey(entry.uri)) onRequestCover(entry.uri)
+                    }
+                    BookCard(
+                        entry,
+                        coverCache[entry.uri],
+                        { if (managing) selected = if (entry.uri in selected) selected - entry.uri else selected + entry.uri else onOpenBook(entry.uri, entry.lastChapter) },
+                        { onRemoveBook(entry.uri) },
+                        managing, entry.uri in selected,
                     )
-                }
-
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 300.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(
-                        items = books,
-                        key = { it.uri }
-                    ) { entry ->
-                        val colorIdx = entry.title.sumOf { it.code } % palette.size
-                        val coverColor = palette[colorIdx]
-                        val coverBytes = coverCache[entry.uri]
-                        LaunchedEffect(entry.uri) {
-                            if (!coverCache.containsKey(entry.uri)) {
-                                onRequestCover(entry.uri)
-                            }
-                        }
-
-                        BookCard(
-                            entry = entry,
-                            coverColor = coverColor,
-                            coverBytes = coverBytes,
-                            onClick = { onOpenBook(entry.uri, entry.lastChapter) },
-                            onDelete = { onRemoveBook(entry.uri) }
-                        )
-                    }
                 }
             }
         }
-        } // PullToRefreshBox
     }
-
-    // 语言选择对话框
-    if (showLanguageDialog) {
+    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text(I18n.t("manage.confirm")) }, text = { Text(I18n.t("manage.delete_note")) }, confirmButton = {
+        TextButton(onClick = { val deleting = selected; confirmDelete = false; selected = emptyList(); deleting.forEach(onRemoveBook) }) { Text(I18n.t("manage.delete"), color = MaterialTheme.colorScheme.error) }
+    }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(I18n.t("settings.cancel")) } })
+    if (showLanguage)
         AlertDialog(
-            onDismissRequest = { showLanguageDialog = false },
-            title = { Text(I18n.t("settings.language")) },
+            onDismissRequest = { showLanguage = false },
+            title = { Text(I18n.t("ui.language")) },
             text = {
                 Column {
                     I18n.availableLanguages.forEach { (code, label) ->
-                        val isSelected = language == code ||
-                            (code == "auto" && language == "auto")
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onUpdateLanguage(code)
-                                    showLanguageDialog = false
-                                }
-                                .padding(vertical = 10.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            Modifier.fillMaxWidth().clickable {
+                                onUpdateLanguage(code)
+                                showLanguage = false
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
                             RadioButton(
-                                selected = isSelected,
+                                selected = language == code,
                                 onClick = {
                                     onUpdateLanguage(code)
-                                    showLanguageDialog = false
-                                }
+                                    showLanguage = false
+                                },
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Text(label, fontSize = 16.sp)
+                            Text(label)
                         }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showLanguageDialog = false }) {
+                TextButton(
+                    onClick = { showLanguage = false },
+                    shape = ReaderGeometry.Shape,
+                    contentPadding = ReaderGeometry.ButtonPadding,
+                ) {
                     Text(I18n.t("error.ok"))
                 }
-            }
+            },
         )
-    }
 }
 
 @Composable
 private fun BookCard(
     entry: BookEntry,
-    coverColor: Color,
     coverBytes: ByteArray?,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    managing: Boolean = false,
+    selected: Boolean = false,
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(140.dp)
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+    var more by remember { mutableStateOf(false) }
+    val bitmap by
+        produceState<android.graphics.Bitmap?>(null, coverBytes) {
+            value =
+                withContext(Dispatchers.IO) {
+                    coverBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                }
+        }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            Modifier.fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(ReaderGeometry.Shape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
         ) {
-            // 左侧封面
-            Box(
-                modifier = Modifier
-                    .width(88.dp)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(coverColor),
-                contentAlignment = Alignment.Center
-            ) {
-                if (coverBytes != null) {
-                    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, coverBytes) {
-                        value = withContext(Dispatchers.IO) {
-                            BitmapFactory.decodeByteArray(coverBytes, 0, coverBytes.size)
-                        }
-                    }
-                    val bmp = bitmap
-                    if (bmp != null) {
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = entry.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else {
-                        CoverPlaceholder(entry.title, Color.White)
-                    }
-                } else {
-                    CoverPlaceholder(entry.title, Color.White)
-                }
+            bitmap?.let {
+                Image(
+                    it.asImageBitmap(),
+                    entry.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
             }
-
-            // 右侧信息
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = entry.title,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = I18n.tf1("library.last_read_chapter", entry.lastChapterTitle ?: "${entry.lastChapter + 1}"),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+                ?: Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
                 ) {
-                    Button(
-                        onClick = onClick,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(I18n.t("library.continue_reading"), fontSize = 12.sp)
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = I18n.t("library.delete"),
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.MenuBook,
+                        null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(I18n.t("ui.cover_missing"), style = MaterialTheme.typography.bodySmall)
+                }
+        }
+        if (managing) Row(Modifier.fillMaxWidth().clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = selected, onCheckedChange = { onClick() }); Text(entry.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+        }
+        else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Text(
+                entry.title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).clickable(onClick = onClick),
+            )
+            Box {
+                IconButton(onClick = { more = true }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.MoreVert, I18n.t("ui.more"), modifier = Modifier.size(20.dp))
+                }
+                DropdownMenu(more, { more = false }) {
+                    DropdownMenuItem(
+                        text = { Text(I18n.t("library.delete")) },
+                        onClick = {
+                            more = false
+                            onDelete()
+                        },
+                    )
                 }
             }
         }
+        Text(
+            entry.lastChapterTitle ?: I18n.tf1("ui.chapter", "${entry.lastChapter+1}"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
-}
-
-@Composable
-private fun CoverPlaceholder(title: String, textColor: Color) {
-    val char = title.firstOrNull()?.toString() ?: "📖"
-    Text(
-        text = char,
-        fontSize = 32.sp,
-        fontWeight = FontWeight.Bold,
-        color = textColor
-    )
 }

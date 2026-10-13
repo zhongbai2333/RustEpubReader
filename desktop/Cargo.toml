@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-reader_core = { path = "../core", features = ["keychain"] }
+reader_core = { path = "../core", features = ["keychain", "github-sync"] }
 eframe = "0.31"
 rfd = "0.15"
 image = "0.25"
@@ -35,3 +35,14 @@ vendored-openssl = ["openssl/vendored"]
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-text = "22"
+keyring = { version = "3", features = ["apple-native"] }
+ttf-parser = "0.25"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native-sync-persistent", "crypto-rust", "vendored"] }

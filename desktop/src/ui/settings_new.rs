@@ -6,30 +6,31 @@ use reader_core::i18n::Language;
 
 impl ReaderApp {
     pub fn render_settings_panel(&mut self, ctx: &egui::Context) {
-        let dark = self.dark_mode;
-        let panel_bg = if dark {
-            Color32::from_rgb(32, 32, 36)
-        } else {
-            Color32::from_rgb(248, 248, 252)
-        };
-        let heading_color = if dark {
-            Color32::from_gray(220)
-        } else {
-            Color32::from_gray(30)
-        };
-        let subtitle_color = if dark {
-            Color32::from_gray(140)
-        } else {
-            Color32::from_gray(100)
-        };
+        let palette = super::design::Palette::new(self.dark_mode);
+        let panel_bg = palette.surface;
+        let heading_color = palette.text;
+        let subtitle_color = palette.muted;
 
-        egui::SidePanel::right("settings_panel")
-            .default_width(320.0)
-            .max_width(400.0)
-            .show(ctx, |ui| {
+        super::design::animated_side_panel(
+            ctx,
+            "settings_panel",
+            false,
+            320.,
+            self.show_settings && self.view == crate::app::AppView::Reader,
+            |ui| {
+                ui.spacing_mut().interact_size.y = 30.;
+                ui.spacing_mut().button_padding = egui::vec2(10., 5.);
+                let widgets = &mut ui.visuals_mut().widgets;
+                for w in [
+                    &mut widgets.inactive,
+                    &mut widgets.hovered,
+                    &mut widgets.active,
+                ] {
+                    w.corner_radius = egui::CornerRadius::same(6);
+                }
                 egui::Frame::new()
                     .fill(panel_bg)
-                    .inner_margin(16.0)
+                    .inner_margin(0.)
                     .show(ui, |ui| {
                         // Header
                         ui.horizontal(|ui| {
@@ -42,7 +43,12 @@ impl ReaderApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.small_button("✕").clicked() {
+                                    if super::design::close_button(
+                                        ui,
+                                        self.i18n.t("settings.close"),
+                                    )
+                                    .clicked()
+                                    {
                                         self.show_settings = false;
                                     }
                                 },
@@ -74,6 +80,9 @@ impl ReaderApp {
                             self.render_settings_api(ui, heading_color, subtitle_color);
                             ui.add_space(12.0);
 
+                            self.render_cloud_sync_settings(ui);
+                            ui.add_space(12.0);
+
                             // ── CSC ──
                             ui.separator();
                             ui.add_space(8.0);
@@ -81,7 +90,8 @@ impl ReaderApp {
                             ui.add_space(16.0);
                         });
                     });
-            });
+            },
+        );
     }
 
     fn render_settings_language(&mut self, ui: &mut egui::Ui, heading_color: Color32) {
@@ -96,10 +106,15 @@ impl ReaderApp {
         egui::ComboBox::from_id_salt("language_combo")
             .selected_text(&current_label)
             .show_ui(ui, |ui| {
+                super::design::menu_style(ui);
                 for lang in Language::all() {
-                    if ui
-                        .selectable_label(self.i18n.language() == lang, lang.label())
-                        .clicked()
+                    if super::design::menu_item(
+                        ui,
+                        lang.label(),
+                        self.i18n.language() == lang,
+                        false,
+                    )
+                    .clicked()
                     {
                         self.i18n.set_language(lang.clone());
                     }
@@ -117,17 +132,16 @@ impl ReaderApp {
         ui.add_space(4.0);
 
         // Font size
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label(
                 self.i18n
                     .tf1("settings.font_size", &format!("{:.0}", self.font_size)),
             );
-            if ui
-                .add_sized(
-                    [ui.available_width().min(200.0), 18.0],
-                    egui::Slider::new(&mut self.font_size, 12.0..=40.0),
-                )
-                .changed()
+            if super::design::settings_slider(
+                ui,
+                egui::Slider::new(&mut self.font_size, 12.0..=40.0),
+            )
+            .changed()
             {
                 self.pages_dirty = true;
             }
@@ -153,43 +167,40 @@ impl ReaderApp {
         });
 
         // Line spacing
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label(self.i18n.t("settings.line_spacing"));
-            if ui
-                .add_sized(
-                    [ui.available_width().min(150.0), 18.0],
-                    egui::Slider::new(&mut self.line_spacing, 1.0..=3.0).fixed_decimals(1),
-                )
-                .changed()
+            if super::design::settings_slider(
+                ui,
+                egui::Slider::new(&mut self.line_spacing, 1.0..=3.0).fixed_decimals(1),
+            )
+            .changed()
             {
                 self.pages_dirty = true;
             }
         });
 
         // Paragraph spacing
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label(self.i18n.t("settings.para_spacing"));
-            if ui
-                .add_sized(
-                    [ui.available_width().min(150.0), 18.0],
-                    egui::Slider::new(&mut self.para_spacing, 0.0..=2.0).fixed_decimals(1),
-                )
-                .changed()
+            if super::design::settings_slider(
+                ui,
+                egui::Slider::new(&mut self.para_spacing, 0.0..=2.0).fixed_decimals(1),
+            )
+            .changed()
             {
                 self.pages_dirty = true;
             }
         });
 
         // Text indent
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label(self.i18n.t("settings.text_indent"));
             let mut indent_f = self.text_indent as f32;
-            if ui
-                .add_sized(
-                    [ui.available_width().min(150.0), 18.0],
-                    egui::Slider::new(&mut indent_f, 0.0..=4.0).fixed_decimals(0),
-                )
-                .changed()
+            if super::design::settings_slider(
+                ui,
+                egui::Slider::new(&mut indent_f, 0.0..=4.0).fixed_decimals(0),
+            )
+            .changed()
             {
                 self.text_indent = indent_f as u8;
                 self.pages_dirty = true;
@@ -197,14 +208,13 @@ impl ReaderApp {
         });
 
         // Title font scale
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label("标题字号倍率");
-            if ui
-                .add_sized(
-                    [ui.available_width().min(150.0), 18.0],
-                    egui::Slider::new(&mut self.title_font_scale, 1.0..=2.5).fixed_decimals(1),
-                )
-                .changed()
+            if super::design::settings_slider(
+                ui,
+                egui::Slider::new(&mut self.title_font_scale, 1.0..=2.5).fixed_decimals(1),
+            )
+            .changed()
             {
                 self.title_font_scale = self.title_font_scale.clamp(1.0, 2.5);
                 self.pages_dirty = true;
@@ -225,8 +235,9 @@ impl ReaderApp {
                 &btn,
                 egui::PopupCloseBehavior::CloseOnClickOutside,
                 |ui| {
-                    ui.set_min_width(220.0);
-                    let te = ui.text_edit_singleline(&mut self.font_search);
+                    super::design::menu_style(ui);
+                    ui.set_width(248.0);
+                    let te = ui.add(super::design::text_edit(&mut self.font_search));
                     if btn.clicked() {
                         te.request_focus();
                     }
@@ -237,9 +248,13 @@ impl ReaderApp {
                         .show(ui, |ui| {
                             for fam in ["Sans", "Serif", "Monospace"] {
                                 if (query.is_empty() || fam.to_lowercase().contains(&query))
-                                    && ui
-                                        .selectable_label(self.reader_font_family == fam, fam)
-                                        .clicked()
+                                    && super::design::menu_item(
+                                        ui,
+                                        fam,
+                                        self.reader_font_family == fam,
+                                        false,
+                                    )
+                                    .clicked()
                                 {
                                     self.reader_font_family = fam.to_string();
                                     self.pages_dirty = true;
@@ -259,9 +274,13 @@ impl ReaderApp {
                             if !sys_filtered.is_empty() {
                                 ui.separator();
                                 for name in sys_filtered {
-                                    if ui
-                                        .selectable_label(self.reader_font_family == name, &name)
-                                        .clicked()
+                                    if super::design::menu_item(
+                                        ui,
+                                        &name,
+                                        self.reader_font_family == name,
+                                        false,
+                                    )
+                                    .clicked()
                                     {
                                         self.reader_font_family = name;
                                         self.pages_dirty = true;
@@ -280,9 +299,13 @@ impl ReaderApp {
                             if !emb_filtered.is_empty() {
                                 ui.separator();
                                 for name in emb_filtered {
-                                    if ui
-                                        .selectable_label(self.reader_font_family == name, &name)
-                                        .clicked()
+                                    if super::design::menu_item(
+                                        ui,
+                                        &name,
+                                        self.reader_font_family == name,
+                                        false,
+                                    )
+                                    .clicked()
                                     {
                                         self.reader_font_family = name;
                                         self.pages_dirty = true;
@@ -314,8 +337,9 @@ impl ReaderApp {
                 &btn,
                 egui::PopupCloseBehavior::CloseOnClickOutside,
                 |ui| {
-                    ui.set_min_width(220.0);
-                    let te = ui.text_edit_singleline(&mut self.cjk_font_search);
+                    super::design::menu_style(ui);
+                    ui.set_width(248.0);
+                    let te = ui.add(super::design::text_edit(&mut self.cjk_font_search));
                     if btn.clicked() {
                         te.request_focus();
                     }
@@ -325,9 +349,13 @@ impl ReaderApp {
                         .max_height(300.0)
                         .show(ui, |ui| {
                             if (query.is_empty() || "sans".contains(&query))
-                                && ui
-                                    .selectable_label(self.reader_cjk_font_family == "Sans", "Sans")
-                                    .clicked()
+                                && super::design::menu_item(
+                                    ui,
+                                    "Sans",
+                                    self.reader_cjk_font_family == "Sans",
+                                    false,
+                                )
+                                .clicked()
                             {
                                 self.reader_cjk_font_family = "Sans".to_string();
                                 self.pages_dirty = true;
@@ -346,12 +374,13 @@ impl ReaderApp {
                             if !cjk_filtered.is_empty() {
                                 ui.separator();
                                 for name in cjk_filtered {
-                                    if ui
-                                        .selectable_label(
-                                            self.reader_cjk_font_family == name,
-                                            &name,
-                                        )
-                                        .clicked()
+                                    if super::design::menu_item(
+                                        ui,
+                                        &name,
+                                        self.reader_cjk_font_family == name,
+                                        false,
+                                    )
+                                    .clicked()
                                     {
                                         self.reader_cjk_font_family = name;
                                         self.pages_dirty = true;
@@ -372,8 +401,9 @@ impl ReaderApp {
         // Page animation
         ui.horizontal_wrapped(|ui| {
             ui.label(self.i18n.t("settings.page_animation"));
-            for mode in ["Slide", "Cover", "None"] {
+            for mode in ["Realistic", "Slide", "Cover", "None"] {
                 let label = match mode {
+                    "Realistic" => self.i18n.t("settings.realistic"),
                     "Slide" => self.i18n.t("settings.slide"),
                     "Cover" => self.i18n.t("settings.cover"),
                     _ => self.i18n.t("settings.none"),
@@ -389,8 +419,8 @@ impl ReaderApp {
         if self.reader_page_animation != "None" {
             ui.add_space(4.0);
             ui.label(self.i18n.t("settings.animation_speed"));
-            ui.add_sized(
-                [ui.available_width().min(250.0), 18.0],
+            super::design::settings_slider(
+                ui,
                 egui::Slider::new(&mut self.reader_page_animation_speed, 0.04..=0.40).step_by(0.02),
             );
         }
@@ -485,8 +515,8 @@ impl ReaderApp {
             "settings.opacity",
             &format!("{}", (self.reader_bg_image_alpha * 100.0) as i32),
         ));
-        ui.add_sized(
-            [ui.available_width().min(250.0), 18.0],
+        super::design::settings_slider(
+            ui,
             egui::Slider::new(&mut self.reader_bg_image_alpha, 0.0..=1.0),
         );
     }
@@ -520,7 +550,7 @@ impl ReaderApp {
                 .color(subtitle_color),
         );
         ui.add(
-            egui::TextEdit::singleline(&mut self.translate_api_url)
+            super::design::text_edit(&mut self.translate_api_url)
                 .hint_text("https://api.example.com/translate")
                 .desired_width(f32::INFINITY),
         );
@@ -532,7 +562,7 @@ impl ReaderApp {
                 .color(subtitle_color),
         );
         ui.add(
-            egui::TextEdit::singleline(&mut self.translate_api_key)
+            super::design::text_edit(&mut self.translate_api_key)
                 .password(true)
                 .hint_text("sk-...")
                 .desired_width(f32::INFINITY),
@@ -554,7 +584,7 @@ impl ReaderApp {
                 .color(subtitle_color),
         );
         ui.add(
-            egui::TextEdit::singleline(&mut self.dictionary_api_url)
+            super::design::text_edit(&mut self.dictionary_api_url)
                 .hint_text("https://api.example.com/dict")
                 .desired_width(f32::INFINITY),
         );
@@ -566,7 +596,7 @@ impl ReaderApp {
                 .color(subtitle_color),
         );
         ui.add(
-            egui::TextEdit::singleline(&mut self.dictionary_api_key)
+            super::design::text_edit(&mut self.dictionary_api_key)
                 .password(true)
                 .hint_text("key-...")
                 .desired_width(f32::INFINITY),

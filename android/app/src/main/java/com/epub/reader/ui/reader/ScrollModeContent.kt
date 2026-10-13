@@ -50,9 +50,9 @@ internal fun ScrollModeContent(
     cscBlockCorrections: Map<Int, List<CscBlockCorrection>> = emptyMap(),
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
-    onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> }
-    ,initialBlock: Int = 0
-    ,onPositionChange: (Int) -> Unit = {}
+    onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
+    initialBlock: Int = 0,
+    onPositionChange: (Int) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     var suppressChapterCallback by remember { mutableStateOf(false) }
@@ -60,9 +60,10 @@ internal fun ScrollModeContent(
     val configuration = LocalConfiguration.current
     val scrollDensity = LocalDensity.current
     val hPaddingDp = configuration.screenWidthDp.dp * 0.065f
-    val topPaddingDp = configuration.screenHeightDp.dp * 0.06f
-    val bottomPaddingDp = configuration.screenHeightDp.dp * 0.03f
-    val scrollContentWidthPx = with(scrollDensity) { (configuration.screenWidthDp.dp - hPaddingDp * 2f).toPx() }
+    val topPaddingDp = READER_VERTICAL_PADDING
+    val bottomPaddingDp = READER_VERTICAL_PADDING
+    val scrollContentWidthPx =
+        with(scrollDensity) { (configuration.screenWidthDp.dp - hPaddingDp * 2f).toPx() }
     val scrollSpToPx = scrollDensity.fontScale * scrollDensity.density
 
     // 下拉书签手势: 在列表顶部时检测下拉
@@ -75,7 +76,7 @@ internal fun ScrollModeContent(
         listState.scrollToItem(initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
         // Let the programmatic positioning settle before user-driven chapter
         // visibility changes are reported to the parent.
-        withFrameNanos { }
+        withFrameNanos {}
         suppressChapterCallback = false
     }
 
@@ -84,7 +85,7 @@ internal fun ScrollModeContent(
         suppressChapterCallback = true
         listState.scrollToItem(initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
         lastVisibleChapter = initialChapter
-        withFrameNanos { }
+        withFrameNanos {}
         suppressChapterCallback = false
     }
 
@@ -107,7 +108,9 @@ internal fun ScrollModeContent(
             .collect { chapterIndex ->
                 delay(350)
                 if (chapterIndex == initialChapter) {
-                    onPositionChange(initialBlock.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0)))
+                    onPositionChange(
+                        initialBlock.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
+                    )
                 }
             }
     }
@@ -116,7 +119,7 @@ internal fun ScrollModeContent(
         object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
             override fun onPreScroll(
                 available: Offset,
-                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource
+                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
             ): Offset {
                 // 向上滚回时重置
                 if (available.y < 0 && pullTotal > 0) {
@@ -129,7 +132,7 @@ internal fun ScrollModeContent(
             override fun onPostScroll(
                 consumed: Offset,
                 available: Offset,
-                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource
+                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
             ): Offset {
                 if (available.y > 0 && !pullTriggered) {
                     pullTotal += available.y
@@ -143,7 +146,7 @@ internal fun ScrollModeContent(
 
             override suspend fun onPostFling(
                 consumed: androidx.compose.ui.unit.Velocity,
-                available: androidx.compose.ui.unit.Velocity
+                available: androidx.compose.ui.unit.Velocity,
             ): androidx.compose.ui.unit.Velocity {
                 pullTotal = 0f
                 pullTriggered = false
@@ -154,32 +157,47 @@ internal fun ScrollModeContent(
 
     LazyColumn(
         state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            .background(bgColor)
-            .nestedScroll(nestedScrollConnection),
-        contentPadding = PaddingValues(start = hPaddingDp, end = hPaddingDp, top = topPaddingDp, bottom = bottomPaddingDp)
+        modifier = Modifier.fillMaxSize().background(bgColor).nestedScroll(nestedScrollConnection),
+        contentPadding =
+            PaddingValues(
+                start = hPaddingDp,
+                end = hPaddingDp,
+                top = topPaddingDp,
+                bottom = bottomPaddingDp,
+            ),
     ) {
-        itemsIndexed(allChapters, key = { index, _ -> "chapter-$index" }) { chapterIndex, chapterItem ->
+        itemsIndexed(allChapters, key = { index, _ -> "chapter-$index" }) {
+            chapterIndex,
+            chapterItem ->
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = if (chapterIndex == 0) 0.dp else topPaddingDp)
+                modifier =
+                    Modifier.fillMaxWidth()
+                        .padding(top = if (chapterIndex == 0) 0.dp else topPaddingDp)
             ) {
                 if (shouldRenderChapterTitle(chapterItem)) {
                     Text(
-                        text = breakTitleIntoLines(chapterItem.title, scrollContentWidthPx, fontSize * titleFontScale, scrollSpToPx),
-                        style = TextStyle(
-                            fontSize = (fontSize * titleFontScale).sp,
-                            lineHeight = (fontSize * titleFontScale * 1.45f).sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = fontFamily,
-                            color = textColor,
-                            textAlign = TextAlign.Center
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = topPaddingDp * 0.5f, bottom = topPaddingDp * 2.0f)
+                        text =
+                            breakTitleIntoLines(
+                                chapterItem.title,
+                                scrollContentWidthPx,
+                                fontSize * titleFontScale,
+                                scrollSpToPx,
+                            ),
+                        style =
+                            TextStyle(
+                                fontSize = (fontSize * titleFontScale).sp,
+                                lineHeight = (fontSize * titleFontScale * 1.45f).sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = fontFamily,
+                                color = textColor,
+                                textAlign = TextAlign.Center,
+                            ),
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .padding(
+                                    top = CHAPTER_TITLE_TOP_PADDING,
+                                    bottom = CHAPTER_TITLE_BOTTOM_PADDING,
+                                ),
                     )
                 }
                 chapterItem.blocks.forEachIndexed { blockIndex, block ->
@@ -199,12 +217,18 @@ internal fun ScrollModeContent(
                         titleFontScale = titleFontScale,
                         textSelection = textSelection,
                         onSelectionChange = onSelectionChange,
-                        blockLayoutRegistry = if (chapterIndex == initialChapter) blockLayoutRegistry else null,
-                        highlights = if (chapterIndex == initialChapter) highlights else emptyList(),
-                        cscBlockCorrections = if (chapterIndex == initialChapter) cscBlockCorrections[blockIndex] ?: emptyList() else emptyList(),
+                        blockLayoutRegistry =
+                            if (chapterIndex == initialChapter) blockLayoutRegistry else null,
+                        highlights =
+                            if (chapterIndex == initialChapter) highlights else emptyList(),
+                        cscBlockCorrections =
+                            if (chapterIndex == initialChapter)
+                                cscBlockCorrections[blockIndex] ?: emptyList()
+                            else emptyList(),
                         cscMode = cscMode,
-                        ttsCurrentBlock = if (chapterIndex == initialChapter) ttsCurrentBlock else -1,
-                        onCscCorrectionClick = onCscCorrectionClick
+                        ttsCurrentBlock =
+                            if (chapterIndex == initialChapter) ttsCurrentBlock else -1,
+                        onCscCorrectionClick = onCscCorrectionClick,
                     )
                 }
                 Spacer(Modifier.height(64.dp))

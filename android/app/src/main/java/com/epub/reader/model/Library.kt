@@ -24,6 +24,8 @@ class Library(private val context: Context) {
         load()
     }
 
+    fun reload() { load() }
+
     private fun load() {
         val payload = RustBridge.loadLibrary(dataDir)
         books = try {

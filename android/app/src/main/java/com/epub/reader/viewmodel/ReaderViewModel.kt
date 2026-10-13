@@ -37,6 +37,11 @@ import java.io.FileOutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import android.util.Base64
+import org.json.JSONObject
+import com.zhongbai233.epub.reader.util.GitHubTokenStore
+import com.zhongbai233.epub.reader.util.resolveResumeChapter
+import com.zhongbai233.epub.reader.util.canApplyGithubSync
+import kotlinx.coroutines.CancellationException
 
 data class TxtChapterPreview(val title: String, val lineStart: Int, val charCount: Int)
 
@@ -262,6 +267,35 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var githubAuthPolling by mutableStateOf(false)
         private set
+    var githubRepoAuthorized by mutableStateOf(false)
+        private set
+    var githubSyncLastSuccess by mutableStateOf<Long?>(null)
+        private set
+    var githubAuthForSync by mutableStateOf(false)
+        private set
+    var githubSyncContributions by mutableStateOf(false)
+        private set
+    var githubSyncEnabled by mutableStateOf(false)
+        private set
+    var githubSyncRunning by mutableStateOf(false)
+        private set
+    var githubSyncNeedsAuth by mutableStateOf(false)
+        private set
+    var githubSyncStatus by mutableStateOf("")
+        private set
+    var githubSyncFailures by mutableStateOf<List<JSONObject>>(emptyList())
+        private set
+    var githubSyncThrottled by mutableStateOf(false)
+        private set
+    var githubSyncOffer by mutableStateOf<JSONObject?>(null)
+        private set
+    private var githubSyncForeground = false
+    private var githubSyncAttemptAt = 0L
+    private var githubSyncRetryMs = 300_000L
+    private var githubSyncGeneration = 0L
+    private var githubSyncJob: Job? = null
+    private var githubLoginJob: Job? = null
+
     private var contributePrompted = false
     private var contributeDismissed = false
 
@@ -289,6 +323,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         loadSettings()
+        viewModelScope.launch {
+            while (isActive) {
+                delay(5_000)
+                if (githubSyncEnabled && githubSyncForeground && !isLoading && !githubSyncNeedsAuth && !githubSyncRunning && (githubSyncAttemptAt == 0L || android.os.SystemClock.elapsedRealtime() - githubSyncAttemptAt >= githubSyncRetryMs)) {
+                    syncGithubNow()
+                }
+            }
+        }
         if (autoStartSharing) {
             try { startSharingServer() } catch (_: Exception) { }
         }
@@ -377,8 +419,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         showImmersiveStatus = prefs.getBoolean(PrefKeys.SHOW_IMMERSIVE_STATUS, false)
         I18n.setLanguage(readerLanguage)
         autoStartSharing = prefs.getBoolean(PrefKeys.AUTO_START_SHARING, false)
-        githubToken = prefs.getString(PrefKeys.GITHUB_TOKEN, null)
-        githubUsername = prefs.getString(PrefKeys.GITHUB_USERNAME, null)
+        githubToken = GitHubTokenStore.load(context)
+        githubRepoAuthorized = githubToken != null && prefs.getBoolean("github_repo_authorized", false)
+        githubSyncEnabled = prefs.getBoolean("github_sync_enabled", false)
+        githubSyncContributions = prefs.getBoolean("github_sync_contributions", false)
+        githubSyncNeedsAuth = githubSyncEnabled && githubToken == null
+        githubUsername = if (githubToken != null) prefs.getString(PrefKeys.GITHUB_USERNAME, null) else null
         lineSpacing = prefs.getFloat(PrefKeys.LINE_SPACING, 1.5f).coerceIn(1.0f, 3.0f)
         paraSpacing = prefs.getFloat(PrefKeys.PARA_SPACING, 0.5f).coerceIn(0.0f, 2.0f)
         textIndent = prefs.getInt(PrefKeys.TEXT_INDENT, 2).coerceIn(0, 4)
@@ -480,7 +526,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             remote.chapterTitle != null &&
                             remote.chapterTitle != book.lastChapterTitle)
 
-                if (shouldUpdate) {
+                if (shouldUpdate && remote.timestamp > book.lastOpened / 1000L && book.uri != currentBookUri) {
                     library.updatePosition(
                         book.uri,
                         remote.chapter,
@@ -522,6 +568,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
+
+    fun reportExportFailure() { errorMessage = I18n.t("feedback.export_failed_generic") }
 
     fun removeBook(entry: BookEntry) {
         removeBookByUri(entry.uri)
@@ -745,7 +793,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }.getOrDefault(0)
         } ?: 0
 
-        val resolved = maxOf(requested, fromLibrary, fromPrefs, fromConfig)
+        val resolved = resolveResumeChapter(entry?.lastChapter, requested, maxOf(fromPrefs, fromConfig))
         android.util.Log.d("READER-RESUME",
             "resolveStartChapter path=$filePath requested=$requested " +
                 "fromLibrary=$fromLibrary fromPrefs=$fromPrefs fromConfig=$fromConfig => $resolved")
@@ -844,6 +892,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             coverCache[persistedEntry.uri] = book.coverData
         }
         currentBookUri = persistedEntry.uri
+        githubSyncOffer = null
         prefs.edit()
             .putString(PrefKeys.LAST_BOOK_URI, persistedEntry.uri)
             .putInt(PrefKeys.LAST_BOOK_CHAPTER, currentChapter)
@@ -1319,6 +1368,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
         currentBook = null
         currentBookUri = null
+        githubSyncOffer = null
         currentChapter = 0
         currentPage = 0
         currentBlock = 0
@@ -1725,39 +1775,204 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** Start GitHub Device Flow OAuth. */
-    fun startGitHubLogin() {
-        viewModelScope.launch {
-            val result = com.zhongbai233.epub.reader.util.GitHubContributor.requestDeviceCode()
-            result.onSuccess { dc ->
-                githubDeviceCode = dc.deviceCode
-                githubUserCode = dc.userCode
-                githubVerificationUri = dc.verificationUri
-                githubAuthPolling = true
-
-                // Start polling for token in background
-                viewModelScope.launch {
-                    val authResult = com.zhongbai233.epub.reader.util.GitHubContributor.pollForToken(dc)
-                    githubAuthPolling = false
-                    when (authResult) {
-                        is com.zhongbai233.epub.reader.util.GitHubContributor.AuthResult.Success -> {
-                            githubToken = authResult.token
-                            githubUsername = authResult.username
-                            githubUserCode = null
-                            githubVerificationUri = null
-                            prefs.edit()
-                                .putString(PrefKeys.GITHUB_TOKEN, authResult.token)
-                                .putString(PrefKeys.GITHUB_USERNAME, authResult.username)
-                                .apply()
+    fun startGitHubLogin(privateSync: Boolean = false, enableAfterLogin: Boolean = privateSync) {
+        if (githubLoginJob?.isActive == true) return
+        githubAuthPolling = true
+        githubAuthForSync = privateSync
+        githubSyncStatus = ""
+        githubLoginJob = viewModelScope.launch {
+            try {
+                val device = com.zhongbai233.epub.reader.util.GitHubContributor.requestDeviceCode(privateSync).getOrThrow()
+                githubDeviceCode = device.deviceCode
+                githubUserCode = device.userCode
+                githubVerificationUri = device.verificationUri
+                when (val auth = com.zhongbai233.epub.reader.util.GitHubContributor.pollForToken(device)) {
+                    is com.zhongbai233.epub.reader.util.GitHubContributor.AuthResult.Success -> {
+                        // Keep credential persistence and session replacement in one main-thread
+                        // step: cancellation cannot save a new token while retaining the old user.
+                        GitHubTokenStore.save(context, auth.token).getOrThrow()
+                        cancelGithubSyncWork()
+                        githubSyncLastSuccess = null
+                        githubRepoAuthorized = auth.repoAuthorized
+                        githubToken = auth.token
+                        githubUsername = auth.username
+                        prefs.edit().putString(PrefKeys.GITHUB_USERNAME, auth.username).putBoolean("github_repo_authorized", auth.repoAuthorized).apply()
+                        githubSyncNeedsAuth = githubSyncEnabled && !auth.repoAuthorized
+                        githubSyncAttemptAt = 0L
+                        githubSyncRetryMs = 300_000L
+                        githubSyncStatus = ""
+                        githubSyncFailures = emptyList()
+                        githubSyncThrottled = false
+                        if (!enableAfterLogin) {
+                            githubSyncEnabled = false
+                            prefs.edit().putBoolean("github_sync_enabled", false).apply()
                         }
-                        is com.zhongbai233.epub.reader.util.GitHubContributor.AuthResult.Error -> {
-                            contributeStatus = authResult.message
+                        if (enableAfterLogin && auth.repoAuthorized) {
+                            updateGithubSyncEnabled(true)
+                            syncGithubNow()
+                        } else if (privateSync && !auth.repoAuthorized) {
+                            githubSyncNeedsAuth = true
+                            githubSyncStatus = I18n.t("account.scope_missing")
                         }
                     }
+                    is com.zhongbai233.epub.reader.util.GitHubContributor.AuthResult.Error -> {
+                        contributeStatus = auth.message
+                        githubSyncStatus = auth.message
+                    }
                 }
-            }.onFailure {
-                contributeStatus = it.message ?: "Failed to start login"
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                contributeStatus = error.message ?: "GitHub login failed"
+                githubSyncStatus = contributeStatus
+            } finally {
+                githubAuthPolling = false
+                githubAuthForSync = false
+                githubDeviceCode = null
+                githubUserCode = null
+                githubVerificationUri = null
             }
         }
+    }
+
+    fun cancelGitHubLogin() { githubLoginJob?.cancel() }
+
+    private fun cancelGithubSyncWork() {
+        githubSyncGeneration++
+        runCatching { RustBridge.cancelGithubSync() }
+        githubSyncJob?.cancel()
+        githubSyncRunning = false
+        githubSyncOffer = null
+    }
+
+    fun setGithubSyncForeground(foreground: Boolean) {
+        githubSyncForeground = foreground
+        if (!foreground) cancelGithubSyncWork()
+        else if (githubSyncRetryMs == 300_000L) githubSyncAttemptAt = 0L
+    }
+
+    fun updateGithubSyncContributions(value: Boolean) {
+        if (githubSyncRunning) return
+        githubSyncContributions = value
+        prefs.edit().putBoolean("github_sync_contributions", value).apply()
+    }
+
+    fun updateGithubSyncEnabled(enabled: Boolean) {
+        githubSyncEnabled = enabled
+        prefs.edit().putBoolean("github_sync_enabled", enabled).apply()
+        if (!enabled) { cancelGithubSyncWork(); if (githubAuthPolling) cancelGitHubLogin() }
+        else { githubSyncNeedsAuth = githubToken == null; githubSyncAttemptAt = 0L }
+    }
+
+    fun prepareGithubSync() {
+        if (githubToken != null && githubRepoAuthorized && !githubSyncNeedsAuth) {
+            updateGithubSyncEnabled(true)
+            syncGithubNow()
+        } else startGitHubLogin(privateSync = true)
+    }
+
+    fun logoutGitHub() {
+        updateGithubSyncEnabled(false)
+        cancelGitHubLogin()
+        GitHubTokenStore.delete(context)
+        githubToken = null
+        githubUsername = null
+        githubSyncFailures = emptyList()
+        githubSyncThrottled = false
+        githubRepoAuthorized = false
+        githubSyncLastSuccess = null
+        prefs.edit().putBoolean("github_repo_authorized", false).apply()
+        prefs.edit().remove(PrefKeys.GITHUB_USERNAME).apply()
+        githubSyncStatus = ""
+    }
+
+    fun syncGithubNow() = syncGithubStages(false)
+    fun retryGithubFiles() = syncGithubStages(true)
+    private fun syncGithubStages(retryFailed: Boolean) {
+        if (!githubSyncEnabled || !githubSyncForeground || githubSyncRunning) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (githubSyncThrottled && now - githubSyncAttemptAt < githubSyncRetryMs) return
+        val token = githubToken ?: run { githubSyncNeedsAuth = true; return }
+        val owner = githubUsername ?: run { githubSyncNeedsAuth = true; return }
+        val generation = githubSyncGeneration
+        val nativeEpoch = RustBridge.githubSyncEpoch()
+        val countContributions = githubSyncContributions
+        githubSyncRunning = true
+        githubSyncStatus = I18n.t("cloud.syncing")
+        githubSyncJob = viewModelScope.launch {
+            try {
+                for (progressOnly in listOf(true, false)) {
+                    if (!canApplyGithubSync(generation, githubSyncGeneration, owner, githubUsername, githubSyncEnabled, githubSyncForeground)) return@launch
+                    githubSyncStatus = I18n.t(if (progressOnly) "cloud.progress_syncing" else "cloud.books_syncing")
+                    val response = withContext(Dispatchers.IO) { RustBridge.runGithubSync(dataDir, token, owner, nativeEpoch, countContributions, progressOnly, retryFailed) }
+                    if (!canApplyGithubSync(generation, githubSyncGeneration, owner, githubUsername, githubSyncEnabled, githubSyncForeground)) return@launch
+                    val decoded = JSONObject(response ?: throw IllegalStateException("Missing native sync result"))
+                    if (!decoded.getBoolean("ok")) throw IllegalStateException(decoded.getString("error"))
+                    while (isLoading) { delay(100) }
+                    if (!canApplyGithubSync(generation, githubSyncGeneration, owner, githubUsername, githubSyncEnabled, githubSyncForeground)) return@launch
+                    // Apply to the live library only after generation/account checks on the UI thread.
+                    val applied = JSONObject(RustBridge.applyGithubSync(dataDir, decoded.getJSONObject("result").toString(), currentBookUri ?: "") ?: throw IllegalStateException("Missing native apply result"))
+                    if (!applied.getBoolean("ok")) throw IllegalStateException(applied.getString("error"))
+                    val result = applied.getJSONObject("result")
+                    library.reload()
+                    loadLibrary()
+                    val updated = result.getJSONArray("updated")
+                    prefs.edit().apply {
+                        for (index in 0 until updated.length()) {
+                            val update = updated.getJSONObject(index)
+                            val id = library.books.firstOrNull { it.uri == update.getString("path") }?.id ?: continue
+                            putInt("book_ch_$id", update.getInt("chapter"))
+                        }
+                    }.apply()
+                    githubSyncOffer = result.optJSONObject("offer")
+                    githubSyncNeedsAuth = false
+                    githubRepoAuthorized = true
+                    prefs.edit().putBoolean("github_repo_authorized", true).apply()
+                    githubSyncLastSuccess = System.currentTimeMillis()
+                    githubSyncRetryMs = if (result.isNull("next_retry_after")) 300_000L else result.getLong("next_retry_after").coerceIn(1, 86_400) * 1000
+                    githubSyncThrottled = false
+                    githubSyncStatus = "${I18n.t("cloud.done")} (↑ ${result.getInt("uploaded")}, ↓ ${result.getInt("downloaded")}, ${I18n.t("cloud.skipped")}: ${result.getInt("skipped")})"
+                    if (!progressOnly) {
+                        val failures = result.optJSONArray("failed")
+                        githubSyncFailures = if (failures == null) emptyList() else (0 until failures.length()).map { failures.getJSONObject(it) }
+                        if (githubSyncFailures.isNotEmpty()) githubSyncStatus += " · ${I18n.tf1("cloud.files_failed", githubSyncFailures.size.toString())}"
+                    }
+                    if (!result.isNull("terminal_error")) throw IllegalStateException(result.getString("terminal_error"))
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                val message = error.message ?: "GitHub sync failed"
+                githubSyncThrottled = message.startsWith("RETRY_AFTER:")
+                githubSyncNeedsAuth = message.startsWith("REAUTHORIZE:") || message.contains("login expired")
+                if (githubSyncNeedsAuth) {
+                    githubRepoAuthorized = false
+                    prefs.edit().putBoolean("github_repo_authorized", false).apply()
+                }
+                githubSyncRetryMs = if (message.startsWith("RETRY_AFTER:")) (message.substringAfter(":").substringBefore(":").toLongOrNull() ?: 900L).coerceIn(300, 86_400) * 1000 else 300_000L
+                githubSyncStatus = if (githubSyncNeedsAuth) I18n.t("cloud.need_auth") else "${I18n.t("cloud.failed")}: ${if (message.startsWith("RETRY_AFTER:")) message.substringAfter(":").substringAfter(":") else message}"
+            } finally {
+                if (generation == githubSyncGeneration) {
+                    githubSyncRunning = false
+                    githubSyncAttemptAt = android.os.SystemClock.elapsedRealtime()
+                }
+            }
+        }
+    }
+
+    fun applyGithubProgress() {
+        val offer = githubSyncOffer ?: return
+        val book = currentBook ?: return
+        val uri = currentBookUri ?: return
+        val hash = RustBridge.fileHash(uri) ?: return
+        if (offer.optString("book_hash") != hash) return
+        val chapter = offer.getInt("chapter")
+        if (chapter !in book.chapters.indices) return
+        val block = offer.optInt("block", 0).coerceIn(0, (book.chapters[chapter].blocks.lastIndex).coerceAtLeast(0))
+        previousChapter = currentChapter
+        currentChapter = chapter
+        currentBlock = block
+        currentPage = 0
+        saveProgress()
+        githubSyncOffer = null
     }
 
     /** Submit collected samples to GitHub. */
@@ -1899,6 +2114,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        cancelGithubSyncWork()
+        cancelGitHubLogin()
         super.onCleared()
         ttsManager.destroy()
         cscEngine.release()

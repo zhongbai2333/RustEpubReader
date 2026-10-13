@@ -15,6 +15,52 @@ use super::{reader_block::*, reader_state::*};
 type BlockHighlightRanges = HashMap<usize, Vec<(usize, usize, HighlightColor)>>;
 type ChapterHighlightRanges = HashMap<usize, BlockHighlightRanges>;
 
+pub(crate) fn paginate_blocks(
+    blocks: &[ContentBlock],
+    font_size: f32,
+    title_font_scale: f32,
+    line_spacing: f32,
+    available_height: f32,
+    max_width: f32,
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut page_start = 0;
+    let mut current_h = 0.;
+    let mut first_page = true;
+    let first_is_heading = matches!(blocks.first(), Some(ContentBlock::Heading { .. }));
+    let title_height = if first_is_heading {
+        TITLE_SPACING
+    } else {
+        font_size * title_font_scale * 1.2 + TITLE_SPACING
+    };
+    let usable = (available_height - FRAME_MARGIN).max(100.);
+    for (i, block) in blocks.iter().enumerate() {
+        let bh = estimate_block_height(
+            block,
+            font_size,
+            title_font_scale,
+            font_size * line_spacing,
+            max_width,
+        );
+        let budget = if first_page {
+            usable - title_height
+        } else {
+            usable
+        };
+        if current_h + bh > budget && i > page_start {
+            ranges.push((page_start, i));
+            page_start = i;
+            current_h = 0.;
+            first_page = false;
+        }
+        current_h += bh;
+    }
+    if page_start < blocks.len() {
+        ranges.push((page_start, blocks.len()));
+    }
+    ranges
+}
+
 impl ReaderApp {
     pub fn recalculate_pages(&mut self, available_height: f32, max_width: f32) {
         set_spacing(
@@ -22,47 +68,21 @@ impl ReaderApp {
             self.para_spacing,
             self.text_indent as f32,
         );
-        self.page_block_ranges.clear();
-        if let Some(book) = &self.book {
-            if let Some(chapter) = book.chapters.get(self.current_chapter) {
-                let blocks = &chapter.blocks;
-                let line_height = self.font_size * line_spacing();
-                let mut page_start = 0;
-                let mut current_h: f32 = 0.0;
-                let first_is_heading = matches!(blocks.first(), Some(ContentBlock::Heading { .. }));
-                let title_height = if first_is_heading {
-                    TITLE_SPACING
-                } else {
-                    self.font_size * self.title_font_scale * 1.2 + TITLE_SPACING
-                };
-                let usable = (available_height - FRAME_MARGIN).max(100.0);
-                let mut first_page = true;
-                for (i, block) in blocks.iter().enumerate() {
-                    let bh = estimate_block_height(
-                        block,
-                        self.font_size,
-                        self.title_font_scale,
-                        line_height,
-                        max_width,
-                    );
-                    let page_budget = if first_page {
-                        usable - title_height
-                    } else {
-                        usable
-                    };
-                    if current_h + bh > page_budget && i > page_start {
-                        self.page_block_ranges.push((page_start, i));
-                        page_start = i;
-                        current_h = 0.0;
-                        first_page = false;
-                    }
-                    current_h += bh;
-                }
-                if page_start < blocks.len() {
-                    self.page_block_ranges.push((page_start, blocks.len()));
-                }
-            }
-        }
+        self.page_block_ranges = self
+            .book
+            .as_ref()
+            .and_then(|book| book.chapters.get(self.current_chapter))
+            .map(|chapter| {
+                paginate_blocks(
+                    &chapter.blocks,
+                    self.font_size,
+                    self.title_font_scale,
+                    self.line_spacing,
+                    available_height,
+                    max_width,
+                )
+            })
+            .unwrap_or_default();
         self.total_pages = self.page_block_ranges.len().max(1);
         if let Some(block) = self.pending_restore_block.take() {
             self.current_page = self
@@ -75,6 +95,15 @@ impl ReaderApp {
             self.current_page = self.total_pages.saturating_sub(1);
         }
         self.pages_dirty = false;
+    }
+
+    pub(crate) fn visible_page_contains_block(&self, block: usize) -> bool {
+        let count = if self.is_dual_column { 2 } else { 1 };
+        self.page_block_ranges
+            .iter()
+            .skip(self.current_page)
+            .take(count)
+            .any(|&(start, end)| start <= block && block < end)
     }
 
     pub fn render_reader(&mut self, ui: &mut egui::Ui) {
@@ -125,6 +154,11 @@ impl ReaderApp {
         CSC_READWRITE.set(self.csc_mode == reader_core::csc::CorrectionMode::ReadWrite);
         CSC_RECTS.with(|r| r.borrow_mut().clear());
 
+        if self.reader_page_animation == "Realistic" {
+            self.page_anim_progress = 1.;
+            self.page_anim_cross_chapter = false;
+            self.page_anim_cross_chapter_snapshot = None;
+        }
         if self.page_anim_progress < 1.0 {
             self.page_anim_progress =
                 (self.page_anim_progress + self.reader_page_animation_speed).min(1.0);
@@ -144,6 +178,7 @@ impl ReaderApp {
         };
 
         let full_rect = ui.available_rect_before_wrap();
+        self.paging_page_rect = Some(full_rect);
         if let Some(tex) = &self.reader_bg_texture {
             ui.painter().image(
                 tex.id(),
@@ -160,7 +195,7 @@ impl ReaderApp {
         let mut action_next_page = false;
         let mut clicked_link: Option<String> = None;
         let has_previous_chapter = self.previous_chapter.is_some();
-        let mut is_dual_column = false;
+        let mut curl_consumed_frame = false;
 
         let current_chapter_data = self.book.as_ref().and_then(|book| {
             book.chapters.get(self.current_chapter).map(|chapter| {
@@ -172,22 +207,51 @@ impl ReaderApp {
             })
         });
         if let Some((title, blocks, total_ch)) = current_chapter_data {
+            if self.reader_layout_anchor.is_some_and(|(chapter, block)| {
+                chapter != self.current_chapter || !self.visible_page_contains_block(block)
+            }) {
+                self.reader_layout_anchor = None;
+            }
             let available_width = ui.available_width();
             let available_height = ui.available_height();
             if (self.last_avail_width - available_width).abs() > 1.0
                 || (self.last_avail_height - available_height).abs() > 1.0
             {
+                if self.reader_layout_anchor.is_none()
+                    && self.last_avail_width > 0.
+                    && !self.pages_dirty
+                {
+                    self.reader_layout_anchor = Some((self.current_chapter, self.current_block));
+                }
+                if self.pending_restore_block.is_none() && !self.pages_dirty {
+                    self.pending_restore_block = Some(
+                        self.reader_layout_anchor
+                            .or(self.panel_reflow_anchor)
+                            .filter(|(chapter, _)| *chapter == self.current_chapter)
+                            .map_or(self.current_block, |(_, block)| block),
+                    );
+                }
                 self.pages_dirty = true;
                 self.last_avail_width = available_width;
                 self.last_avail_height = available_height;
             }
             let layout = reader_text_layout(available_width, available_height, self.scroll_mode);
             let dual_column = layout.is_dual_column;
-            is_dual_column = dual_column;
+
             self.is_dual_column = dual_column;
             let text_width = layout.text_width;
             let h_margin = layout.h_margin;
             if !self.scroll_mode && self.pages_dirty {
+                if self.page_curl.source()
+                    == Some(super::page_curl::PagePosition {
+                        chapter: self.current_chapter,
+                        page: self.current_page,
+                    })
+                    && self.pending_restore_block.is_none()
+                {
+                    self.pending_restore_block = Some(self.current_block);
+                }
+                self.page_curl.clear();
                 self.recalculate_pages(ui.available_height(), text_width);
             }
             if !self.scroll_mode && self.total_pages > 0 && self.current_page >= self.total_pages {
@@ -399,7 +463,20 @@ impl ReaderApp {
             } else {
                 let page_rect = ui.available_rect_before_wrap();
                 self.paging_page_rect = Some(page_rect);
-                if dual_column {
+                if self.reader_page_animation == "Realistic" {
+                    curl_consumed_frame = self.render_curl_reader(
+                        ui,
+                        page_rect,
+                        dual_column,
+                        text_width,
+                        h_margin,
+                        &effective_font_family,
+                        &mut action_prev_chapter,
+                        &mut action_next_chapter,
+                        &mut action_go_back,
+                        &mut clicked_link,
+                    );
+                } else if dual_column {
                     let col_w = (page_rect.width() - DUAL_COLUMN_GAP) / 2.0;
                     let left_rect = egui::Rect::from_min_size(
                         page_rect.min,
@@ -818,17 +895,6 @@ impl ReaderApp {
                         FontId::proportional(13.0),
                         Color32::GRAY,
                     );
-                    ui.painter().text(
-                        egui::pos2(page_rect.right() - 20.0, page_rect.bottom() - 8.0),
-                        egui::Align2::RIGHT_BOTTOM,
-                        self.i18n.tf2(
-                            "reader.chapter_indicator",
-                            &(self.current_chapter + 1).to_string(),
-                            &total_ch.to_string(),
-                        ),
-                        FontId::proportional(13.0),
-                        Color32::GRAY,
-                    );
                 } else {
                     let is_animating = self.reader_page_animation != "None"
                         && self.page_anim_progress < 1.0
@@ -1033,19 +1099,9 @@ impl ReaderApp {
                         FontId::proportional(13.0),
                         Color32::GRAY,
                     );
-                    ui.painter().text(
-                        egui::pos2(page_rect.right() - 20.0, page_rect.bottom() - 8.0),
-                        egui::Align2::RIGHT_BOTTOM,
-                        self.i18n.tf2(
-                            "reader.chapter_indicator",
-                            &(self.current_chapter + 1).to_string(),
-                            &total_ch.to_string(),
-                        ),
-                        FontId::proportional(13.0),
-                        Color32::GRAY,
-                    );
                 }
-                if !self.show_sharing_panel
+                if !curl_consumed_frame
+                    && !self.show_sharing_panel
                     && !self.show_stats
                     && !self.show_export_dialog
                     && self.text_selection.is_none()
@@ -1054,11 +1110,13 @@ impl ReaderApp {
                     && !self.csc_custom_replace_active
                     && !self.show_review_panel
                 {
-                    let pointer_in_page = ui.input(|i| {
-                        i.pointer
-                            .hover_pos()
-                            .map(|pos| page_rect.contains(pos))
-                            .unwrap_or(false)
+                    let hover_pos = ui.input(|i| i.pointer.hover_pos());
+                    let pointer_in_page = hover_pos.is_some_and(|pos| {
+                        page_rect.contains(pos)
+                            && ui
+                                .ctx()
+                                .layer_id_at(pos)
+                                .is_none_or(|layer| layer.order <= ui.layer_id().order)
                     });
                     if pointer_in_page {
                         let scroll = ui.input(|i| i.raw_scroll_delta.y);
@@ -1070,7 +1128,8 @@ impl ReaderApp {
                     }
                     // Click-to-turn is handled in the selection release handler
                     // to avoid conflict with sel_press_origin
-                    if clicked_link.is_none()
+                    if pointer_in_page
+                        && clicked_link.is_none()
                         && self.sel_press_origin.is_none()
                         && ui.input(|i| i.pointer.primary_clicked())
                     {
@@ -1085,7 +1144,9 @@ impl ReaderApp {
                         if !hit_csc {
                             if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                                 if page_rect.contains(pos) {
-                                    if pos.x < page_rect.center().x {
+                                    if super::reader_chrome::center_click(page_rect, pos) {
+                                        self.reader_chrome.toggle(ui.input(|i| i.time));
+                                    } else if pos.x < page_rect.center().x {
                                         action_prev_page = true;
                                     } else {
                                         action_next_page = true;
@@ -1107,10 +1168,18 @@ impl ReaderApp {
         }
 
         if action_prev_chapter {
-            self.prev_chapter();
+            if self.reader_page_animation == "Realistic" && !self.scroll_mode {
+                self.request_curl_turn(false, None);
+            } else {
+                self.prev_chapter();
+            }
         }
         if action_next_chapter {
-            self.next_chapter();
+            if self.reader_page_animation == "Realistic" && !self.scroll_mode {
+                self.request_curl_turn(true, None);
+            } else {
+                self.next_chapter();
+            }
         }
         if action_go_back {
             if let Some(prev) = self.previous_chapter.take() {
@@ -1136,6 +1205,7 @@ impl ReaderApp {
                 }
             }
         }
+        let had_clicked_link = clicked_link.is_some();
         if let Some(url) = clicked_link {
             let url = url.trim().to_string();
             let lowered = url.to_lowercase();
@@ -1185,37 +1255,25 @@ impl ReaderApp {
             }
         }
         if action_prev_page {
-            if is_dual_column {
-                if self.current_page >= 2 {
-                    self.trigger_page_animation_to(self.current_page - 2, -1.0);
-                } else if self.current_chapter > 0 {
-                    self.capture_cross_chapter_snapshot();
-                    self.prev_chapter();
-                    self.current_page = usize::MAX;
-                    self.start_cross_chapter_animation(-1.0);
-                }
-            } else {
-                self.prev_page();
-            }
+            self.turn_reader_page(false);
         }
         if action_next_page {
-            if is_dual_column {
-                if self.current_page + 2 < self.total_pages {
-                    self.trigger_page_animation_to(self.current_page + 2, 1.0);
-                } else {
-                    self.capture_cross_chapter_snapshot();
-                    self.next_chapter();
-                    self.start_cross_chapter_animation(1.0);
-                }
-            } else {
-                self.next_page();
+            self.turn_reader_page(true);
+        }
+        if !self.scroll_mode
+            && !curl_consumed_frame
+            && !self.page_curl.busy()
+            && self.panel_reflow_anchor.is_none()
+        {
+            if let Some((block, _)) = self.page_block_ranges.get(self.current_page).copied() {
+                let anchor = self.reader_layout_anchor.filter(|&(chapter, anchor)| {
+                    chapter == self.current_chapter && self.visible_page_contains_block(anchor)
+                });
+                self.schedule_position_save(self.current_chapter, anchor.map_or(block, |(_, b)| b));
             }
         }
-
-        if !self.scroll_mode {
-            if let Some((block, _)) = self.page_block_ranges.get(self.current_page).copied() {
-                self.schedule_position_save(self.current_chapter, block);
-            }
+        if curl_consumed_frame {
+            return;
         }
 
         // 鈹€鈹€ Custom text selection state machine 鈹€鈹€
@@ -1292,7 +1350,11 @@ impl ReaderApp {
         let note_toolbar_id = egui::Id::new("hl_note_toolbar");
         let over_toolbar = ui.ctx().memory(|mem| {
             mem.layer_id_at(pointer_pos.unwrap_or_default())
-                .is_some_and(|layer| layer.id == toolbar_id || layer.id == note_toolbar_id)
+                .is_some_and(|layer| {
+                    layer.id == toolbar_id
+                        || layer.id == note_toolbar_id
+                        || layer.order > ui.layer_id().order
+                })
         });
 
         if let Some(pos) = pointer_pos {
@@ -1406,7 +1468,8 @@ impl ReaderApp {
                     // Plain click on text (no highlight, no drag) 鈫?page turn
                     let hit_csc_rect = CSC_RECTS
                         .with(|rects| rects.borrow().iter().any(|cr| cr.rect.contains(press_pos)));
-                    if !handled_as_highlight
+                    if !had_clicked_link
+                        && !handled_as_highlight
                         && !hit_csc_rect
                         && !self.scroll_mode
                         && !self.show_sharing_panel
@@ -1419,32 +1482,10 @@ impl ReaderApp {
                     {
                         if let Some(page_rect) = self.paging_page_rect {
                             if page_rect.contains(press_pos) {
-                                if press_pos.x < page_rect.center().x {
-                                    if is_dual_column {
-                                        if self.current_page >= 2 {
-                                            self.trigger_page_animation_to(
-                                                self.current_page - 2,
-                                                -1.0,
-                                            );
-                                        } else if self.current_chapter > 0 {
-                                            self.capture_cross_chapter_snapshot();
-                                            self.prev_chapter();
-                                            self.current_page = usize::MAX;
-                                            self.start_cross_chapter_animation(-1.0);
-                                        }
-                                    } else {
-                                        self.prev_page();
-                                    }
-                                } else if is_dual_column {
-                                    if self.current_page + 2 < self.total_pages {
-                                        self.trigger_page_animation_to(self.current_page + 2, 1.0);
-                                    } else if self.current_chapter + 1 < self.total_chapters() {
-                                        self.capture_cross_chapter_snapshot();
-                                        self.next_chapter();
-                                        self.start_cross_chapter_animation(1.0);
-                                    }
-                                } else if self.current_page + 1 < self.total_pages {
-                                    self.next_page();
+                                if super::reader_chrome::center_click(page_rect, press_pos) {
+                                    self.reader_chrome.toggle(ui.input(|i| i.time));
+                                } else {
+                                    self.turn_reader_page(press_pos.x >= page_rect.center().x);
                                 }
                             }
                         }
@@ -1667,7 +1708,7 @@ impl ReaderApp {
                             ui.label(self.i18n.t("csc.custom_replace_prompt"));
                             ui.add_space(4.0);
                             let resp = ui.add(
-                                egui::TextEdit::singleline(&mut self.csc_custom_replace_buf)
+                                super::design::text_edit(&mut self.csc_custom_replace_buf)
                                     .desired_width(160.0)
                                     .hint_text(self.i18n.t("csc.custom_replace_hint")),
                             );
@@ -1831,6 +1872,7 @@ impl ReaderApp {
                         // Note text edit area
                         let response = ui.add(
                             egui::TextEdit::multiline(&mut self.editing_note_buf)
+                                .margin(super::design::Geometry::CARD_INSET)
                                 .desired_rows(3)
                                 .desired_width(300.0)
                                 .hint_text(self.i18n.t("context.note_hint")),

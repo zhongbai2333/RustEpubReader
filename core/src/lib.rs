@@ -1,7 +1,10 @@
 //! The core reader library exposing API for the desktop app and the Android bridge.
+pub mod cloud_sync;
 pub mod csc;
 pub mod epub;
 pub mod export;
+#[cfg(feature = "github-sync")]
+pub mod github_sync;
 pub mod i18n;
 pub mod library;
 pub mod search;

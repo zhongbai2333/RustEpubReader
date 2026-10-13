@@ -1,4 +1,4 @@
-﻿package com.zhongbai233.epub.reader
+package com.zhongbai233.epub.reader
 
 object RustBridge {
     init {
@@ -24,6 +24,12 @@ object RustBridge {
     // i18n
     external fun getAvailableLanguages(): String?
     external fun getTranslations(langCode: String): String?
+
+    // GitHub cloud sync (network method runs off the UI thread).
+    external fun githubSyncEpoch(): Long
+    external fun runGithubSync(dataDir: String, token: String, owner: String, epoch: Long, countContributions: Boolean, progressOnly: Boolean, retryFailed: Boolean): String?
+    external fun applyGithubSync(dataDir: String, payload: String, openPath: String): String?
+    external fun cancelGithubSync()
 
     // Sharing
     external fun generatePin(): String?

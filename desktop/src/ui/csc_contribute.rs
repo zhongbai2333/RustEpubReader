@@ -298,6 +298,7 @@ impl ReaderApp {
 
                     ui.add_space(8.0);
 
+                    ui.small(self.i18n.t("account.contribution_hint"));
                     // Check if logged in
                     if self.github_token.is_none() {
                         ui.colored_label(
@@ -305,9 +306,6 @@ impl ReaderApp {
                             self.i18n.t("csc.contribute_need_login"),
                         );
                         ui.add_space(4.0);
-                        if ui.button(self.i18n.t("csc.login_github")).clicked() {
-                            self.show_github_login = true;
-                        }
                     } else {
                         ui.horizontal(|ui| {
                             ui.label("✓");
@@ -318,6 +316,9 @@ impl ReaderApp {
                         });
                     }
 
+                    if ui.button(self.i18n.t("account.manage")).clicked() {
+                        self.show_github_login = true;
+                    }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         let can_submit = self.github_token.is_some() && !samples.is_empty();

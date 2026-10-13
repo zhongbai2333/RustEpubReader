@@ -8,11 +8,14 @@ name: CI
             - "desktop/**"
             - "android-bridge/**"
             - "android/**"
+            - "ios-bridge/**"
+            - "ios/**"
             - "Cargo.toml"
             - "Cargo.lock"
             - ".github/workflows/ci.yml"
             - ".github/workflows/desktop-build.yml"
             - ".github/workflows/android-build.yml"
+            - ".github/workflows/ios-build.yml"
             - ".github/workflows/pr-review.yml"
             - ".github/workflows/release.yml"
     pull_request:
@@ -22,11 +25,14 @@ name: CI
             - "desktop/**"
             - "android-bridge/**"
             - "android/**"
+            - "ios-bridge/**"
+            - "ios/**"
             - "Cargo.toml"
             - "Cargo.lock"
             - ".github/workflows/ci.yml"
             - ".github/workflows/desktop-build.yml"
             - ".github/workflows/android-build.yml"
+            - ".github/workflows/ios-build.yml"
             - ".github/workflows/pr-review.yml"
             - ".github/workflows/release.yml"
     workflow_dispatch:
@@ -73,10 +79,10 @@ jobs:
               run: cargo metadata --locked --format-version 1 > /dev/null
 
             - name: Run Clippy
-              run: cargo clippy --all-targets --all-features -- -D warnings
+              run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
             - name: Run tests
-              run: cargo test --all --all-features
+              run: cargo test --locked --all --all-features
 
     android-gradle-check:
         name: Android Gradle check
@@ -85,10 +91,10 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
 
-            - name: Set up JDK 17
+            - name: Set up JDK 21
               uses: actions/setup-java@v4
               with:
-                  java-version: "17"
+                  java-version: "21"
                   distribution: temurin
 
             - name: Setup Android SDK
@@ -109,7 +115,7 @@ jobs:
               working-directory: android
               run: |
                   chmod +x gradlew
-                  ./gradlew :app:lintVitalRelease --stacktrace
+                  ./gradlew :app:testDebugUnitTest :app:lintVitalRelease -x cargoBuild --stacktrace
 
     build-desktop:
         name: Build desktop packages
@@ -125,3 +131,10 @@ jobs:
             version: ci-${{ github.sha }}
             artifact-prefix: ci-android
         secrets: inherit
+
+    build-ios:
+        name: Build and check iOS
+        uses: ./.github/workflows/ios-build.yml
+        with:
+            version: ci-${{ github.sha }}
+            artifact-prefix: ci-ios

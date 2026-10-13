@@ -31,327 +31,308 @@ fn append_feedback_log(logs: &Arc<Mutex<Vec<String>>>, msg: impl AsRef<str>) {
 }
 
 impl ReaderApp {
-    pub fn render_sharing(&mut self, ctx: &egui::Context) {
-        self.render_pairing_dialog(ctx);
+    pub fn render_sharing_content(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(
+            &mut self.auto_start_sharing,
+            self.i18n.t("share.auto_start"),
+        );
+        ui.add_space(12.0);
 
-        let mut open = self.show_sharing_panel;
-        egui::Window::new(self.i18n.t("share.title"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(360.0)
-            .frame(
-                egui::Frame::window(&ctx.style())
-                    .corner_radius(12.0)
-                    .inner_margin(egui::Margin::same(18)),
-            )
-            .show(ctx, |ui| {
-                ui.checkbox(
-                    &mut self.auto_start_sharing,
-                    self.i18n.t("share.auto_start"),
-                );
-                ui.add_space(12.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new(self.i18n.t("share.pin_label"))
+                    .size(13.0)
+                    .color(super::design::Palette::new(self.dark_mode).muted),
+            );
+            ui.add_space(4.0);
+            let pin_response = ui.add(
+                super::design::text_edit(&mut self.sharing_pin)
+                    .font(egui::TextStyle::Heading)
+                    .desired_width(120.0)
+                    .horizontal_align(egui::Align::Center)
+                    .hint_text("0000"),
+            );
+            self.sharing_pin = self
+                .sharing_pin
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(4)
+                .collect();
+            if pin_response.changed() && self.sharing_server_running {
+                self.stop_sharing_server();
+                self.start_sharing_server();
+            }
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(self.i18n.t("share.pin_hint"))
+                    .size(12.0)
+                    .color(super::design::Palette::new(self.dark_mode).muted),
+            );
+        });
 
-                ui.vertical_centered(|ui| {
+        ui.add_space(12.0);
+
+        ui.vertical_centered(|ui| {
+            if self.sharing_server_running {
+                ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(self.i18n.t("share.pin_label"))
-                            .size(13.0)
-                            .color(egui::Color32::from_gray(140)),
+                        egui::RichText::new("*")
+                            .color(egui::Color32::from_rgb(50, 180, 50))
+                            .size(14.0),
                     );
-                    ui.add_space(4.0);
-                    let pin_response = ui.add(
-                        egui::TextEdit::singleline(&mut self.sharing_pin)
-                            .font(egui::TextStyle::Heading)
-                            .desired_width(120.0)
-                            .horizontal_align(egui::Align::Center)
-                            .hint_text("0000"),
-                    );
-                    self.sharing_pin = self
-                        .sharing_pin
-                        .chars()
-                        .filter(|c| c.is_ascii_digit())
-                        .take(4)
-                        .collect();
-                    if pin_response.changed() && self.sharing_server_running {
-                        self.stop_sharing_server();
-                        self.start_sharing_server();
-                    }
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("share.pin_hint"))
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(140)),
-                    );
+                    ui.label(self.i18n.t("share.server_running"));
                 });
-
-                ui.add_space(12.0);
-
-                ui.vertical_centered(|ui| {
-                    if self.sharing_server_running {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("*")
-                                    .color(egui::Color32::from_rgb(50, 180, 50))
-                                    .size(14.0),
-                            );
-                            ui.label(self.i18n.t("share.server_running"));
-                        });
-                        ui.add_space(4.0);
-                        if ui
-                            .button(
-                                egui::RichText::new(self.i18n.t("share.stop_server")).size(15.0),
-                            )
-                            .clicked()
-                        {
-                            self.stop_sharing_server();
-                        }
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("*")
-                                    .color(egui::Color32::from_gray(120))
-                                    .size(14.0),
-                            );
-                            ui.label(self.i18n.t("share.server_stopped"));
-                        });
-                        ui.add_space(4.0);
-                        let pin_valid = self.sharing_pin.len() == 4;
-                        let btn = ui.add_enabled(
-                            pin_valid,
-                            egui::Button::new(
-                                egui::RichText::new(self.i18n.t("share.start_server")).size(15.0),
-                            ),
-                        );
-                        if btn.clicked() {
-                            self.start_sharing_server();
-                        }
-                    }
-                });
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.label(
-                    egui::RichText::new(self.i18n.t("share.discovered_devices"))
-                        .strong()
-                        .size(13.0),
-                );
                 ui.add_space(4.0);
+                if ui
+                    .button(egui::RichText::new(self.i18n.t("share.stop_server")).size(15.0))
+                    .clicked()
+                {
+                    self.stop_sharing_server();
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("*")
+                            .color(egui::Color32::from_gray(120))
+                            .size(14.0),
+                    );
+                    ui.label(self.i18n.t("share.server_stopped"));
+                });
+                ui.add_space(4.0);
+                let pin_valid = self.sharing_pin.len() == 4;
+                let btn = ui.add_enabled(
+                    pin_valid,
+                    egui::Button::new(
+                        egui::RichText::new(self.i18n.t("share.start_server")).size(15.0),
+                    ),
+                );
+                if btn.clicked() {
+                    self.start_sharing_server();
+                }
+            }
+        });
 
-                let peers: Vec<DiscoveredPeer> = self
-                    .discovered_peers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                let my_device_id = self
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label(
+            egui::RichText::new(self.i18n.t("share.discovered_devices"))
+                .strong()
+                .size(13.0),
+        );
+        ui.add_space(4.0);
+
+        let peers: Vec<DiscoveredPeer> = self
+            .discovered_peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let my_device_id = self
+            .peer_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .device_id
+            .clone();
+        let visible_peers: Vec<&DiscoveredPeer> = peers
+            .iter()
+            .filter(|p| p.device_id != my_device_id)
+            .collect();
+
+        if visible_peers.is_empty() {
+            ui.label(
+                egui::RichText::new(self.i18n.t("share.no_devices_nearby"))
+                    .size(12.0)
+                    .color(super::design::Palette::new(self.dark_mode).muted),
+            );
+        } else {
+            let mut peer_to_pair: Option<DiscoveredPeer> = None;
+            for peer in &visible_peers {
+                egui::Frame::default()
+                    .corner_radius(super::design::Geometry::RADIUS)
+                    .fill(ui.visuals().extreme_bg_color)
+                    .inner_margin(egui::Margin::same(super::design::Geometry::CARD_INSET))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&peer.device_name).size(13.0).strong(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(&peer.addr)
+                                        .size(10.0)
+                                        .color(super::design::Palette::new(self.dark_mode).muted),
+                                );
+                                // Check if already paired
+                                let is_paired = self
+                                    .peer_store
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .is_paired(&peer.device_id);
+                                if is_paired {
+                                    ui.label(
+                                        egui::RichText::new(self.i18n.t("share.paired"))
+                                            .size(10.0)
+                                            .color(egui::Color32::from_rgb(100, 160, 100)),
+                                    );
+                                }
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button(self.i18n.t("share.connect")).clicked() {
+                                        peer_to_pair = Some((*peer).clone());
+                                    }
+                                },
+                            );
+                        });
+                    });
+                ui.add_space(4.0);
+            }
+            if let Some(peer) = peer_to_pair {
+                // Check if already paired 鈥?skip PIN dialog
+                let is_paired = self
                     .peer_store
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .device_id
-                    .clone();
-                let visible_peers: Vec<&DiscoveredPeer> = peers
-                    .iter()
-                    .filter(|p| p.device_id != my_device_id)
-                    .collect();
-
-                if visible_peers.is_empty() {
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("share.no_devices_nearby"))
-                            .size(12.0)
-                            .color(egui::Color32::from_gray(140)),
-                    );
+                    .is_paired(&peer.device_id);
+                if is_paired {
+                    let addr = peer.addr.clone();
+                    let device_id = peer.device_id.clone();
+                    self.do_connect_and_sync(addr, String::new(), Some(device_id));
                 } else {
-                    let mut peer_to_pair: Option<DiscoveredPeer> = None;
-                    for peer in &visible_peers {
-                        egui::Frame::default()
-                            .corner_radius(6.0)
-                            .fill(ui.visuals().extreme_bg_color)
-                            .inner_margin(egui::Margin::symmetric(8, 6))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(&peer.device_name)
-                                                .size(13.0)
-                                                .strong(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(&peer.addr)
-                                                .size(10.0)
-                                                .color(egui::Color32::from_gray(140)),
-                                        );
-                                        // Check if already paired
-                                        let is_paired = self
-                                            .peer_store
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner())
-                                            .is_paired(&peer.device_id);
-                                        if is_paired {
-                                            ui.label(
-                                                egui::RichText::new(self.i18n.t("share.paired"))
-                                                    .size(10.0)
-                                                    .color(egui::Color32::from_rgb(100, 160, 100)),
-                                            );
-                                        }
-                                    });
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui.button(self.i18n.t("share.connect")).clicked() {
-                                                peer_to_pair = Some((*peer).clone());
-                                            }
-                                        },
-                                    );
-                                });
-                            });
-                        ui.add_space(4.0);
-                    }
-                    if let Some(peer) = peer_to_pair {
-                        // Check if already paired 鈥?skip PIN dialog
-                        let is_paired = self
-                            .peer_store
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .is_paired(&peer.device_id);
-                        if is_paired {
-                            let addr = peer.addr.clone();
-                            let device_id = peer.device_id.clone();
-                            self.do_connect_and_sync(addr, String::new(), Some(device_id));
-                        } else {
-                            self.pairing_dialog_pin.clear();
-                            self.pairing_dialog_peer = Some(peer);
-                        }
-                    }
+                    self.pairing_dialog_pin.clear();
+                    self.pairing_dialog_peer = Some(peer);
                 }
+            }
+        }
 
-                let status = self
-                    .sharing_status
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                if !status.is_empty() {
-                    ui.add_space(4.0);
-                    let color = if status.contains('❌') {
-                        egui::Color32::from_rgb(220, 60, 60)
-                    } else if status.contains('✅') {
-                        egui::Color32::from_rgb(60, 180, 60)
-                    } else {
-                        egui::Color32::from_rgb(60, 140, 220)
-                    };
-                    ui.label(egui::RichText::new(&status).size(12.0).color(color));
+        let status = self
+            .sharing_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if !status.is_empty() {
+            ui.add_space(4.0);
+            let color = if status.contains('❌') {
+                egui::Color32::from_rgb(220, 60, 60)
+            } else if status.contains('✅') {
+                egui::Color32::from_rgb(60, 180, 60)
+            } else {
+                egui::Color32::from_rgb(60, 140, 220)
+            };
+            ui.label(egui::RichText::new(&status).size(12.0).color(color));
+        }
+
+        ui.add_space(8.0);
+        if ui
+            .button(egui::RichText::new(self.i18n.t("feedback.export_logs")).size(13.0))
+            .clicked()
+        {
+            match self.export_feedback_log() {
+                Ok(path) => {
+                    self.last_exported_feedback_log = Some(path.clone());
+                    self.show_feedback_github_prompt = true;
+                    self.push_feedback_log(format!("export feedback log success: {path}"));
+                    *self
+                        .sharing_status
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) =
+                        self.i18n.tf1("feedback.export_success", &path);
                 }
-
-                ui.add_space(8.0);
-                if ui
-                    .button(egui::RichText::new(self.i18n.t("feedback.export_logs")).size(13.0))
-                    .clicked()
-                {
-                    match self.export_feedback_log() {
-                        Ok(path) => {
-                            self.last_exported_feedback_log = Some(path.clone());
-                            self.show_feedback_github_prompt = true;
-                            self.push_feedback_log(format!("export feedback log success: {path}"));
-                            *self
-                                .sharing_status
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner()) =
-                                self.i18n.tf1("feedback.export_success", &path);
-                        }
-                        Err(e) => {
-                            self.push_feedback_log(format!("export feedback log failed: {e}"));
-                            *self
-                                .sharing_status
-                                .lock()
-                                .unwrap_or_else(|er| er.into_inner()) =
-                                self.i18n.tf1("feedback.export_failed", &e);
-                        }
-                    }
+                Err(e) => {
+                    self.push_feedback_log(format!("export feedback log failed: {e}"));
+                    *self
+                        .sharing_status
+                        .lock()
+                        .unwrap_or_else(|er| er.into_inner()) =
+                        self.i18n.tf1("feedback.export_failed", &e);
                 }
+            }
+        }
 
-                ui.add_space(8.0);
+        ui.add_space(8.0);
 
-                if ui
-                    .button(egui::RichText::new(self.i18n.t("share.refresh_library")).size(13.0))
-                    .clicked()
-                {
-                    self.refresh_library_from_books_dir();
-                }
+        if ui
+            .button(egui::RichText::new(self.i18n.t("share.refresh_library")).size(13.0))
+            .clicked()
+        {
+            self.refresh_library_from_books_dir();
+        }
 
-                ui.add_space(8.0);
+        ui.add_space(8.0);
 
-                let advanced_label = self.i18n.t("share.advanced").to_string();
-                ui.collapsing(advanced_label, |ui| {
-                    if self.sharing_server_running {
-                        ui.label(self.i18n.tf1("share.address", &self.sharing_server_addr));
-                    }
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("share.connect_to_peer"))
-                            .strong()
-                            .size(14.0),
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label(self.i18n.t("share.enter_address"));
-                        ui.text_edit_singleline(&mut self.connect_addr_input);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("PIN:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.connect_pin_input)
-                                .hint_text("PIN")
-                                .desired_width(60.0),
-                        );
-                    });
-                    if ui.button(self.i18n.t("share.manual_sync")).clicked() {
-                        self.connect_and_sync();
-                    }
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("share.paired_devices"))
-                            .strong()
-                            .size(14.0),
-                    );
-                    let paired_list: Vec<(String, String)> = {
-                        let store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
-                        store
-                            .paired
-                            .iter()
-                            .map(|d| (d.device_id.clone(), d.device_name.clone()))
-                            .collect()
-                    };
-                    if paired_list.is_empty() {
-                        ui.label(
-                            egui::RichText::new(self.i18n.t("share.no_paired"))
-                                .size(12.0)
-                                .color(egui::Color32::from_gray(140)),
-                        );
-                    } else {
-                        let mut to_remove: Option<String> = None;
-                        for (dev_id, dev_name) in &paired_list {
-                            ui.horizontal(|ui| {
-                                ui.label(self.i18n.tf1("share.device_name", dev_name));
-                                if ui
-                                    .small_button("🗑")
-                                    .on_hover_text("Remove pairing")
-                                    .clicked()
-                                {
-                                    to_remove = Some(dev_id.clone());
-                                }
-                            });
-                        }
-                        if let Some(id) = to_remove {
-                            let mut store =
-                                self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
-                            store.remove_paired(&id);
-                            store.save(&self.data_dir);
-                        }
-                    }
-                });
+        let advanced_label = self.i18n.t("share.advanced").to_string();
+        ui.collapsing(advanced_label, |ui| {
+            if self.sharing_server_running {
+                ui.label(self.i18n.tf1("share.address", &self.sharing_server_addr));
+            }
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(self.i18n.t("share.connect_to_peer"))
+                    .strong()
+                    .size(14.0),
+            );
+            ui.horizontal(|ui| {
+                ui.label(self.i18n.t("share.enter_address"));
+                ui.add(super::design::text_edit(&mut self.connect_addr_input));
             });
-        self.show_sharing_panel = open;
-
+            ui.horizontal(|ui| {
+                ui.label("PIN:");
+                ui.add(
+                    super::design::text_edit(&mut self.connect_pin_input)
+                        .hint_text("PIN")
+                        .desired_width(60.0),
+                );
+            });
+            if ui.button(self.i18n.t("share.manual_sync")).clicked() {
+                self.connect_and_sync();
+            }
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(self.i18n.t("share.paired_devices"))
+                    .strong()
+                    .size(14.0),
+            );
+            let paired_list: Vec<(String, String)> = {
+                let store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
+                store
+                    .paired
+                    .iter()
+                    .map(|d| (d.device_id.clone(), d.device_name.clone()))
+                    .collect()
+            };
+            if paired_list.is_empty() {
+                ui.label(
+                    egui::RichText::new(self.i18n.t("share.no_paired"))
+                        .size(12.0)
+                        .color(super::design::Palette::new(self.dark_mode).muted),
+                );
+            } else {
+                let mut to_remove: Option<String> = None;
+                for (dev_id, dev_name) in &paired_list {
+                    ui.horizontal(|ui| {
+                        ui.label(self.i18n.tf1("share.device_name", dev_name));
+                        if ui
+                            .small_button("🗑")
+                            .on_hover_text("Remove pairing")
+                            .clicked()
+                        {
+                            to_remove = Some(dev_id.clone());
+                        }
+                    });
+                }
+                if let Some(id) = to_remove {
+                    let mut store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
+                    store.remove_paired(&id);
+                    store.save(&self.data_dir);
+                }
+            }
+        });
+    }
+    pub fn render_sharing_dialogs(&mut self, ctx: &egui::Context) {
+        self.render_pairing_dialog(ctx);
         if self.show_feedback_github_prompt {
             let mut prompt_open = self.show_feedback_github_prompt;
             egui::Window::new(self.i18n.t("feedback.open_github"))
@@ -361,10 +342,10 @@ impl ReaderApp {
                 .show(ctx, |ui| {
                     ui.label(self.i18n.t("feedback.ask_open_github"));
                     if let Some(path) = &self.last_exported_feedback_log {
-                        ui.add_space(6.0);
+                        ui.add_space(8.0);
                         ui.label(egui::RichText::new(path).small());
                     }
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button(self.i18n.t("feedback.not_now")).clicked() {
                             prompt_open = false;
@@ -394,23 +375,23 @@ impl ReaderApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .frame(
                 egui::Frame::window(&ctx.style())
-                    .corner_radius(12.0)
-                    .inner_margin(egui::Margin::same(20)),
+                    .corner_radius(super::design::Geometry::RADIUS)
+                    .inner_margin(egui::Margin::same(super::design::Geometry::CARD_INSET)),
             )
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.label(egui::RichText::new(&peer.device_name).size(16.0).strong());
                     ui.label(
                         egui::RichText::new(&peer.addr)
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(140)),
+                            .size(12.0)
+                            .color(super::design::Palette::new(self.dark_mode).muted),
                     );
                     ui.add_space(12.0);
                     ui.label(egui::RichText::new(self.i18n.t("share.pair_enter_pin")).size(13.0));
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     let pin_edit = ui.add(
-                        egui::TextEdit::singleline(&mut self.pairing_dialog_pin)
+                        super::design::text_edit(&mut self.pairing_dialog_pin)
                             .font(egui::TextStyle::Heading)
                             .desired_width(120.0)
                             .horizontal_align(egui::Align::Center)

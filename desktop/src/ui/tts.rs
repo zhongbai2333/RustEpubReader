@@ -1,7 +1,7 @@
 //! Text-to-Speech (TTS) control floating UI and settings.
 use crate::app::{ReaderApp, TtsAudioResultSlot};
 use eframe::egui;
-use egui::{Color32, CornerRadius, Stroke, Vec2};
+use egui::{Color32, Vec2};
 use reader_core::epub::ContentBlock;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -80,173 +80,153 @@ impl ReaderApp {
             Color32::from_gray(100)
         };
 
-        egui::TopBottomPanel::top("tts_bar")
-            .frame(
-                egui::Frame::default()
-                    .fill(bar_bg)
-                    .inner_margin(egui::Margin {
-                        left: 16,
-                        right: 16,
-                        top: 6,
-                        bottom: 6,
-                    })
-                    .stroke(Stroke::new(
-                        0.5_f32,
-                        if dark {
-                            Color32::from_gray(55)
-                        } else {
-                            Color32::from_gray(210)
-                        },
-                    )),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
+        super::design::animated_top_panel(ctx, "tts_bar", 56., self.show_tts_panel, bar_bg, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
 
-                    // ── Playback controls ──
-                    if !self.tts_playing {
-                        let play_btn = egui::Button::new(
-                            egui::RichText::new("▶").size(14.0).color(Color32::WHITE),
-                        )
-                        .fill(accent)
-                        .corner_radius(CornerRadius::same(4))
-                        .min_size(Vec2::new(32.0, 26.0));
-                        if ui
-                            .add(play_btn)
-                            .on_hover_text(self.i18n.t("tts.play"))
-                            .clicked()
-                        {
-                            self.tts_start_playback();
-                        }
+                // ── Playback controls ──
+                if !self.tts_playing {
+                    let play_btn = egui::Button::new(
+                        egui::RichText::new("▶").size(14.0).color(Color32::WHITE),
+                    )
+                    .fill(accent)
+                    .corner_radius(super::design::Geometry::RADIUS)
+                    .min_size(Vec2::splat(super::design::Geometry::CONTROL_HEIGHT));
+                    if ui
+                        .add(play_btn)
+                        .on_hover_text(self.i18n.t("tts.play"))
+                        .clicked()
+                    {
+                        self.tts_start_playback();
+                    }
+                } else {
+                    // Pause / Resume
+                    let pause_icon = if self.tts_paused { "▶" } else { "⏸" };
+                    let pause_tip = if self.tts_paused {
+                        self.i18n.t("tts.resume")
                     } else {
-                        // Pause / Resume
-                        let pause_icon = if self.tts_paused { "▶" } else { "⏸" };
-                        let pause_tip = if self.tts_paused {
-                            self.i18n.t("tts.resume")
+                        self.i18n.t("tts.pause")
+                    };
+                    let pause_btn = egui::Button::new(
+                        egui::RichText::new(pause_icon)
+                            .size(14.0)
+                            .color(Color32::WHITE),
+                    )
+                    .fill(accent)
+                    .corner_radius(super::design::Geometry::RADIUS)
+                    .min_size(Vec2::splat(super::design::Geometry::CONTROL_HEIGHT));
+                    if ui.add(pause_btn).on_hover_text(pause_tip).clicked() {
+                        if self.tts_paused {
+                            if let Some(sink) = &self.tts_audio_sink {
+                                sink.play();
+                            }
+                            self.tts_paused = false;
                         } else {
-                            self.i18n.t("tts.pause")
-                        };
-                        let pause_btn = egui::Button::new(
-                            egui::RichText::new(pause_icon)
-                                .size(14.0)
-                                .color(Color32::WHITE),
-                        )
-                        .fill(accent)
-                        .corner_radius(CornerRadius::same(4))
-                        .min_size(Vec2::new(32.0, 26.0));
-                        if ui.add(pause_btn).on_hover_text(pause_tip).clicked() {
-                            if self.tts_paused {
-                                if let Some(sink) = &self.tts_audio_sink {
-                                    sink.play();
-                                }
-                                self.tts_paused = false;
-                            } else {
-                                if let Some(sink) = &self.tts_audio_sink {
-                                    sink.pause();
-                                }
-                                self.tts_paused = true;
+                            if let Some(sink) = &self.tts_audio_sink {
+                                sink.pause();
                             }
-                        }
-
-                        let stop_btn = egui::Button::new(egui::RichText::new("⏹").size(14.0))
-                            .corner_radius(CornerRadius::same(4))
-                            .min_size(Vec2::new(32.0, 26.0));
-                        if ui
-                            .add(stop_btn)
-                            .on_hover_text(self.i18n.t("tts.stop"))
-                            .clicked()
-                        {
-                            self.tts_stop_playback();
+                            self.tts_paused = true;
                         }
                     }
 
-                    ui.separator();
-
-                    // ── Voice selector ──
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("tts.voice"))
-                            .size(12.0)
-                            .color(subtle_color),
-                    );
-                    egui::ComboBox::from_id_salt("tts_voice")
-                        .width(120.0)
-                        .selected_text(
-                            VOICE_PRESETS
-                                .iter()
-                                .find(|(name, _)| *name == self.tts_voice_name)
-                                .map(|(_, label)| *label)
-                                .unwrap_or(&self.tts_voice_name),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (name, label) in VOICE_PRESETS {
-                                ui.selectable_value(
-                                    &mut self.tts_voice_name,
-                                    name.to_string(),
-                                    *label,
-                                );
-                            }
-                        });
-
-                    // ── Rate selector ──
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("tts.rate"))
-                            .size(12.0)
-                            .color(subtle_color),
-                    );
-                    egui::ComboBox::from_id_salt("tts_rate")
-                        .width(64.0)
-                        .selected_text(
-                            RATE_OPTIONS
-                                .iter()
-                                .find(|(v, _)| *v == self.tts_rate)
-                                .map(|(_, l)| *l)
-                                .unwrap_or("正常"),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (val, label) in RATE_OPTIONS {
-                                ui.selectable_value(&mut self.tts_rate, *val, *label);
-                            }
-                        });
-
-                    // ── Volume selector ──
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("tts.volume"))
-                            .size(12.0)
-                            .color(subtle_color),
-                    );
-                    egui::ComboBox::from_id_salt("tts_volume")
-                        .width(64.0)
-                        .selected_text(
-                            VOLUME_OPTIONS
-                                .iter()
-                                .find(|(v, _)| *v == self.tts_volume)
-                                .map(|(_, l)| *l)
-                                .unwrap_or("正常"),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (val, label) in VOLUME_OPTIONS {
-                                ui.selectable_value(&mut self.tts_volume, *val, *label);
-                            }
-                        });
-
-                    // ── Status text ──
-                    let status = self.tts_status.lock().unwrap().clone();
-                    if !status.is_empty() {
-                        ui.label(egui::RichText::new(&status).size(12.0).color(subtle_color));
+                    let stop_btn = egui::Button::new(egui::RichText::new("⏹").size(14.0))
+                        .corner_radius(super::design::Geometry::RADIUS)
+                        .min_size(Vec2::splat(super::design::Geometry::CONTROL_HEIGHT));
+                    if ui
+                        .add(stop_btn)
+                        .on_hover_text(self.i18n.t("tts.stop"))
+                        .clicked()
+                    {
+                        self.tts_stop_playback();
                     }
+                }
 
-                    // ── Close button (right-aligned) ──
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
-                            self.show_tts_panel = false;
+                ui.separator();
+
+                // ── Voice selector ──
+                ui.label(
+                    egui::RichText::new(self.i18n.t("tts.voice"))
+                        .size(12.0)
+                        .color(subtle_color),
+                );
+                egui::ComboBox::from_id_salt("tts_voice")
+                    .width(120.0)
+                    .selected_text(
+                        VOICE_PRESETS
+                            .iter()
+                            .find(|(name, _)| *name == self.tts_voice_name)
+                            .map(|(_, label)| *label)
+                            .unwrap_or(&self.tts_voice_name),
+                    )
+                    .show_ui(ui, |ui| {
+                        super::design::menu_style(ui);
+                        for (name, label) in VOICE_PRESETS {
+                            ui.selectable_value(&mut self.tts_voice_name, name.to_string(), *label);
                         }
                     });
-                });
 
-                if self.tts_playing {
-                    ui.ctx().request_repaint();
+                // ── Rate selector ──
+                ui.label(
+                    egui::RichText::new(self.i18n.t("tts.rate"))
+                        .size(12.0)
+                        .color(subtle_color),
+                );
+                egui::ComboBox::from_id_salt("tts_rate")
+                    .width(64.0)
+                    .selected_text(
+                        RATE_OPTIONS
+                            .iter()
+                            .find(|(v, _)| *v == self.tts_rate)
+                            .map(|(_, l)| *l)
+                            .unwrap_or("正常"),
+                    )
+                    .show_ui(ui, |ui| {
+                        super::design::menu_style(ui);
+                        for (val, label) in RATE_OPTIONS {
+                            ui.selectable_value(&mut self.tts_rate, *val, *label);
+                        }
+                    });
+
+                // ── Volume selector ──
+                ui.label(
+                    egui::RichText::new(self.i18n.t("tts.volume"))
+                        .size(12.0)
+                        .color(subtle_color),
+                );
+                egui::ComboBox::from_id_salt("tts_volume")
+                    .width(64.0)
+                    .selected_text(
+                        VOLUME_OPTIONS
+                            .iter()
+                            .find(|(v, _)| *v == self.tts_volume)
+                            .map(|(_, l)| *l)
+                            .unwrap_or("正常"),
+                    )
+                    .show_ui(ui, |ui| {
+                        super::design::menu_style(ui);
+                        for (val, label) in VOLUME_OPTIONS {
+                            ui.selectable_value(&mut self.tts_volume, *val, *label);
+                        }
+                    });
+
+                // ── Status text ──
+                let status = self.tts_status.lock().unwrap().clone();
+                if !status.is_empty() {
+                    ui.label(egui::RichText::new(&status).size(12.0).color(subtle_color));
                 }
+
+                // ── Close button (right-aligned) ──
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if super::design::close_button(ui, self.i18n.t("settings.close")).clicked() {
+                        self.show_tts_panel = false;
+                    }
+                });
             });
+
+            if self.tts_playing {
+                ui.ctx().request_repaint();
+            }
+        });
     }
 
     pub fn tts_start_playback(&mut self) {

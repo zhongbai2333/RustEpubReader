@@ -65,7 +65,7 @@ internal fun paginateContent(
     contentWidth: Dp,
     density: androidx.compose.ui.unit.Density,
     showChapterTitle: Boolean,
-    titleVPaddingDp: Dp = 32.dp,
+    titleVPaddingDp: Dp = CHAPTER_TITLE_TOP_PADDING + CHAPTER_TITLE_BOTTOM_PADDING,
     lineSpacing: Float = 1.5f,
     paraSpacing: Float = 0.5f,
     textIndentChars: Int = 2,
@@ -93,8 +93,8 @@ internal fun paginateContent(
         // 使用 breakTitleIntoLines 保持分行逻辑一致
         val brokenTitle = breakTitleIntoLines(chapter.title, contentWidthPx, fontSize * titleFontScale, spToPx)
         val titleLines = brokenTitle.count { it == '\n' } + 1
-        // 标题行高 + padding(top = vPadding*0.5 + bottom = vPadding) + 30% 缓冲
-        val titlePaddingPx = with(density) { titleVPaddingDp.toPx() } * 1.5f
+        // Match the actual title padding; retain the font-measurement safety buffer.
+        val titlePaddingPx = with(density) { titleVPaddingDp.toPx() }
         currentHeight += (titleLines * titleLineHeightPx + titlePaddingPx) * 1.3f
     }
 
@@ -310,5 +310,8 @@ internal fun shouldRenderChapterTitle(chapter: Chapter): Boolean {
     val headingText = first.spans.joinToString("") { it.text }.trim().replace(" ", "")
     val chapterText = chapter.title.trim().replace(" ", "")
     if (headingText.isBlank() || chapterText.isBlank()) return true
+    // A parser fallback is navigation metadata; the EPUB's own heading is the visible title.
+    // Keep every content block and its index intact for bookmarks and synchronized positions.
+    if (Regex("^第\\s*\\d+\\s*章$").matches(chapterText)) return false
     return headingText != chapterText
 }

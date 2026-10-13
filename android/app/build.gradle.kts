@@ -163,6 +163,7 @@ dependencies {
     implementation(project(":pagecurl"))
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }
 
 // Cargo NDK Integration
@@ -177,7 +178,7 @@ tasks.register<Exec>("cargoBuild") {
         "-t", "arm64-v8a",
         "-t", "x86_64",
         "-o", "../android/app/src/main/jniLibs",
-        "build", "--release"
+        "build", "--release", "--locked"
     )
 }
 

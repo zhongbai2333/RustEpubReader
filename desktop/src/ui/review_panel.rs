@@ -433,8 +433,8 @@ impl ReaderApp {
                                         let card_bg = ui.visuals().extreme_bg_color;
                                         let frame = egui::Frame::new()
                                             .fill(card_bg)
-                                            .corner_radius(6.0)
-                                            .inner_margin(10.0)
+                                            .corner_radius(super::design::Geometry::RADIUS)
+                                            .inner_margin(super::design::Geometry::CARD_INSET)
                                             .stroke(ui.visuals().widgets.noninteractive.bg_stroke);
                                         frame.show(ui, |ui| {
                                             ui.set_width(ui.available_width());

@@ -5,23 +5,22 @@ use eframe::egui;
 impl ReaderApp {
     /// Render the search side-panel.
     pub fn render_search_panel(&mut self, ctx: &egui::Context) {
-        if !self.show_search {
-            return;
-        }
-
-        egui::SidePanel::right("search_panel")
-            .default_width(320.0)
-            .min_width(260.0)
-            .show(ctx, |ui| {
+        super::design::animated_side_panel(
+            ctx,
+            "search_panel",
+            false,
+            320.,
+            self.show_search && self.view == crate::app::AppView::Reader,
+            |ui| {
                 ui.heading(self.i18n.t("search.title"));
                 ui.add_space(4.0);
 
                 let mut run_search = false;
                 ui.horizontal(|ui| {
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.search_query)
+                        super::design::text_edit(&mut self.search_query)
                             .hint_text(self.i18n.t("search.placeholder"))
-                            .desired_width(ui.available_width() - 60.0),
+                            .desired_width(ui.available_width() - 100.0),
                     );
                     if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         run_search = true;
@@ -39,7 +38,7 @@ impl ReaderApp {
                     }
                 }
 
-                ui.add_space(6.0);
+                super::design::block_gap(ui);
                 if !self.search_results.is_empty() {
                     ui.label(self.i18n.tf1(
                         "search.results_count",
@@ -71,6 +70,7 @@ impl ReaderApp {
                 } else if !self.search_query.is_empty() {
                     ui.label(self.i18n.t("search.no_results"));
                 }
-            });
+            },
+        );
     }
 }

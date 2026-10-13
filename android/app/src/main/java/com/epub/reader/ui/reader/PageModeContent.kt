@@ -1,6 +1,5 @@
 package com.zhongbai233.epub.reader.ui.reader
 
-import android.util.Log
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -16,16 +15,13 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -36,10 +32,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -52,15 +46,12 @@ import eu.wewox.pagecurl.config.PageCurlConfig
 import eu.wewox.pagecurl.config.rememberPageCurlConfig
 import eu.wewox.pagecurl.page.PageCurl
 import eu.wewox.pagecurl.page.rememberPageCurlState
+import kotlin.math.absoluteValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.Collections
-import java.util.LinkedHashMap
-import kotlin.math.absoluteValue
-import kotlin.math.ceil
 
 // ─── 页面交互常量 ───
 private const val CHROME_INSET_RATIO = 0.12f
@@ -108,9 +99,9 @@ internal fun PageModeContent(
     cscBlockCorrections: Map<Int, List<CscBlockCorrection>> = emptyMap(),
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
-    onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> }
-    ,initialBlock: Int = 0
-    ,onPositionChange: (Int) -> Unit = {}
+    onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
+    initialBlock: Int = 0,
+    onPositionChange: (Int) -> Unit = {},
 ) {
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -118,24 +109,28 @@ internal fun PageModeContent(
     val screenWidthDp = configuration.screenWidthDp.dp
     // 按屏幕比例计算边距，适配不同尺寸设备
     val isTwoColumn = screenWidthDp > 600.dp // 平板或宽屏双列模式
-    val hPaddingDp = screenWidthDp * 0.065f      // 左右各约 6.5%
-    val topPaddingDp = screenHeightDp * 0.075f   // 顶部留白略大
-    val bottomPaddingDp = screenHeightDp * 0.035f // 底部留白（缩小以便节省空间）
-    val titleVPaddingDp = topPaddingDp * 2.5f    // 标题上下合计（上 0.5x + 下 2.0x，加大正文间距）
+    val hPaddingDp = screenWidthDp * 0.065f // 左右各约 6.5%
+    val topPaddingDp = READER_VERTICAL_PADDING
+    val bottomPaddingDp = READER_VERTICAL_PADDING
+    val titleVPaddingDp = CHAPTER_TITLE_TOP_PADDING + CHAPTER_TITLE_BOTTOM_PADDING
     val availableHeightDp = (screenHeightDp - topPaddingDp - bottomPaddingDp).coerceAtLeast(280.dp)
-    
-    val contentWidthDp = if (isTwoColumn) {
-        ((screenWidthDp - hPaddingDp * 3f) / 2f).coerceAtLeast(180.dp)
-    } else {
-        (screenWidthDp - hPaddingDp * 2f).coerceAtLeast(180.dp)
-    }
+
+    val contentWidthDp =
+        if (isTwoColumn) {
+            ((screenWidthDp - hPaddingDp * 3f) / 2f).coerceAtLeast(180.dp)
+        } else {
+            (screenWidthDp - hPaddingDp * 2f).coerceAtLeast(180.dp)
+        }
     val contentWidthPx = with(density) { contentWidthDp.toPx() }
     val spToPx = density.fontScale * density.density
     val showChapterTitle = remember(chapter) { shouldRenderChapterTitle(chapter) }
 
     // 预加载缓存（以章节索引为 key，布局参数变化时清空，LRU 限制最多 10 章防止 OOM）
-    val paginationCache = remember { lruCache<Int, List<List<PaginatedBlock>>>(PAGINATION_CACHE_MAX_SIZE) }
-    val layoutTag = "$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale-${fontFamily.hashCode()}"
+    val paginationCache = remember {
+        lruCache<Int, List<List<PaginatedBlock>>>(PAGINATION_CACHE_MAX_SIZE)
+    }
+    val layoutTag =
+        "$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale-${fontFamily.hashCode()}"
     val prevLayoutTag = remember { mutableStateOf(layoutTag) }
     if (prevLayoutTag.value != layoutTag) {
         prevLayoutTag.value = layoutTag
@@ -143,24 +138,71 @@ internal fun PageModeContent(
     }
 
     // 将内容分页（优先从缓存取，避免主线程重复计算）
-    val pages = remember(currentChapter, fontSize, availableHeightDp, contentWidthDp, showChapterTitle, lineSpacing, paraSpacing, textIndent, titleFontScale, fontFamily) {
-        paginationCache.getOrPut(currentChapter) {
-            paginateContent(chapter, fontSize, availableHeightDp, contentWidthDp, density, showChapterTitle, titleVPaddingDp, lineSpacing, paraSpacing, textIndent, titleFontScale)
+    val pages =
+        remember(
+            currentChapter,
+            fontSize,
+            availableHeightDp,
+            contentWidthDp,
+            showChapterTitle,
+            lineSpacing,
+            paraSpacing,
+            textIndent,
+            titleFontScale,
+            fontFamily,
+        ) {
+            paginationCache.getOrPut(currentChapter) {
+                paginateContent(
+                    chapter,
+                    fontSize,
+                    availableHeightDp,
+                    contentWidthDp,
+                    density,
+                    showChapterTitle,
+                    titleVPaddingDp,
+                    lineSpacing,
+                    paraSpacing,
+                    textIndent,
+                    titleFontScale,
+                )
+            }
         }
-    }
-    
-    val pairedPages = remember(pages, isTwoColumn) {
-        if (isTwoColumn) pages.chunked(2) else pages.map { listOf(it) }
-    }
+
+    val pairedPages =
+        remember(pages, isTwoColumn) {
+            if (isTwoColumn) pages.chunked(2) else pages.map { listOf(it) }
+        }
 
     // 预加载相邻章节，消除跨章翻页时的白屏闪烁
-    LaunchedEffect(currentChapter, fontSize, availableHeightDp, contentWidthDp, lineSpacing, paraSpacing, textIndent, titleFontScale, fontFamily) {
+    LaunchedEffect(
+        currentChapter,
+        fontSize,
+        availableHeightDp,
+        contentWidthDp,
+        lineSpacing,
+        paraSpacing,
+        textIndent,
+        titleFontScale,
+        fontFamily,
+    ) {
         withContext(Dispatchers.Default) {
             for (adjIdx in listOf(currentChapter - 1, currentChapter + 1)) {
                 val adjChapter = allChapters.getOrNull(adjIdx) ?: continue
                 paginationCache.getOrPut(adjIdx) {
                     val adjShowTitle = shouldRenderChapterTitle(adjChapter)
-                    paginateContent(adjChapter, fontSize, availableHeightDp, contentWidthDp, density, adjShowTitle, titleVPaddingDp, lineSpacing, paraSpacing, textIndent, titleFontScale)
+                    paginateContent(
+                        adjChapter,
+                        fontSize,
+                        availableHeightDp,
+                        contentWidthDp,
+                        density,
+                        adjShowTitle,
+                        titleVPaddingDp,
+                        lineSpacing,
+                        paraSpacing,
+                        textIndent,
+                        titleFontScale,
+                    )
                 }
             }
         }
@@ -174,18 +216,22 @@ internal fun PageModeContent(
 
     fun slotForBlock(block: Int): Int {
         val target = block.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
-        val pageIndex = pages.indexOfFirst { page ->
-            page.any { it.sourceBlockIndex == target }
-        }.let { if (it >= 0) it else pages.lastIndex.coerceAtLeast(0) }
+        val pageIndex =
+            pages
+                .indexOfFirst { page ->
+                    page.any { it.sourceBlockIndex == target }
+                }
+                .let { if (it >= 0) it else pages.lastIndex.coerceAtLeast(0) }
         val pairedIndex = if (isTwoColumn) pageIndex / 2 else pageIndex
         return (leadingVirtual + pairedIndex).coerceIn(0, totalSlots - 1)
     }
 
     fun blockForSlot(slot: Int): Int {
-        val pairedIndex = (slot - leadingVirtual).coerceIn(0, pairedPages.lastIndex.coerceAtLeast(0))
+        val pairedIndex =
+            (slot - leadingVirtual).coerceIn(0, pairedPages.lastIndex.coerceAtLeast(0))
         val firstPageIndex = if (isTwoColumn) pairedIndex * 2 else pairedIndex
-        return pages.getOrNull(firstPageIndex)?.firstOrNull()?.sourceBlockIndex ?: 0
-            .coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
+        return pages.getOrNull(firstPageIndex)?.firstOrNull()?.sourceBlockIndex
+            ?: 0.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
     }
 
     val pagerState = rememberPagerState(pageCount = { totalSlots })
@@ -202,7 +248,6 @@ internal fun PageModeContent(
     var flipJob by remember { mutableStateOf<Job?>(null) }
     // 强制限制连续翻页间隔，防止过快卡死
     val lastFlipTime = remember { mutableLongStateOf(0L) }
-
 
     // 保持回调引用最新 (用于 pointerInput 内部)
     val currentOnPrevChapter by rememberUpdatedState(onPrevChapter)
@@ -233,132 +278,140 @@ internal fun PageModeContent(
         return true
     }
 
-    val pageCurlConfig = rememberPageCurlConfig(
-        backPageColor = bgColor,
-        dragInteraction = PageCurlConfig.GestureDragInteraction(
-            pointerBehavior = PageCurlConfig.DragInteraction.PointerBehavior.PageEdge
-        ),
-        onCustomTap = { size, position ->
-            if (consumeSelectionTapIfNeeded()) {
-                return@rememberPageCurlConfig true
-            }
-
-            if (currentSettingsVisible) {
-                return@rememberPageCurlConfig true
-            }
-
-            val chromeInset = size.height * CHROME_INSET_RATIO
-            if (currentControlsVisible) {
-                if (position.y < chromeInset || position.y > size.height - chromeInset) {
+    val pageCurlConfig =
+        rememberPageCurlConfig(
+            backPageColor = bgColor,
+            dragInteraction =
+                PageCurlConfig.GestureDragInteraction(
+                    pointerBehavior = PageCurlConfig.DragInteraction.PointerBehavior.PageEdge
+                ),
+            onCustomTap = { size, position ->
+                if (consumeSelectionTapIfNeeded()) {
                     return@rememberPageCurlConfig true
                 }
-                currentOnToggleControls()
-                return@rememberPageCurlConfig true
-            }
 
-            val tapZone = size.width * TAP_ZONE_RATIO
-            val firstReadableSlot = currentLeadingVirtual
-            val lastReadableSlot = currentLeadingVirtual + currentPairedPages.lastIndex
-            when {
-                position.x < tapZone -> {
-                    val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
-                    lastFlipTime.longValue = now
+                if (currentSettingsVisible) {
+                    return@rememberPageCurlConfig true
+                }
 
-                    if (pageCurlState.current <= firstReadableSlot) {
-                        if (currentHasPrevChapter && currentLeadingVirtual > 0) {
+                val chromeInset = size.height * CHROME_INSET_RATIO
+                if (currentControlsVisible) {
+                    if (position.y < chromeInset || position.y > size.height - chromeInset) {
+                        return@rememberPageCurlConfig true
+                    }
+                    currentOnToggleControls()
+                    return@rememberPageCurlConfig true
+                }
+
+                val tapZone = size.width * TAP_ZONE_RATIO
+                val firstReadableSlot = currentLeadingVirtual
+                val lastReadableSlot = currentLeadingVirtual + currentPairedPages.lastIndex
+                when {
+                    position.x < tapZone -> {
+                        val now = System.currentTimeMillis()
+                        if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS)
+                            return@rememberPageCurlConfig true
+                        lastFlipTime.longValue = now
+
+                        if (pageCurlState.current <= firstReadableSlot) {
+                            if (currentHasPrevChapter && currentLeadingVirtual > 0) {
+                                flipJob?.cancel()
+                                flipJob = coroutineScope.launch { pageCurlState.prev() }
+                            } else {
+                                currentOnPrevChapter()
+                            }
+                        } else {
                             flipJob?.cancel()
                             flipJob = coroutineScope.launch { pageCurlState.prev() }
-                        } else {
-                            currentOnPrevChapter()
                         }
-                    } else {
-                        flipJob?.cancel()
-                        flipJob = coroutineScope.launch { pageCurlState.prev() }
+                        true
                     }
-                    true
-                }
-                position.x > size.width - tapZone -> {
-                    val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
-                    lastFlipTime.longValue = now
+                    position.x > size.width - tapZone -> {
+                        val now = System.currentTimeMillis()
+                        if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS)
+                            return@rememberPageCurlConfig true
+                        lastFlipTime.longValue = now
 
-                    if (pageCurlState.current >= lastReadableSlot) {
-                        if (currentHasNextChapter && currentTrailingVirtual > 0) {
+                        if (pageCurlState.current >= lastReadableSlot) {
+                            if (currentHasNextChapter && currentTrailingVirtual > 0) {
+                                flipJob?.cancel()
+                                flipJob = coroutineScope.launch { pageCurlState.next() }
+                            } else {
+                                currentOnNextChapter()
+                            }
+                        } else {
                             flipJob?.cancel()
                             flipJob = coroutineScope.launch { pageCurlState.next() }
-                        } else {
-                            currentOnNextChapter()
                         }
-                    } else {
-                        flipJob?.cancel()
-                        flipJob = coroutineScope.launch { pageCurlState.next() }
+                        true
                     }
-                    true
+                    else -> {
+                        currentOnToggleControls()
+                        true
+                    }
                 }
-                else -> {
-                    currentOnToggleControls()
-                    true
-                }
-            }
-        }
-    )
+            },
+        )
 
     // rememberPageCurlConfig uses rememberSaveable internally, so the initial
     // backPageColor is only applied once.  Force-sync whenever bgColor changes.
     pageCurlConfig.backPageColor = bgColor
 
     // ─── Book Spread 3D PageCurl Config ───
-    val bookSpreadCurlConfig = rememberPageCurlConfig(
-        isBookSpread = true,
-        backPageColor = bgColor,
-        backPageContentAlpha = 0.25f,
-        shadowAlpha = 0.35f,
-        dragInteraction = PageCurlConfig.GestureDragInteraction(
-            pointerBehavior = PageCurlConfig.DragInteraction.PointerBehavior.PageEdge
-        ),
-        onCustomTap = { size, position ->
-            if (consumeSelectionTapIfNeeded()) return@rememberPageCurlConfig true
-            if (currentSettingsVisible) return@rememberPageCurlConfig true
-            val chromeInset = size.height * CHROME_INSET_RATIO
-            if (currentControlsVisible) {
-                if (position.y < chromeInset || position.y > size.height - chromeInset) {
+    val bookSpreadCurlConfig =
+        rememberPageCurlConfig(
+            isBookSpread = true,
+            backPageColor = bgColor,
+            backPageContentAlpha = 0.25f,
+            shadowAlpha = 0.35f,
+            dragInteraction =
+                PageCurlConfig.GestureDragInteraction(
+                    pointerBehavior = PageCurlConfig.DragInteraction.PointerBehavior.PageEdge
+                ),
+            onCustomTap = { size, position ->
+                if (consumeSelectionTapIfNeeded()) return@rememberPageCurlConfig true
+                if (currentSettingsVisible) return@rememberPageCurlConfig true
+                val chromeInset = size.height * CHROME_INSET_RATIO
+                if (currentControlsVisible) {
+                    if (position.y < chromeInset || position.y > size.height - chromeInset) {
+                        return@rememberPageCurlConfig true
+                    }
+                    currentOnToggleControls()
                     return@rememberPageCurlConfig true
                 }
-                currentOnToggleControls()
-                return@rememberPageCurlConfig true
-            }
-            val tapZone = size.width * TAP_ZONE_RATIO
-            val spineCenter = size.width / 2f
-            when {
-                position.x < tapZone -> {
-                    val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
-                    lastFlipTime.longValue = now
-                    if (bookSpreadPageCurlState.current > 0) {
-                        flipJob?.cancel()
-                        flipJob = coroutineScope.launch { bookSpreadPageCurlState.prev() }
+                val tapZone = size.width * TAP_ZONE_RATIO
+                val spineCenter = size.width / 2f
+                when {
+                    position.x < tapZone -> {
+                        val now = System.currentTimeMillis()
+                        if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS)
+                            return@rememberPageCurlConfig true
+                        lastFlipTime.longValue = now
+                        if (bookSpreadPageCurlState.current > 0) {
+                            flipJob?.cancel()
+                            flipJob = coroutineScope.launch { bookSpreadPageCurlState.prev() }
+                        }
+                        true
                     }
-                    true
-                }
-                position.x > spineCenter -> {
-                    // Tap anywhere on the right page (past spine) → forward
-                    val now = System.currentTimeMillis()
-                    if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@rememberPageCurlConfig true
-                    lastFlipTime.longValue = now
-                    if (bookSpreadPageCurlState.current < totalSlots - 1) {
-                        flipJob?.cancel()
-                        flipJob = coroutineScope.launch { bookSpreadPageCurlState.next() }
+                    position.x > spineCenter -> {
+                        // Tap anywhere on the right page (past spine) → forward
+                        val now = System.currentTimeMillis()
+                        if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS)
+                            return@rememberPageCurlConfig true
+                        lastFlipTime.longValue = now
+                        if (bookSpreadPageCurlState.current < totalSlots - 1) {
+                            flipJob?.cancel()
+                            flipJob = coroutineScope.launch { bookSpreadPageCurlState.next() }
+                        }
+                        true
                     }
-                    true
+                    else -> {
+                        currentOnToggleControls()
+                        true
+                    }
                 }
-                else -> {
-                    currentOnToggleControls()
-                    true
-                }
-            }
-        }
-    )
+            },
+        )
     bookSpreadCurlConfig.backPageColor = bgColor
 
     // 章节切换时重置页码
@@ -372,12 +425,13 @@ internal fun PageModeContent(
         // 清空 block 注册表，防止初始渲染时错误页面的 block 残留
         blockLayoutRegistry?.clear()
         val isGoingBack = startAtLastPageRef[0]
-        val targetSlot = if (isGoingBack) {
-            startAtLastPageRef[0] = false
-            leadingVirtual + pairedPages.lastIndex.coerceAtLeast(0)
-        } else {
-            slotForBlock(initialBlock)
-        }
+        val targetSlot =
+            if (isGoingBack) {
+                startAtLastPageRef[0] = false
+                leadingVirtual + pairedPages.lastIndex.coerceAtLeast(0)
+            } else {
+                slotForBlock(initialBlock)
+            }
         when {
             isRealChapterChange && pageAnimation == "Slide" -> {
                 // Slide 模式已经通过 HorizontalPager 的虚拟相邻章节页完成了跨章滑动。
@@ -427,16 +481,27 @@ internal fun PageModeContent(
                 pageAnimation == "Realistic" -> pageCurlState.current
                 else -> pagerState.currentPage
             }
-        }.collect { slot ->
-            delay(350)
-            if (!chapterJumpTriggered && slot in leadingVirtual until (leadingVirtual + pairedPages.size)) {
-                onPositionChange(blockForSlot(slot))
-            }
         }
+            .collect { slot ->
+                delay(350)
+                if (
+                    !chapterJumpTriggered &&
+                        slot in leadingVirtual until (leadingVirtual + pairedPages.size)
+                ) {
+                    onPositionChange(blockForSlot(slot))
+                }
+            }
     }
 
     // 翻页到边界时，自动跨章节
-    LaunchedEffect(currentChapter, pageAnimation, hasPrevChapter, hasNextChapter, totalSlots, isBookSpread) {
+    LaunchedEffect(
+        currentChapter,
+        pageAnimation,
+        hasPrevChapter,
+        hasNextChapter,
+        totalSlots,
+        isBookSpread,
+    ) {
         if (isBookSpread) {
             snapshotFlow { bookSpreadPageCurlState.current }
                 .collect { currentSpread ->
@@ -466,17 +531,18 @@ internal fun PageModeContent(
         } else {
             snapshotFlow {
                 pagerState.currentPage to pagerState.isScrollInProgress
-            }.collect { (currentSlot, isScrolling) ->
-                if (!isScrolling && !chapterJumpTriggered) {
-                    if (hasPrevChapter && currentSlot <= 0) {
-                        chapterJumpTriggered = true
-                        currentOnPrevChapter()
-                    } else if (hasNextChapter && currentSlot >= totalSlots - 1) {
-                        chapterJumpTriggered = true
-                        currentOnNextChapter()
+            }
+                .collect { (currentSlot, isScrolling) ->
+                    if (!isScrolling && !chapterJumpTriggered) {
+                        if (hasPrevChapter && currentSlot <= 0) {
+                            chapterJumpTriggered = true
+                            currentOnPrevChapter()
+                        } else if (hasNextChapter && currentSlot >= totalSlots - 1) {
+                            chapterJumpTriggered = true
+                            currentOnNextChapter()
+                        }
                     }
                 }
-            }
         }
     }
 
@@ -486,101 +552,107 @@ internal fun PageModeContent(
     val currentOnSelectionDragCancel by rememberUpdatedState(onSelectionDragCancel)
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .graphicsLayer {
-                alpha = chapterAlpha.value
-            }
-            .pointerInput(blockLayoutRegistry, isBookSpread, pageAnimation) {
-                if (!isBookSpread && pageAnimation != "Realistic") return@pointerInput
-                detectDragGesturesAfterLongPress(
-                    onDragStart = {
-                        markSelectionGesture()
-                        currentOnSelectionDragStart(it)
-                    },
-                    onDrag = { change, _ ->
-                        markSelectionGesture()
-                        currentOnSelectionDrag(change.position)
-                        change.consume()
-                    },
-                    onDragEnd = {
-                        markSelectionGesture()
-                        currentOnSelectionDragEnd()
-                    },
-                    onDragCancel = {
-                        markSelectionGesture()
-                        currentOnSelectionDragCancel()
-                    }
-                )
-            }
-            .pointerInput(pageAnimation, controlsVisible, settingsVisible) {
-                if (pageAnimation == "Realistic") {
-                    return@pointerInput
+        modifier =
+            Modifier.fillMaxSize()
+                .graphicsLayer {
+                    alpha = chapterAlpha.value
                 }
-                detectTapGestures(
-                    onLongPress = { markSelectionGesture() },
-                ) { offset ->
-                    if (consumeSelectionTapIfNeeded()) {
-                        return@detectTapGestures
+                .pointerInput(blockLayoutRegistry, isBookSpread, pageAnimation) {
+                    if (!isBookSpread && pageAnimation != "Realistic") return@pointerInput
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = {
+                            markSelectionGesture()
+                            currentOnSelectionDragStart(it)
+                        },
+                        onDrag = { change, _ ->
+                            markSelectionGesture()
+                            currentOnSelectionDrag(change.position)
+                            change.consume()
+                        },
+                        onDragEnd = {
+                            markSelectionGesture()
+                            currentOnSelectionDragEnd()
+                        },
+                        onDragCancel = {
+                            markSelectionGesture()
+                            currentOnSelectionDragCancel()
+                        },
+                    )
+                }
+                .pointerInput(pageAnimation, controlsVisible, settingsVisible) {
+                    if (pageAnimation == "Realistic") {
+                        return@pointerInput
                     }
-
-                    if (settingsVisible) {
-                        return@detectTapGestures
-                    }
-
-                    val chromeInset = with(density) { 96.dp.toPx() }
-                    if (controlsVisible) {
-                        // 控制栏显示时，忽略顶部/底部区域，避免点击工具栏穿透触发翻页
-                        if (offset.y < chromeInset || offset.y > size.height - chromeInset) {
+                    detectTapGestures(onLongPress = { markSelectionGesture() }) { offset ->
+                        if (consumeSelectionTapIfNeeded()) {
                             return@detectTapGestures
                         }
-                    }
 
-                    val screenWidth = size.width
-                    val tapZone = if (controlsVisible) screenWidth * 0.24f else screenWidth * TAP_ZONE_RATIO
-                    val now = System.currentTimeMillis()
-                    when {
-                        offset.x < tapZone -> {
-                            if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@detectTapGestures
-                            lastFlipTime.longValue = now
-                            // 左侧点击 — 上一页
-                            flipJob?.cancel()
-                            flipJob = coroutineScope.launch {
-                                if (pagerState.currentPage > 0) {
-                                    if (pageAnimation == "None") {
-                                        pagerState.scrollToPage(pagerState.currentPage - 1)
-                                    } else {
-                                        pagerState.animateScrollToPage(pagerState.currentPage - 1)
-                                    }
-                                } else {
-                                    currentOnPrevChapter()
-                                }
+                        if (settingsVisible) {
+                            return@detectTapGestures
+                        }
+
+                        val chromeInset = with(density) { 96.dp.toPx() }
+                        if (controlsVisible) {
+                            // 控制栏显示时，忽略顶部/底部区域，避免点击工具栏穿透触发翻页
+                            if (offset.y < chromeInset || offset.y > size.height - chromeInset) {
+                                return@detectTapGestures
                             }
                         }
-                        offset.x > screenWidth - tapZone -> {
-                            if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS) return@detectTapGestures
-                            lastFlipTime.longValue = now
-                            // 右侧点击 — 下一页
-                            flipJob?.cancel()
-                            flipJob = coroutineScope.launch {
-                                if (pagerState.currentPage < pagerState.pageCount - 1) {
-                                    if (pageAnimation == "None") {
-                                        pagerState.scrollToPage(pagerState.currentPage + 1)
+
+                        val screenWidth = size.width
+                        val tapZone =
+                            if (controlsVisible) screenWidth * 0.24f
+                            else screenWidth * TAP_ZONE_RATIO
+                        val now = System.currentTimeMillis()
+                        when {
+                            offset.x < tapZone -> {
+                                if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS)
+                                    return@detectTapGestures
+                                lastFlipTime.longValue = now
+                                // 左侧点击 — 上一页
+                                flipJob?.cancel()
+                                flipJob = coroutineScope.launch {
+                                    if (pagerState.currentPage > 0) {
+                                        if (pageAnimation == "None") {
+                                            pagerState.scrollToPage(pagerState.currentPage - 1)
+                                        } else {
+                                            pagerState.animateScrollToPage(
+                                                pagerState.currentPage - 1
+                                            )
+                                        }
                                     } else {
-                                        pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                                        currentOnPrevChapter()
                                     }
-                                } else {
-                                    currentOnNextChapter()
                                 }
                             }
-                        }
-                        else -> {
-                            // 中间点击 — 切换控制栏；控制栏显示时，确保不抢左右翻页
-                            currentOnToggleControls()
+                            offset.x > screenWidth - tapZone -> {
+                                if (now - lastFlipTime.longValue < FLIP_COOLDOWN_MS)
+                                    return@detectTapGestures
+                                lastFlipTime.longValue = now
+                                // 右侧点击 — 下一页
+                                flipJob?.cancel()
+                                flipJob = coroutineScope.launch {
+                                    if (pagerState.currentPage < pagerState.pageCount - 1) {
+                                        if (pageAnimation == "None") {
+                                            pagerState.scrollToPage(pagerState.currentPage + 1)
+                                        } else {
+                                            pagerState.animateScrollToPage(
+                                                pagerState.currentPage + 1
+                                            )
+                                        }
+                                    } else {
+                                        currentOnNextChapter()
+                                    }
+                                }
+                            }
+                            else -> {
+                                // 中间点击 — 切换控制栏；控制栏显示时，确保不抢左右翻页
+                                currentOnToggleControls()
+                            }
                         }
                     }
                 }
-            }
     ) {
         if (isBookSpread) {
             // ─── 双列书脊翻页模式（平板专用）───
@@ -588,9 +660,7 @@ internal fun PageModeContent(
                 count = totalSlots,
                 state = bookSpreadPageCurlState,
                 config = bookSpreadCurlConfig,
-                modifier = Modifier
-                    .weight(1f)
-                    .background(bgColor),
+                modifier = Modifier.weight(1f).background(bgColor),
             ) { spreadIndex ->
                 val actualSpreadIndex = spreadIndex - leadingVirtual
                 val isLeadingVirtual = leadingVirtual > 0 && actualSpreadIndex < 0
@@ -600,14 +670,23 @@ internal fun PageModeContent(
                 val slotTitle: String
                 val slotShowTitle: Boolean
                 val slotPageLabel: String
-                
+
                 val isTransitioning = prevChapterKey != currentChapter
                 val isGoingBack = currentChapter < prevChapterKey
 
-                fun getPageLabelLocal(columns: List<List<PaginatedBlock>>, startIdx: Int, totalP: Int): String {
+                fun getPageLabelLocal(
+                    columns: List<List<PaginatedBlock>>,
+                    startIdx: Int,
+                    totalP: Int,
+                ): String {
                     if (columns.isEmpty()) return ""
-                    if (columns.size == 1) return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
-                    return I18n.tf2("reader.page_info", "${startIdx + 1}-${startIdx + 2}", "$totalP")
+                    if (columns.size == 1)
+                        return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
+                    return I18n.tf2(
+                        "reader.page_info",
+                        "${startIdx + 1}-${startIdx + 2}",
+                        "$totalP",
+                    )
                 }
 
                 if (isTransitioning) {
@@ -615,7 +694,9 @@ internal fun PageModeContent(
                         slotColumns = pairedPages.lastOrNull() ?: emptyList()
                         slotTitle = chapter.title
                         slotShowTitle = pairedPages.size == 1 && showChapterTitle
-                        val startIdx = if (pages.isEmpty()) 0 else if (pages.size % 2 == 0) pages.size - 2 else pages.size - 1
+                        val startIdx =
+                            if (pages.isEmpty()) 0
+                            else if (pages.size % 2 == 0) pages.size - 2 else pages.size - 1
                         slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pages.size)
                     } else {
                         slotColumns = pairedPages.firstOrNull() ?: emptyList()
@@ -630,10 +711,13 @@ internal fun PageModeContent(
                     val pPaired = if (isTwoColumn) pPg.chunked(2) else pPg.map { listOf(it) }
                     slotColumns = pPaired.lastOrNull() ?: emptyList()
                     slotTitle = pCh?.title ?: ""
-                    slotShowTitle = pCh != null && pPaired.size == 1 && shouldRenderChapterTitle(pCh)
-                    val startIdx = if (pPg.isEmpty()) 0 else if (isTwoColumn) {
-                        if (pPg.size % 2 == 0) pPg.size - 2 else pPg.size - 1
-                    } else pPg.size - 1
+                    slotShowTitle =
+                        pCh != null && pPaired.size == 1 && shouldRenderChapterTitle(pCh)
+                    val startIdx =
+                        if (pPg.isEmpty()) 0
+                        else if (isTwoColumn) {
+                            if (pPg.size % 2 == 0) pPg.size - 2 else pPg.size - 1
+                        } else pPg.size - 1
                     slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pPg.size)
                 } else if (isTrailingVirtual) {
                     val nCh = allChapters.getOrNull(currentChapter + 1)
@@ -679,12 +763,14 @@ internal fun PageModeContent(
                     chapter = chapter,
                     textSelection = textSelection,
                     onSelectionChange = onSelectionChange,
-                    blockLayoutRegistry = if (spreadIndex == bookSpreadPageCurlState.current) blockLayoutRegistry else null,
+                    blockLayoutRegistry =
+                        if (spreadIndex == bookSpreadPageCurlState.current) blockLayoutRegistry
+                        else null,
                     highlights = highlights,
                     cscBlockCorrections = cscBlockCorrections,
                     cscMode = cscMode,
                     ttsCurrentBlock = ttsCurrentBlock,
-                    onCscCorrectionClick = onCscCorrectionClick
+                    onCscCorrectionClick = onCscCorrectionClick,
                 )
             }
         } else if (pageAnimation == "Realistic") {
@@ -692,9 +778,7 @@ internal fun PageModeContent(
                 count = totalSlots,
                 state = pageCurlState,
                 config = pageCurlConfig,
-                modifier = Modifier
-                    .weight(1f)
-                    .background(bgColor)
+                modifier = Modifier.weight(1f).background(bgColor),
             ) { pageIndex ->
                 val actualPageIndex = pageIndex - leadingVirtual
                 val isLeadingVirtual = leadingVirtual > 0 && actualPageIndex < 0
@@ -705,14 +789,23 @@ internal fun PageModeContent(
                 val slotTitle: String
                 val slotShowTitle: Boolean
                 val slotPageLabel: String
-                
+
                 val isTransitioning = prevChapterKey != currentChapter
                 val isGoingBack = currentChapter < prevChapterKey
 
-                fun getPageLabelLocal(columns: List<List<PaginatedBlock>>, startIdx: Int, totalP: Int): String {
+                fun getPageLabelLocal(
+                    columns: List<List<PaginatedBlock>>,
+                    startIdx: Int,
+                    totalP: Int,
+                ): String {
                     if (columns.isEmpty()) return ""
-                    if (columns.size == 1) return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
-                    return I18n.tf2("reader.page_info", "${startIdx + 1}-${startIdx + 2}", "$totalP")
+                    if (columns.size == 1)
+                        return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
+                    return I18n.tf2(
+                        "reader.page_info",
+                        "${startIdx + 1}-${startIdx + 2}",
+                        "$totalP",
+                    )
                 }
 
                 if (isTransitioning) {
@@ -720,7 +813,9 @@ internal fun PageModeContent(
                         slotColumns = pairedPages.lastOrNull() ?: emptyList()
                         slotTitle = chapter.title
                         slotShowTitle = pairedPages.size == 1 && showChapterTitle
-                        val startIdx = if (pages.isEmpty()) 0 else if (pages.size % 2 == 0) pages.size - 2 else pages.size - 1
+                        val startIdx =
+                            if (pages.isEmpty()) 0
+                            else if (pages.size % 2 == 0) pages.size - 2 else pages.size - 1
                         slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pages.size)
                     } else {
                         slotColumns = pairedPages.firstOrNull() ?: emptyList()
@@ -735,10 +830,13 @@ internal fun PageModeContent(
                     val pPaired = if (isTwoColumn) pPg.chunked(2) else pPg.map { listOf(it) }
                     slotColumns = pPaired.lastOrNull() ?: emptyList()
                     slotTitle = pCh?.title ?: ""
-                    slotShowTitle = pCh != null && pPaired.size == 1 && shouldRenderChapterTitle(pCh)
-                    val startIdx = if (pPg.isEmpty()) 0 else if (isTwoColumn) {
-                        if (pPg.size % 2 == 0) pPg.size - 2 else pPg.size - 1
-                    } else pPg.size - 1
+                    slotShowTitle =
+                        pCh != null && pPaired.size == 1 && shouldRenderChapterTitle(pCh)
+                    val startIdx =
+                        if (pPg.isEmpty()) 0
+                        else if (isTwoColumn) {
+                            if (pPg.size % 2 == 0) pPg.size - 2 else pPg.size - 1
+                        } else pPg.size - 1
                     slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pPg.size)
                 } else if (isTrailingVirtual) {
                     val nCh = allChapters.getOrNull(currentChapter + 1)
@@ -783,20 +881,19 @@ internal fun PageModeContent(
                     chapter = chapter,
                     textSelection = textSelection,
                     onSelectionChange = onSelectionChange,
-                    blockLayoutRegistry = if (pageIndex == pageCurlState.current) blockLayoutRegistry else null,
+                    blockLayoutRegistry =
+                        if (pageIndex == pageCurlState.current) blockLayoutRegistry else null,
                     highlights = highlights,
                     cscBlockCorrections = cscBlockCorrections,
                     cscMode = cscMode,
                     ttsCurrentBlock = ttsCurrentBlock,
-                    onCscCorrectionClick = onCscCorrectionClick
+                    onCscCorrectionClick = onCscCorrectionClick,
                 )
             }
         } else {
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier
-                    .weight(1f)
-                    .background(bgColor)
+                modifier = Modifier.weight(1f).background(bgColor),
             ) { pageIndex ->
                 val actualPageIndex = pageIndex - leadingVirtual
                 val isLeadingVirtual = leadingVirtual > 0 && actualPageIndex < 0
@@ -807,14 +904,23 @@ internal fun PageModeContent(
                 val slotTitle: String
                 val slotShowTitle: Boolean
                 val slotPageLabel: String
-                
+
                 val isTransitioning = prevChapterKey != currentChapter
                 val isGoingBack = currentChapter < prevChapterKey
 
-                fun getPageLabelLocal(columns: List<List<PaginatedBlock>>, startIdx: Int, totalP: Int): String {
+                fun getPageLabelLocal(
+                    columns: List<List<PaginatedBlock>>,
+                    startIdx: Int,
+                    totalP: Int,
+                ): String {
                     if (columns.isEmpty()) return ""
-                    if (columns.size == 1) return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
-                    return I18n.tf2("reader.page_info", "${startIdx + 1}-${startIdx + 2}", "$totalP")
+                    if (columns.size == 1)
+                        return I18n.tf2("reader.page_info", "${startIdx + 1}", "$totalP")
+                    return I18n.tf2(
+                        "reader.page_info",
+                        "${startIdx + 1}-${startIdx + 2}",
+                        "$totalP",
+                    )
                 }
 
                 if (isTransitioning) {
@@ -822,7 +928,9 @@ internal fun PageModeContent(
                         slotColumns = pairedPages.lastOrNull() ?: emptyList()
                         slotTitle = chapter.title
                         slotShowTitle = pairedPages.size == 1 && showChapterTitle
-                        val startIdx = if (pages.isEmpty()) 0 else if (pages.size % 2 == 0) pages.size - 2 else pages.size - 1
+                        val startIdx =
+                            if (pages.isEmpty()) 0
+                            else if (pages.size % 2 == 0) pages.size - 2 else pages.size - 1
                         slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pages.size)
                     } else {
                         slotColumns = pairedPages.firstOrNull() ?: emptyList()
@@ -837,10 +945,13 @@ internal fun PageModeContent(
                     val pPaired = if (isTwoColumn) pPg.chunked(2) else pPg.map { listOf(it) }
                     slotColumns = pPaired.lastOrNull() ?: emptyList()
                     slotTitle = pCh?.title ?: ""
-                    slotShowTitle = pCh != null && pPaired.size == 1 && shouldRenderChapterTitle(pCh)
-                    val startIdx = if (pPg.isEmpty()) 0 else if (isTwoColumn) {
-                        if (pPg.size % 2 == 0) pPg.size - 2 else pPg.size - 1
-                    } else pPg.size - 1
+                    slotShowTitle =
+                        pCh != null && pPaired.size == 1 && shouldRenderChapterTitle(pCh)
+                    val startIdx =
+                        if (pPg.isEmpty()) 0
+                        else if (isTwoColumn) {
+                            if (pPg.size % 2 == 0) pPg.size - 2 else pPg.size - 1
+                        } else pPg.size - 1
                     slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pPg.size)
                 } else if (isTrailingVirtual) {
                     val nCh = allChapters.getOrNull(currentChapter + 1)
@@ -860,69 +971,75 @@ internal fun PageModeContent(
                 }
 
                 // signedOffset: 正 = 在当前页左侧（旧页）；负 = 在当前页右侧（新页）
-                val signedOffset = (pagerState.currentPage - pageIndex) + pagerState.currentPageOffsetFraction
+                val signedOffset =
+                    (pagerState.currentPage - pageIndex) + pagerState.currentPageOffsetFraction
                 val absPageOffset = signedOffset.absoluteValue.coerceIn(0f, 1f)
                 // 覆盖模式：新页在旧页上方
                 val isCoverNewPage = pageAnimation == "Cover" && signedOffset <= 0f
 
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(bgColor)
-                        .pointerInput(blockLayoutRegistry) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    markSelectionGesture()
-                                    currentOnSelectionDragStart(it)
-                                },
-                                onDrag = { change, _ ->
-                                    markSelectionGesture()
-                                    currentOnSelectionDrag(change.position)
-                                    change.consume()
-                                },
-                                onDragEnd = {
-                                    markSelectionGesture()
-                                    currentOnSelectionDragEnd()
-                                },
-                                onDragCancel = {
-                                    markSelectionGesture()
-                                    currentOnSelectionDragCancel()
-                                }
-                            )
-                        }
-                        .then(if (isCoverNewPage) Modifier.zIndex(1f) else Modifier)
-                        .graphicsLayer {
-                            when (pageAnimation) {
-                                "Slide" -> {
-                                    alpha = 1f - absPageOffset * 0.10f
-                                }
-                                "Cover" -> {
-                                    if (signedOffset > 0f) {
-                                        translationX = signedOffset * size.width
+                    modifier =
+                        Modifier.fillMaxSize()
+                            .background(bgColor)
+                            .pointerInput(blockLayoutRegistry) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        markSelectionGesture()
+                                        currentOnSelectionDragStart(it)
+                                    },
+                                    onDrag = { change, _ ->
+                                        markSelectionGesture()
+                                        currentOnSelectionDrag(change.position)
+                                        change.consume()
+                                    },
+                                    onDragEnd = {
+                                        markSelectionGesture()
+                                        currentOnSelectionDragEnd()
+                                    },
+                                    onDragCancel = {
+                                        markSelectionGesture()
+                                        currentOnSelectionDragCancel()
+                                    },
+                                )
+                            }
+                            .then(if (isCoverNewPage) Modifier.zIndex(1f) else Modifier)
+                            .graphicsLayer {
+                                when (pageAnimation) {
+                                    "Slide" -> {
+                                        alpha = 1f - absPageOffset * 0.10f
+                                    }
+                                    "Cover" -> {
+                                        if (signedOffset > 0f) {
+                                            translationX = signedOffset * size.width
+                                        }
+                                    }
+                                    else -> {
+                                        alpha = 1f
                                     }
                                 }
-                                else -> {
-                                    alpha = 1f
-                                }
                             }
-                        }
-                        .then(
-                            if (pageAnimation == "Cover" && signedOffset < 0f) {
-                                Modifier.drawWithContent {
-                                    drawContent()
-                                    val shadowW = 20.dp.toPx()
-                                    drawRect(
-                                        brush = Brush.horizontalGradient(
-                                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f)),
-                                            startX = -shadowW,
-                                            endX = 0f
-                                        ),
-                                        topLeft = Offset(-shadowW, 0f),
-                                        size = Size(shadowW, size.height)
-                                    )
-                                }
-                            } else Modifier
-                        )
+                            .then(
+                                if (pageAnimation == "Cover" && signedOffset < 0f) {
+                                    Modifier.drawWithContent {
+                                        drawContent()
+                                        val shadowW = 20.dp.toPx()
+                                        drawRect(
+                                            brush =
+                                                Brush.horizontalGradient(
+                                                    colors =
+                                                        listOf(
+                                                            Color.Transparent,
+                                                            Color.Black.copy(alpha = 0.28f),
+                                                        ),
+                                                    startX = -shadowW,
+                                                    endX = 0f,
+                                                ),
+                                            topLeft = Offset(-shadowW, 0f),
+                                            size = Size(shadowW, size.height),
+                                        )
+                                    }
+                                } else Modifier
+                            )
                 ) {
                     PageRenderLayer(
                         slotShowTitle = slotShowTitle,
@@ -947,22 +1064,22 @@ internal fun PageModeContent(
                         paraSpacing = paraSpacing,
                         textIndentChars = textIndent,
                         titleFontScale = titleFontScale,
-                    chapter = chapter,
-                    textSelection = textSelection,
-                    onSelectionChange = onSelectionChange,
-                    blockLayoutRegistry = if (pageIndex == pagerState.currentPage) blockLayoutRegistry else null,
-                    highlights = highlights,
-                    cscBlockCorrections = cscBlockCorrections,
-                    cscMode = cscMode,
-                    ttsCurrentBlock = ttsCurrentBlock,
-                    onCscCorrectionClick = onCscCorrectionClick
+                        chapter = chapter,
+                        textSelection = textSelection,
+                        onSelectionChange = onSelectionChange,
+                        blockLayoutRegistry =
+                            if (pageIndex == pagerState.currentPage) blockLayoutRegistry else null,
+                        highlights = highlights,
+                        cscBlockCorrections = cscBlockCorrections,
+                        cscMode = cscMode,
+                        ttsCurrentBlock = ttsCurrentBlock,
+                        onCscCorrectionClick = onCscCorrectionClick,
                     )
                 }
             }
         }
     }
 }
-
 
 @Composable
 private fun PageRenderLayer(
@@ -997,45 +1114,52 @@ private fun PageRenderLayer(
     cscBlockCorrections: Map<Int, List<CscBlockCorrection>> = emptyMap(),
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
-    onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> }
+    onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
 ) {
     androidx.compose.foundation.layout.Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(bgColor)
-            .graphicsLayer { clip = true }
+        modifier = Modifier.fillMaxSize().background(bgColor).graphicsLayer { clip = true }
     ) {
         androidx.compose.foundation.layout.Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = topPaddingDp, bottom = bottomPaddingDp)
+            modifier = Modifier.fillMaxSize().padding(top = topPaddingDp, bottom = bottomPaddingDp)
         ) {
             slotColumns.forEachIndexed { index, colBlock ->
                 val colShowTitle = if (index == 0) slotShowTitle else false
                 androidx.compose.foundation.layout.Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .padding(
-                            start = if (index == 0) hPaddingDp else hPaddingDp / 2f,
-                            end = if (index == slotColumns.lastIndex) hPaddingDp else hPaddingDp / 2f
-                        )
+                    modifier =
+                        Modifier.weight(1f)
+                            .fillMaxHeight()
+                            .padding(
+                                start = if (index == 0) hPaddingDp else hPaddingDp / 2f,
+                                end =
+                                    if (index == slotColumns.lastIndex) hPaddingDp
+                                    else hPaddingDp / 2f,
+                            )
                 ) {
                     if (colShowTitle) {
                         androidx.compose.material3.Text(
-                            text = breakTitleIntoLines(slotTitle, contentWidthPx, fontSize * titleFontScale, spToPx),
-                            style = androidx.compose.ui.text.TextStyle(
-                                fontSize = (fontSize * titleFontScale).sp,
-                                lineHeight = (fontSize * titleFontScale * 1.45f).sp,
-                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                                fontFamily = fontFamily,
-                                color = textColor,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .wrapContentHeight()
-                                .padding(top = topPaddingDp * 0.5f, bottom = topPaddingDp * 2.0f)
+                            text =
+                                breakTitleIntoLines(
+                                    slotTitle,
+                                    contentWidthPx,
+                                    fontSize * titleFontScale,
+                                    spToPx,
+                                ),
+                            style =
+                                androidx.compose.ui.text.TextStyle(
+                                    fontSize = (fontSize * titleFontScale).sp,
+                                    lineHeight = (fontSize * titleFontScale * 1.45f).sp,
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                    fontFamily = fontFamily,
+                                    color = textColor,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                ),
+                            modifier =
+                                Modifier.fillMaxWidth()
+                                    .wrapContentHeight()
+                                    .padding(
+                                        top = CHAPTER_TITLE_TOP_PADDING,
+                                        bottom = CHAPTER_TITLE_BOTTOM_PADDING,
+                                    ),
                         )
                     }
                     colBlock.forEach { paginatedBlock ->
@@ -1063,7 +1187,7 @@ private fun PageRenderLayer(
                             cscBlockCorrections = cscBlockCorrections[blockIndex] ?: emptyList(),
                             cscMode = cscMode,
                             ttsCurrentBlock = ttsCurrentBlock,
-                            onCscCorrectionClick = onCscCorrectionClick
+                            onCscCorrectionClick = onCscCorrectionClick,
                         )
                     }
                 }
@@ -1078,9 +1202,9 @@ private fun PageRenderLayer(
                 text = slotPageLabel,
                 fontSize = 12.sp,
                 color = textColor.copy(alpha = 0.38f),
-                modifier = Modifier
-                    .align(androidx.compose.ui.Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 8.dp)
+                modifier =
+                    Modifier.align(androidx.compose.ui.Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = 8.dp),
             )
         }
 
@@ -1089,12 +1213,10 @@ private fun PageRenderLayer(
                 text = immersiveStatusText,
                 batteryPercent = immersiveBatteryPercent,
                 textColor = textColor,
-                modifier = Modifier
-                    .align(androidx.compose.ui.Alignment.BottomStart)
-                    .padding(start = 16.dp, bottom = 8.dp)
+                modifier =
+                    Modifier.align(androidx.compose.ui.Alignment.BottomStart)
+                        .padding(start = 16.dp, bottom = 8.dp),
             )
         }
     }
 }
-
-

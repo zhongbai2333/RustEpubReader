@@ -54,14 +54,14 @@ impl ReaderApp {
                 // ── 书名 ──
                 ui.horizontal(|ui| {
                     ui.label(self.i18n.t("txt.book_title"));
-                    ui.text_edit_singleline(&mut state.title);
+                    ui.add(super::design::text_edit(&mut state.title));
                 });
                 ui.add_space(4.0);
 
                 // ── 作者 ──
                 ui.horizontal(|ui| {
                     ui.label(self.i18n.t("txt.author"));
-                    ui.text_edit_singleline(&mut state.author);
+                    ui.add(super::design::text_edit(&mut state.author));
                 });
                 ui.add_space(8.0);
 
@@ -93,7 +93,7 @@ impl ReaderApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(self.i18n.t("txt.mode_regex"));
-                    let re = ui.text_edit_singleline(&mut state.custom_regex);
+                    let re = ui.add(super::design::text_edit(&mut state.custom_regex));
                     if re.lost_focus() {
                         need_refresh = true;
                     }

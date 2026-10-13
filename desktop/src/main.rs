@@ -2,7 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+pub(crate) use reader_core::github_sync;
 mod self_update;
+mod system_fonts;
 mod ui;
 
 use app::{ReaderApp, TxtImportState};
@@ -130,6 +132,8 @@ fn setup_fonts(ctx: &egui::Context) {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    system_fonts::register_defaults(&mut fonts);
     ctx.set_fonts(fonts);
 }
 

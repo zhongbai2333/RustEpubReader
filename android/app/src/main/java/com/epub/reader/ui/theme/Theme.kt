@@ -6,61 +6,95 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
 
-// 强调色 — 与 PC 版一致 (56, 132, 255)
-val AccentBlue = Color(0xFF3884FF)
-val AccentBlueLight = Color(0xFF5A9CFF)
+// Shared accent with desktop chrome.
+val AccentBlue = Color(0xFF2F64CF)
+val AccentBlueLight = Color(0xFF8CB5FF)
 
 // 深色主题
-private val DarkColorScheme = darkColorScheme(
-    primary = AccentBlue,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF1A3A6B),
-    onPrimaryContainer = Color(0xFFD6E3FF),
-    secondary = AccentBlueLight,
-    background = Color(0xFF1A1A2E),
-    onBackground = Color(0xFFE0E0E0),
-    surface = Color(0xFF16213E),
-    onSurface = Color(0xFFE0E0E0),
-    surfaceVariant = Color(0xFF222640),
-    onSurfaceVariant = Color(0xFFC0C0C0),
-    outline = Color(0xFF444866),
-)
+private val DarkColorScheme =
+    darkColorScheme(
+        primary = AccentBlueLight,
+        onPrimary = Color(0xFF122548),
+        primaryContainer = Color(0xFF1A3A6B),
+        onPrimaryContainer = Color(0xFFD6E3FF),
+        secondary = AccentBlueLight,
+        background = Color(0xFF12161C),
+        onBackground = Color(0xFFE9EDF4),
+        surface = Color(0xFF1B2129),
+        onSurface = Color(0xFFE9EDF4),
+        surfaceVariant = Color(0xFF252D38),
+        onSurfaceVariant = Color(0xFFA7B2C2),
+        outline = Color(0xFF353F4C),
+        outlineVariant = Color(0xFF353F4C),
+        secondaryContainer = Color(0xFF253F6A),
+        onSecondaryContainer = Color(0xFF8CB5FF),
+        surfaceContainerLowest = Color(0xFF12161C),
+        surfaceContainerLow = Color(0xFF1B2129),
+        surfaceContainer = Color(0xFF1B2129),
+        surfaceContainerHigh = Color(0xFF252D38),
+        surfaceContainerHighest = Color(0xFF252D38),
+    )
 
 // 浅色主题
-private val LightColorScheme = lightColorScheme(
-    primary = AccentBlue,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFD6E3FF),
-    onPrimaryContainer = Color(0xFF001A41),
-    secondary = AccentBlue,
-    background = Color(0xFFF8F8FC),
-    onBackground = Color(0xFF1A1A1A),
-    surface = Color.White,
-    onSurface = Color(0xFF1A1A1A),
-    surfaceVariant = Color(0xFFF0F0F5),
-    onSurfaceVariant = Color(0xFF444444),
-    outline = Color(0xFFCCCCCC),
-)
+private val LightColorScheme =
+    lightColorScheme(
+        primary = AccentBlue,
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFFD6E3FF),
+        onPrimaryContainer = Color(0xFF001A41),
+        secondary = AccentBlue,
+        background = Color(0xFFF4F6F9),
+        onBackground = Color(0xFF1F2937),
+        surface = Color.White,
+        onSurface = Color(0xFF1F2937),
+        surfaceVariant = Color(0xFFEAEFF7),
+        onSurfaceVariant = Color(0xFF5E6D81),
+        outline = Color(0xFFDBE2EC),
+        outlineVariant = Color(0xFFDBE2EC),
+        secondaryContainer = Color(0xFFDDE8FC),
+        onSecondaryContainer = Color(0xFF2F64CF),
+        surfaceContainerLowest = Color.White,
+        surfaceContainerLow = Color(0xFFF4F6F9),
+        surfaceContainer = Color.White,
+        surfaceContainerHigh = Color(0xFFEAEFF7),
+        surfaceContainerHighest = Color(0xFFEAEFF7),
+    )
 
 @Composable
 fun EpubReaderTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false,
-    content: @Composable () -> Unit
+    content: @Composable () -> Unit,
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    val colorScheme =
+        when {
+            dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                val context = LocalContext.current
+                if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            }
+            darkTheme -> DarkColorScheme
+            else -> LightColorScheme
         }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = Typography(),
-        content = content
+        typography =
+            Typography(
+                bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
+                bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 21.sp),
+                bodySmall = TextStyle(fontSize = 12.sp, lineHeight = 18.sp),
+            ),
+        shapes =
+            Shapes(
+                extraSmall = ReaderGeometry.Shape,
+                small = ReaderGeometry.Shape,
+                medium = ReaderGeometry.Shape,
+                large = ReaderGeometry.Shape,
+                extraLarge = ReaderGeometry.DialogShape,
+            ),
+        content = content,
     )
 }

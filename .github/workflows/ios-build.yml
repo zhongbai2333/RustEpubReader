@@ -1,0 +1,130 @@
+name: iOS Build
+
+"on":
+    workflow_dispatch:
+    workflow_call:
+        inputs:
+            ref:
+                description: "Git ref to checkout. Defaults to the caller ref."
+                required: false
+                type: string
+            version:
+                description: "Version label in the artifact provenance."
+                required: true
+                type: string
+            artifact-prefix:
+                required: false
+                type: string
+                default: ios-build
+
+permissions:
+    contents: read
+
+jobs:
+    build-ios:
+        name: Swift checks / simulator / unsigned device archive
+        runs-on: macos-15
+        timeout-minutes: 60
+        defaults:
+            run:
+                shell: bash
+        env:
+            DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+            BUILD_VERSION: ${{ inputs.version || github.sha }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref || github.ref }}
+
+            - name: Verify Apple build environment
+              run: |
+                  test "$(uname -m)" = arm64
+                  xcodebuild -version
+                  xcrun --sdk iphoneos --show-sdk-version
+                  xcrun --sdk iphonesimulator --show-sdk-version
+
+            - name: Install Rust iOS targets
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+            - name: Preserve Rust toolchain for Xcode build phases
+              run: echo "READER_RUST_BIN=$(dirname "$(command -v cargo)")" >> "$GITHUB_ENV"
+
+            - name: Cache Rust and Swift packages
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target/debug
+                      target/release
+                      target/aarch64-apple-ios
+                      target/aarch64-apple-ios-sim
+                      target/ios-ci/Packages
+                  key: ios-arm64-xcode26.3-${{ hashFiles('Cargo.lock', 'ios/**/Package.resolved') }}
+                  restore-keys: |
+                      ios-arm64-xcode26.3-
+
+            - name: Verify shared core and native layout / OAuth
+              run: |
+                  cargo test --locked -p reader_ios -p reader_core --features reader_core/github-sync
+                  ios/scripts/check-layout.sh
+                  ios/scripts/check-oauth.sh
+
+            - name: Resolve pinned Swift dependencies
+              run: |
+                  mkdir -p target/ios-ci/logs
+                  xcodebuild -resolvePackageDependencies \
+                    -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
+                    -clonedSourcePackagesDirPath target/ios-ci/Packages \
+                    -onlyUsePackageVersionsFromResolvedFile 2>&1 | tee target/ios-ci/logs/packages.log
+
+            - name: Build Apple Silicon simulator application
+              run: |
+                  xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
+                    -configuration Debug -sdk iphonesimulator \
+                    -destination 'generic/platform=iOS Simulator' \
+                    -clonedSourcePackagesDirPath target/ios-ci/Packages \
+                    -disableAutomaticPackageResolution \
+                    -derivedDataPath target/ios-ci/Simulator \
+                    CODE_SIGN_IDENTITY=- ARCHS=arm64 build 2>&1 | tee target/ios-ci/logs/simulator.log
+
+            - name: Archive unsigned iPhone / iPad Release
+              run: |
+                  xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
+                    -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+                    -clonedSourcePackagesDirPath target/ios-ci/Packages \
+                    -disableAutomaticPackageResolution \
+                    -derivedDataPath target/ios-ci/Device \
+                    -archivePath target/ios-ci/ReaderPreview.xcarchive \
+                    CODE_SIGNING_ALLOWED=NO ARCHS=arm64 archive 2>&1 | tee target/ios-ci/logs/device.log
+
+            - name: Package build validation artifacts
+              run: |
+                  mkdir -p ios-assets
+                  ditto -c -k --sequesterRsrc --keepParent \
+                    target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
+                    ios-assets/RustEpubReader-iOS-Simulator.zip
+                  ditto -c -k --sequesterRsrc --keepParent \
+                    target/ios-ci/ReaderPreview.xcarchive ios-assets/RustEpubReader-iOS-UnsignedArchive.zip
+                  printf 'Source: %s\nLabel: %s\n' "$(git rev-parse HEAD)" "$BUILD_VERSION" > ios-assets/BUILD-INFO.txt
+                  xcodebuild -version >> ios-assets/BUILD-INFO.txt
+                  rustc --version >> ios-assets/BUILD-INFO.txt
+                  printf '\nSimulator: arm64, ad-hoc signed, Debug.\nDevice archive: arm64, Release, unsigned. Requires your signing team and export before installation. No IPA / TestFlight / App Store upload.\n' >> ios-assets/BUILD-INFO.txt
+
+            - name: Upload iOS validation artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-arm64
+                  path: ios-assets/*
+                  if-no-files-found: error
+
+            - name: Upload build logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-logs
+                  path: target/ios-ci/logs/*.log
+                  if-no-files-found: ignore

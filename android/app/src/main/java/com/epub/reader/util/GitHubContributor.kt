@@ -2,6 +2,7 @@ package com.zhongbai233.epub.reader.util
 
 import android.util.Base64
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -33,22 +34,25 @@ object GitHubContributor {
     )
 
     sealed class AuthResult {
-        data class Success(val token: String, val username: String) : AuthResult()
+        data class Success(val token: String, val username: String, val repoAuthorized: Boolean) : AuthResult()
         data class Error(val message: String) : AuthResult()
     }
 
     /**
      * Step 1: Request device + user codes from GitHub.
      */
-    suspend fun requestDeviceCode(): Result<DeviceCode> = withContext(Dispatchers.IO) {
+    suspend fun requestDeviceCode(privateSync: Boolean = false): Result<DeviceCode> = withContext(Dispatchers.IO) {
         try {
             val conn = URL("https://github.com/login/device/code").openConnection() as HttpURLConnection
+            conn.connectTimeout = 30_000
+            conn.readTimeout = 30_000
+            conn.instanceFollowRedirects = false
             conn.requestMethod = "POST"
             conn.setRequestProperty("Accept", "application/json")
             conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
             conn.doOutput = true
 
-            val body = "client_id=$CLIENT_ID&scope=public_repo"
+            val body = "client_id=$CLIENT_ID&scope=${if (privateSync) "repo" else "public_repo"}"
             OutputStreamWriter(conn.outputStream).use { it.write(body) }
 
             if (conn.responseCode != 200) {
@@ -67,7 +71,7 @@ object GitHubContributor {
                     interval = json.optInt("interval", 5)
                 )
             )
-        } catch (e: Exception) {
+        } catch (cancelled: CancellationException) { throw cancelled } catch (e: Exception) {
             Log.e(TAG, "requestDeviceCode failed", e)
             Result.failure(e)
         }
@@ -85,6 +89,9 @@ object GitHubContributor {
 
             try {
                 val conn = URL("https://github.com/login/oauth/access_token").openConnection() as HttpURLConnection
+                conn.connectTimeout = 30_000
+                conn.readTimeout = 30_000
+                conn.instanceFollowRedirects = false
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Accept", "application/json")
                 conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
@@ -100,8 +107,8 @@ object GitHubContributor {
                 when {
                     json.has("access_token") -> {
                         val token = json.getString("access_token")
-                        val username = fetchUsername(token) ?: "unknown"
-                        return@withContext AuthResult.Success(token, username)
+                        val account = fetchAccount(token) ?: return@withContext AuthResult.Error("Cannot verify GitHub account")
+                        return@withContext AuthResult.Success(token, account.first, account.second)
                     }
                     error == "authorization_pending" -> continue
                     error == "slow_down" -> {
@@ -112,7 +119,7 @@ object GitHubContributor {
                     error == "access_denied" -> return@withContext AuthResult.Error("Access denied")
                     else -> return@withContext AuthResult.Error("OAuth error: $error")
                 }
-            } catch (e: Exception) {
+            } catch (cancelled: CancellationException) { throw cancelled } catch (e: Exception) {
                 Log.e(TAG, "pollForToken error", e)
             }
         }
@@ -120,16 +127,21 @@ object GitHubContributor {
         AuthResult.Error("Polling timed out")
     }
 
-    private fun fetchUsername(token: String): String? {
+    private fun fetchAccount(token: String): Pair<String, Boolean>? {
         return try {
             val conn = URL("https://api.github.com/user").openConnection() as HttpURLConnection
+            conn.connectTimeout = 30_000
+            conn.readTimeout = 30_000
+            conn.instanceFollowRedirects = false
             conn.setRequestProperty("Authorization", "Bearer $token")
             conn.setRequestProperty("User-Agent", "RustEpubReader-Android/1.0")
             conn.setRequestProperty("Accept", "application/vnd.github+json")
+            if (conn.responseCode != 200) { conn.disconnect(); return null }
+            val repoAuthorized = hasGithubRepoScope(conn.getHeaderField("X-OAuth-Scopes") ?: "")
             val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
             conn.disconnect()
-            json.optString("login", null as String?)
-        } catch (e: Exception) {
+            json.optString("login").takeIf { it.isNotBlank() }?.let { it to repoAuthorized }
+        } catch (cancelled: CancellationException) { throw cancelled } catch (e: Exception) {
             Log.e(TAG, "fetchUsername failed", e)
             null
         }
@@ -278,7 +290,7 @@ object GitHubContributor {
                 prConn.disconnect()
                 return@withContext ContributeResult.Error("Create PR failed: HTTP $prStatus ${errBody ?: ""}")
             }
-        } catch (e: Exception) {
+        } catch (cancelled: CancellationException) { throw cancelled } catch (e: Exception) {
             Log.e(TAG, "submitContribution failed", e)
             ContributeResult.Error(e.message ?: "Unknown error")
         }
@@ -306,7 +318,7 @@ object GitHubContributor {
 
             val json = JSONObject(getConn.inputStream.bufferedReader().use { it.readText() })
             getConn.disconnect()
-            val sha = json.optString("sha", null) ?: return false
+            val sha = json.optString("sha").takeIf { it.isNotBlank() } ?: return false
 
             val updateBody = JSONObject().apply {
                 put("message", "Update correction data from $username")
@@ -328,7 +340,7 @@ object GitHubContributor {
             val ok = putConn.responseCode in listOf(200, 201)
             putConn.disconnect()
             ok
-        } catch (e: Exception) {
+        } catch (cancelled: CancellationException) { throw cancelled } catch (e: Exception) {
             Log.e(TAG, "tryUpdateExistingFile failed", e)
             false
         }
@@ -350,9 +362,9 @@ object GitHubContributor {
             val arr = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
             conn.disconnect()
             if (arr.length() > 0) {
-                arr.getJSONObject(0).optString("html_url", null)
+                arr.getJSONObject(0).optString("html_url").takeIf { it.isNotBlank() }
             } else null
-        } catch (e: Exception) {
+        } catch (cancelled: CancellationException) { throw cancelled } catch (e: Exception) {
             Log.e(TAG, "findExistingPr failed", e)
             null
         }

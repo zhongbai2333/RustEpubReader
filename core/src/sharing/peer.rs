@@ -634,12 +634,14 @@ fn handle_encrypted_session(
                     }
                 }
             }
-            Message::SendBook {
-                title,
-                hash,
-                size: _,
-            } => {
-                let data = crypto::read_encrypted_raw(stream, &aes_key, &mut recv_counter)?;
+            Message::SendBook { title, hash, size } => {
+                let data = crypto::read_encrypted_raw_limited(
+                    stream,
+                    &aes_key,
+                    &mut recv_counter,
+                    100 * 1024 * 1024,
+                )?;
+                validate_received_book(data_dir, &data, &hash, size)?;
                 let mut library = crate::library::Library::load_from(data_dir);
                 let entry = library.add_or_update_from_bytes(data_dir, title, &data, 0, None);
                 if std::path::Path::new(&entry.path).exists() {
@@ -697,10 +699,20 @@ pub fn connect_to_peer(
         remote_device_id,
         pin
     );
-    let mut stream = TcpStream::connect(addr).map_err(|e| {
+    let stream = TcpStream::connect(addr).map_err(|e| {
         dbg_log!("CONNECT: TCP connect failed: {}", e);
         format!("连接失败: {e}")
     })?;
+    connect_with_stream(stream, store, data_dir, remote_device_id, pin)
+}
+/// Use an already-connected stream so mobile adapters can interrupt a handshake.
+pub fn connect_with_stream(
+    mut stream: TcpStream,
+    store: &mut PeerStore,
+    data_dir: &str,
+    remote_device_id: Option<&str>,
+    pin: Option<&str>,
+) -> Result<(TcpStream, [u8; 32], u64, u64), String> {
     dbg_log!("CONNECT: TCP connected OK");
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
@@ -981,12 +993,17 @@ pub fn auto_sync_session(
                         send_ctr,
                     )?;
                     match crypto::read_encrypted_message(stream, aes_key, recv_ctr)? {
-                        Message::BookData {
-                            title,
-                            hash: _,
-                            size: _,
-                        } => {
-                            let data = crypto::read_encrypted_raw(stream, aes_key, recv_ctr)?;
+                        Message::BookData { title, hash, size } => {
+                            let data = crypto::read_encrypted_raw_limited(
+                                stream,
+                                aes_key,
+                                recv_ctr,
+                                100 * 1024 * 1024,
+                            )?;
+                            if hash != rb.hash {
+                                return Err("Downloaded book hash mismatch".into());
+                            }
+                            validate_received_book(data_dir, &data, &hash, size)?;
                             let mut library = crate::library::Library::load_from(data_dir);
                             let _ =
                                 library.add_or_update_from_bytes(data_dir, title, &data, 0, None);
@@ -1125,6 +1142,35 @@ fn hostname() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "Unknown".into())
+}
+
+fn validate_received_book(
+    data_dir: &str,
+    data: &[u8],
+    hash: &str,
+    size: u64,
+) -> Result<(), String> {
+    if data.len() as u64 != size
+        || data.len() > 100 * 1024 * 1024
+        || crate::bytes_hash(data) != hash
+    {
+        return Err("Received EPUB hash or size mismatch".into());
+    }
+    let path = PathBuf::from(data_dir).join(format!(".incoming-{}.epub", Uuid::new_v4()));
+    std::fs::create_dir_all(data_dir).map_err(|_| "Cannot save received EPUB")?;
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let scratch = Scratch(path);
+    std::fs::write(&scratch.0, data).map_err(|_| "Cannot save received EPUB")?;
+    let book = crate::epub::EpubBook::open(&scratch.0)?;
+    if book.chapters.is_empty() {
+        return Err("EPUB has no readable chapters".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

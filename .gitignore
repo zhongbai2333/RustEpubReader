@@ -39,3 +39,21 @@ settings.json
 books/
 models/
 android/app/src/main/jniLibs/
+# Device-local sync journal (no credentials)
+github-sync-local.json
+github-sync-local.json.tmp
+github-sync-staging/
+
+# Device-local failed-transfer queue
+github-sync-transfers/
+
+# Xcode user state and local build products (keep shared scheme / Package.resolved)
+**/xcuserdata/
+**/*.xcuserstate
+ios/DerivedData/
+ios/build/
+*.mobileprovision
+*.p12
+
+# Python development-script cache
+**/__pycache__/

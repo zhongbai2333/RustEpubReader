@@ -179,17 +179,28 @@ pub fn read_encrypted_raw(
     key: &[u8; 32],
     counter: &mut u64,
 ) -> Result<Vec<u8>, String> {
+    read_encrypted_raw_limited(reader, key, counter, 500_000_000)
+}
+pub fn read_encrypted_raw_limited(
+    reader: &mut impl std::io::Read,
+    key: &[u8; 32],
+    counter: &mut u64,
+    maximum: usize,
+) -> Result<Vec<u8>, String> {
     let mut total_buf = [0u8; 8];
     reader
         .read_exact(&mut total_buf)
         .map_err(|e| e.to_string())?;
-    let total = u64::from_be_bytes(total_buf) as usize;
-    if total > 500_000_000 {
+    let total = usize::try_from(u64::from_be_bytes(total_buf)).map_err(|_| "Raw data too large")?;
+    if total > maximum {
         return Err("Raw data too large".into());
     }
     let mut result = Vec::with_capacity(total);
     while result.len() < total {
         let pt = read_encrypted(reader, key, counter)?;
+        if pt.is_empty() || pt.len() > total - result.len() {
+            return Err("Invalid raw data chunk".into());
+        }
         result.extend_from_slice(&pt);
     }
     result.truncate(total);
@@ -219,4 +230,52 @@ pub fn ecdh_derive_key(our_secret: &[u8; 32], their_public: &[u8; 32]) -> Result
     hk.expand(b"aes-256-gcm-key", &mut key)
         .map_err(|e| format!("HKDF expand: {e}"))?;
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn raw_transfer_rejects_oversized_header_without_reading_a_payload() {
+        let mut input = Cursor::new(101_u64.to_be_bytes());
+        let mut counter = 0;
+        assert_eq!(
+            read_encrypted_raw_limited(&mut input, &[3; 32], &mut counter, 100).unwrap_err(),
+            "Raw data too large"
+        );
+        assert_eq!(counter, 0);
+    }
+
+    #[test]
+    fn raw_transfer_rejects_authenticated_chunk_exceeding_announced_size() {
+        let mut input = 2_u64.to_be_bytes().to_vec();
+        write_encrypted(&mut input, &[3; 32], &mut 0, b"abc").unwrap();
+        assert_eq!(
+            read_encrypted_raw_limited(&mut Cursor::new(input), &[3; 32], &mut 0, 100).unwrap_err(),
+            "Invalid raw data chunk"
+        );
+    }
+
+    #[test]
+    fn bounded_raw_transfer_keeps_multichunk_plaintext_and_nonce_order() {
+        let data = vec![7; 70_000];
+        let mut input = Vec::new();
+        let mut sent = 0;
+        write_encrypted_raw(&mut input, &[3; 32], &mut sent, &data).unwrap();
+        let mut received = 0;
+        assert_eq!(
+            read_encrypted_raw_limited(
+                &mut Cursor::new(input),
+                &[3; 32],
+                &mut received,
+                data.len()
+            )
+            .unwrap(),
+            data
+        );
+        assert_eq!(received, sent);
+        assert_eq!(received, 2);
+    }
 }

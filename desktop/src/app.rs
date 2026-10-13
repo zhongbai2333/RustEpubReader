@@ -1,7 +1,9 @@
 //! The Desktop application state machine, defining main app logic.
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "macos"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,8 +21,21 @@ use reader_core::sharing::{start_listener, DiscoveredPeer, PeerStore};
 
 use crate::ui::reader_state::ContinuousScrollState;
 
-type FontDiscoveryResult = Arc<Mutex<Option<(Vec<String>, HashMap<String, String>)>>>;
+type FontDiscoveryResult = Arc<
+    Mutex<
+        Option<(
+            Vec<String>,
+            HashMap<String, crate::system_fonts::SystemFont>,
+        )>,
+    >,
+>;
 pub(crate) type TtsAudioResultSlot = Arc<Mutex<Option<Result<Vec<u8>, String>>>>;
+
+type PendingBookOpen = (
+    String,
+    Option<usize>,
+    std::sync::mpsc::Receiver<Result<(EpubBook, Option<String>), String>>,
+);
 
 fn extend_unique_font_chain(target: &mut Vec<String>, fonts: impl IntoIterator<Item = String>) {
     for font in fonts {
@@ -84,6 +99,7 @@ fn default_data_dir() -> String {
     dir.to_string_lossy().to_string()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn is_font_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -96,6 +112,7 @@ fn is_font_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn collect_font_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > 5 {
         return;
@@ -118,13 +135,25 @@ pub(crate) fn is_cjk_font_name(s: &str) -> bool {
         || s.contains("CJK")
         || s.ends_with(" SC")
         || s.ends_with(" TC")
+        || ["PingFang", "Songti", "Heiti", "Kaiti", "Hiragino Sans GB"]
+            .iter()
+            .any(|name| s.contains(name))
 }
 
 fn default_sans() -> String {
-    "Sans".to_string()
+    if cfg!(target_os = "macos") {
+        "苹方-简"
+    } else {
+        "Sans"
+    }
+    .to_string()
 }
 
-fn discover_system_fonts() -> (Vec<String>, HashMap<String, String>) {
+#[cfg(not(target_os = "macos"))]
+fn discover_system_fonts() -> (
+    Vec<String>,
+    HashMap<String, crate::system_fonts::SystemFont>,
+) {
     // 已知字体文件 stem → 人性化显示名（优先匹配，避免显示 "msyh" 之类的文件名）
     let known_names: HashMap<&str, &str> = [
         // Windows 中文字体
@@ -214,7 +243,7 @@ fn discover_system_fonts() -> (Vec<String>, HashMap<String, String>) {
         }
     }
 
-    let mut font_map: HashMap<String, String> = HashMap::new();
+    let mut font_map = HashMap::new();
     for path in files {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
@@ -231,7 +260,10 @@ fn discover_system_fonts() -> (Vec<String>, HashMap<String, String>) {
         };
         font_map
             .entry(name)
-            .or_insert_with(|| path.to_string_lossy().to_string());
+            .or_insert_with(|| crate::system_fonts::SystemFont {
+                path: path.to_string_lossy().to_string(),
+                index: 0,
+            });
     }
 
     // CJK 字体排前面，其余按字母升序
@@ -263,6 +295,17 @@ fn default_para_spacing() -> f32 {
 
 fn default_text_indent() -> u8 {
     2
+}
+
+#[cfg(target_os = "macos")]
+fn discover_system_fonts() -> (
+    Vec<String>,
+    HashMap<String, crate::system_fonts::SystemFont>,
+) {
+    let fonts = crate::system_fonts::discover();
+    let mut names: Vec<_> = fonts.keys().cloned().collect();
+    names.sort_by_key(|name| (!is_cjk_font_name(name), name.to_lowercase()));
+    (names, fonts)
 }
 
 fn default_title_font_scale() -> f32 {
@@ -329,6 +372,12 @@ struct AppSettings {
     csc_threshold: reader_core::csc::CscThreshold,
     #[serde(default)]
     github_username: Option<String>,
+    #[serde(default)]
+    github_sync_enabled: bool,
+    #[serde(default)]
+    github_sync_contributions: bool,
+    #[serde(default)]
+    github_repo_authorized: bool,
 }
 
 impl AppSettings {
@@ -358,7 +407,8 @@ impl AppSettings {
     }
 
     fn from_app(app: &ReaderApp) -> Self {
-        let (last_book_path, last_chapter) = if matches!(app.view, AppView::Reader) {
+        let (last_book_path, last_chapter) = if matches!(app.view, AppView::Reader | AppView::Sync)
+        {
             (app.book_path.clone(), app.current_chapter)
         } else {
             (None, 0)
@@ -396,6 +446,9 @@ impl AppSettings {
             csc_mode: app.csc_mode.clone(),
             csc_threshold: app.csc_threshold.clone(),
             github_username: app.github_username.clone(),
+            github_sync_enabled: app.github_sync_enabled,
+            github_sync_contributions: app.github_sync_contributions,
+            github_repo_authorized: app.github_repo_authorized,
         }
     }
 
@@ -431,9 +484,15 @@ impl AppSettings {
         app.csc_mode = self.csc_mode.clone();
         app.csc_threshold = self.csc_threshold.clone();
         app.github_username = self.github_username.clone();
+        app.github_sync_enabled = self.github_sync_enabled;
+        app.github_sync_contributions = self.github_sync_contributions;
         // Restore GitHub token from OS credential store
         if app.github_username.is_some() {
             app.github_token = reader_core::sharing::keystore::load_github_token();
+        }
+        app.github_repo_authorized = self.github_repo_authorized && app.github_token.is_some();
+        if app.github_token.is_none() {
+            app.github_username = None;
         }
         // last_book_path/last_chapter applied in Default::default after call
     }
@@ -443,6 +502,7 @@ impl AppSettings {
 pub enum AppView {
     Library,
     Reader,
+    Sync,
 }
 
 /// Custom text selection state (replaces egui's native selectable label).
@@ -521,6 +581,14 @@ pub struct ReaderApp {
     pub scroll_to_top: bool,
     pub error_msg: Option<String>,
     pub view: AppView,
+    pub pending_book_open: Option<PendingBookOpen>,
+    pub opening_started: Option<std::time::Instant>,
+    pub library_manage: bool,
+    pub library_selected: std::collections::HashSet<String>,
+    pub library_confirm_delete: bool,
+    pub library_query: String,
+    pub library_sort_title: bool,
+    pub sync_tab: usize,
     pub library: Library,
     pub scroll_mode: bool,
     pub(crate) continuous_scroll: ContinuousScrollState,
@@ -537,6 +605,10 @@ pub struct ReaderApp {
     pub page_anim_direction: f32,
     pub page_anim_cross_chapter: bool,
     pub page_anim_cross_chapter_snapshot: Option<CrossChapterSnapshot>,
+    pub(crate) reader_layout_anchor: Option<(usize, usize)>,
+    pub(crate) panel_reflow_anchor: Option<(usize, usize)>,
+    pub(crate) page_curl: crate::ui::curl_reader::PageCurlState,
+    pub(crate) reader_chrome: crate::ui::reader_chrome::ReaderChromeState,
     pub is_dual_column: bool,
     pub paging_page_rect: Option<egui::Rect>,
     pub embedded_font_names: Vec<String>,
@@ -548,7 +620,7 @@ pub struct ReaderApp {
     pending_font_family: Option<String>,
     pending_cjk_font_family: Option<String>,
     pub system_font_names: Vec<String>,
-    pub(crate) system_font_paths: HashMap<String, String>,
+    pub(crate) system_font_paths: HashMap<String, crate::system_fonts::SystemFont>,
     font_discovery_result: FontDiscoveryResult,
     last_saved_settings: Option<AppSettings>,
     pub font_search: String,
@@ -683,6 +755,12 @@ pub struct ReaderApp {
     /// Whether the custom replace popup is shown (selection-based).
     pub csc_custom_replace_active: bool,
     // ── GitHub OAuth ──
+    pub github_sync_enabled: bool,
+    pub github_sync_contributions: bool,
+    pub cloud_sync: crate::ui::github_sync::CloudSyncState,
+    pub github_oauth_scope: String,
+    pub github_repo_authorized: bool,
+    pub github_enable_sync_after_login: bool,
     pub github_token: Option<String>,
     pub github_username: Option<String>,
     pub github_device_code: Option<String>,
@@ -783,7 +861,12 @@ impl TxtImportState {
 
 impl Default for ReaderApp {
     fn default() -> Self {
-        let data_dir = default_data_dir();
+        Self::from_data_dir(default_data_dir())
+    }
+}
+
+impl ReaderApp {
+    pub(crate) fn from_data_dir(data_dir: String) -> Self {
         let library = Library::load_from(&data_dir);
         let font_discovery_result: FontDiscoveryResult = Arc::new(Mutex::new(None));
         {
@@ -816,7 +899,7 @@ impl Default for ReaderApp {
             reader_bg_color: Color32::from_rgb(250, 246, 238),
             reader_font_color: None,
             reader_font_family: "Sans".to_string(),
-            reader_cjk_font_family: "Sans".to_string(),
+            reader_cjk_font_family: default_sans(),
             reader_page_animation: "Slide".to_string(),
             reader_page_animation_speed: 0.14,
             reader_bg_image_path: None,
@@ -827,6 +910,14 @@ impl Default for ReaderApp {
             scroll_to_top: false,
             error_msg: None,
             view: AppView::Library,
+            pending_book_open: None,
+            opening_started: None,
+            library_manage: false,
+            library_selected: Default::default(),
+            library_confirm_delete: false,
+            library_query: String::new(),
+            library_sort_title: false,
+            sync_tab: 0,
             library,
             scroll_mode: false,
             continuous_scroll: ContinuousScrollState::default(),
@@ -843,6 +934,10 @@ impl Default for ReaderApp {
             page_anim_direction: 1.0,
             page_anim_cross_chapter: false,
             page_anim_cross_chapter_snapshot: None,
+            reader_layout_anchor: None,
+            panel_reflow_anchor: None,
+            page_curl: Default::default(),
+            reader_chrome: Default::default(),
             is_dual_column: false,
             paging_page_rect: None,
             embedded_font_names: Vec::new(),
@@ -961,6 +1056,12 @@ impl Default for ReaderApp {
             csc_custom_replace_buf: String::new(),
             csc_custom_replace_active: false,
             // GitHub OAuth
+            github_sync_enabled: false,
+            github_sync_contributions: false,
+            cloud_sync: Default::default(),
+            github_oauth_scope: "public_repo".into(),
+            github_repo_authorized: false,
+            github_enable_sync_after_login: false,
             github_token: None,
             github_username: None,
             github_device_code: None,
@@ -1038,6 +1139,7 @@ impl Default for ReaderApp {
         app.last_saved_settings = Some(AppSettings::from_app(&app));
 
         // ── 启动时检查更新 ──
+        #[cfg(not(test))]
         {
             let slot: Arc<Mutex<Option<UpdateState>>> = Arc::new(Mutex::new(None));
             let slot_clone = slot.clone();
@@ -1059,6 +1161,10 @@ impl Default for ReaderApp {
 
 impl ReaderApp {
     pub fn trigger_page_animation_to(&mut self, target_page: usize, direction: f32) {
+        if self.reader_page_animation == "Realistic" && !self.scroll_mode {
+            self.request_curl_turn(direction >= 0., Some(target_page));
+            return;
+        }
         let page_changed = target_page != self.current_page;
         if self.reader_page_animation == "None"
             || self.scroll_mode
@@ -1142,12 +1248,56 @@ impl ReaderApp {
     }
 
     pub fn open_book_from_path(&mut self, path: &str, chapter: Option<usize>) {
+        if self.pending_book_open.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let source = path.to_owned();
+        let ctx = self.last_egui_ctx.clone();
+        self.opening_started = Some(std::time::Instant::now());
+        self.pending_book_open = Some((path.to_owned(), chapter, rx));
+        std::thread::spawn(move || {
+            let result =
+                EpubBook::open(&source).map(|book| (book, EpubBook::file_hash(&source).ok()));
+            let _ = tx.send(result);
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+    }
+    fn poll_book_open(&mut self) {
+        let result = self
+            .pending_book_open
+            .as_ref()
+            .and_then(|(_, _, rx)| match rx.try_recv() {
+                Ok(value) => Some(value),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Cannot open EPUB".into()))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            });
+        if let Some(result) = result {
+            let (path, chapter, _) = self.pending_book_open.take().unwrap();
+            self.opening_started = None;
+            self.finish_book_open(&path, chapter, result);
+        }
+    }
+    fn finish_book_open(
+        &mut self,
+        path: &str,
+        chapter: Option<usize>,
+        parsed: Result<(EpubBook, Option<String>), String>,
+    ) {
+        self.reader_layout_anchor = None;
+        self.panel_reflow_anchor = None;
+        self.page_curl.clear();
+        self.reader_chrome = Default::default();
         self.push_feedback_log(format!(
             "[Book] open_book_from_path: path={}, chapter={:?}",
             path, chapter
         ));
-        match EpubBook::open(path) {
-            Ok(mut book) => {
+        match parsed {
+            Ok((book, hash)) => {
                 self.push_feedback_log(format!(
                     "[Book] opened: title={}, chapters={}, fonts={}",
                     book.title,
@@ -1161,7 +1311,7 @@ impl ReaderApp {
 
                 let initial_title = book.title.clone();
                 let initial_chapter_title = book.chapters.get(ch).map(|c| c.title.clone());
-                let mut entry = self.library.add_or_update(
+                let entry = self.library.add_or_update(
                     &self.data_dir,
                     initial_title,
                     path.to_string(),
@@ -1169,29 +1319,12 @@ impl ReaderApp {
                     initial_chapter_title,
                 );
 
-                if entry.path != path {
-                    if let Ok(managed_book) = EpubBook::open(&entry.path) {
-                        book = managed_book;
-                        if !book.chapters.is_empty() {
-                            ch = ch.min(book.chapters.len() - 1);
-                        }
-                        let chapter_title = book.chapters.get(ch).map(|c| c.title.clone());
-                        entry = self.library.add_or_update(
-                            &self.data_dir,
-                            book.title.clone(),
-                            entry.path.clone(),
-                            ch,
-                            chapter_title,
-                        );
-                    }
-                }
-
                 let font_names: Vec<String> =
                     book.fonts.iter().map(|(name, _)| name.clone()).collect();
                 self.embedded_font_names = font_names;
                 self.embedded_fonts_registered = false;
                 self.book = Some(book);
-                self.current_book_hash = EpubBook::file_hash(&entry.path).ok();
+                self.current_book_hash = hash;
                 self.book_path = Some(entry.path.clone());
                 self.current_chapter = ch;
                 self.last_synced_chapter = None; // Reset so progress is pushed immediately on first update
@@ -1506,6 +1639,10 @@ impl ReaderApp {
     }
 
     pub fn next_page(&mut self) {
+        if self.reader_page_animation == "Realistic" && !self.scroll_mode {
+            self.request_curl_turn(true, None);
+            return;
+        }
         if self.current_page + 1 < self.total_pages {
             self.trigger_page_animation_to(self.current_page + 1, 1.0);
         } else {
@@ -1550,6 +1687,10 @@ impl ReaderApp {
     }
 
     pub fn prev_page(&mut self) {
+        if self.reader_page_animation == "Realistic" && !self.scroll_mode {
+            self.request_curl_turn(false, None);
+            return;
+        }
         if self.current_page > 0 {
             self.trigger_page_animation_to(self.current_page - 1, -1.0);
         } else if self.current_chapter > 0 {
@@ -1758,6 +1899,7 @@ impl ReaderApp {
 impl eframe::App for ReaderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.last_egui_ctx = Some(ctx.clone());
+        self.poll_book_open();
         // --- Poll TTS audio ---
         self.tts_poll_audio();
         self.flush_reading_position_if_due();
@@ -1767,6 +1909,7 @@ impl eframe::App for ReaderApp {
         self.github_poll_device_code();
         self.github_poll_token();
         self.github_poll_token_result();
+        self.cloud_poll(ctx);
         // --- Poll CSC Contribution ---
         self.csc_poll_contribution();
         // --- Check async font discovery result ---
@@ -1855,6 +1998,13 @@ impl eframe::App for ReaderApp {
                 // If the update applies to the currently opened book
                 if let Some(hash) = &self.current_book_hash {
                     if &update.book_hash == hash {
+                        if self
+                            .book
+                            .as_ref()
+                            .is_none_or(|b| update.chapter >= b.chapters.len())
+                        {
+                            continue;
+                        }
                         if update.chapter != self.current_chapter
                             || update.block != self.current_block
                         {
@@ -1992,7 +2142,16 @@ impl eframe::App for ReaderApp {
                         timestamp: now,
                     });
                 }
+                let cloud_progress = store
+                    .progress
+                    .iter()
+                    .find(|p| p.book_hash == *hash)
+                    .cloned();
                 store.save(&self.data_dir);
+                drop(store);
+                if let Some(progress) = cloud_progress {
+                    self.cloud_record_progress(progress);
+                }
                 self.last_synced_chapter = Some(self.current_chapter);
                 self.last_synced_block = Some(self.current_block);
             }
@@ -2000,10 +2159,23 @@ impl eframe::App for ReaderApp {
 
         self.defer_custom_font_for_frame = false;
 
-        if self.dark_mode {
-            ctx.set_visuals(egui::Visuals::dark());
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        crate::ui::design::apply(ctx, self.dark_mode);
+        if self.show_github_login {
+            self.show_github_login = false;
+            self.open_sync(0);
+        }
+        if self.show_sharing_panel {
+            self.show_sharing_panel = false;
+            self.open_sync(1);
+        }
+        if self.view != AppView::Reader
+            || self.scroll_mode
+            || self.reader_page_animation != "Realistic"
+        {
+            self.page_curl.clear();
+        }
+        if self.view != AppView::Reader {
+            self.render_app_navigation(ctx);
         }
 
         // Register embedded fonts from the current book
@@ -2091,6 +2263,9 @@ impl eframe::App for ReaderApp {
                 }
             }
 
+            #[cfg(target_os = "macos")]
+            crate::system_fonts::register_defaults(&mut fonts);
+
             // Register embedded EPUB fonts
             if let Some(book) = &self.book {
                 for (name, data) in &book.fonts {
@@ -2120,11 +2295,10 @@ impl eframe::App for ReaderApp {
                 "Sans" | "Serif" | "Monospace"
             ) {
                 if let Some(path) = self.system_font_paths.get(&self.reader_font_family) {
-                    if let Ok(data) = std::fs::read(path) {
-                        fonts.font_data.insert(
-                            self.reader_font_family.clone(),
-                            egui::FontData::from_owned(data).into(),
-                        );
+                    if let Some(data) = path.load() {
+                        fonts
+                            .font_data
+                            .insert(self.reader_font_family.clone(), data.into());
                         let mut fallback = vec![self.reader_font_family.clone()];
                         if fonts.font_data.contains_key("cjk_font") {
                             fallback.push("cjk_font".to_owned());
@@ -2143,11 +2317,10 @@ impl eframe::App for ReaderApp {
                 && !fonts.font_data.contains_key(&self.reader_cjk_font_family)
             {
                 if let Some(path) = self.system_font_paths.get(&self.reader_cjk_font_family) {
-                    if let Ok(data) = std::fs::read(path) {
-                        fonts.font_data.insert(
-                            self.reader_cjk_font_family.clone(),
-                            egui::FontData::from_owned(data).into(),
-                        );
+                    if let Some(data) = path.load() {
+                        fonts
+                            .font_data
+                            .insert(self.reader_cjk_font_family.clone(), data.into());
                         selected_cjk_bound = true;
                     }
                 }
@@ -2271,37 +2444,27 @@ impl eframe::App for ReaderApp {
             ctx.request_repaint();
         }
 
-        if self.view == AppView::Reader && !self.show_sharing_panel && !self.show_review_panel {
+        if self.view == AppView::Reader
+            && !self.show_sharing_panel
+            && !self.show_review_panel
+            && !self.show_stats
+            && !self.show_export_dialog
+            && !ctx.wants_keyboard_input()
+            && !ctx.memory(|m| m.any_popup_open())
+        {
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::ArrowLeft) {
                     if self.scroll_mode {
                         self.prev_chapter();
-                    } else if self.is_dual_column {
-                        if self.current_page >= 2 {
-                            self.trigger_page_animation_to(self.current_page - 2, -1.0);
-                        } else if self.current_chapter > 0 {
-                            self.capture_cross_chapter_snapshot();
-                            self.prev_chapter();
-                            self.current_page = usize::MAX;
-                            self.start_cross_chapter_animation(-1.0);
-                        }
                     } else {
-                        self.prev_page();
+                        self.turn_reader_page(false);
                     }
                 }
                 if i.key_pressed(egui::Key::ArrowRight) {
                     if self.scroll_mode {
                         self.next_chapter();
-                    } else if self.is_dual_column {
-                        if self.current_page + 2 < self.total_pages {
-                            self.trigger_page_animation_to(self.current_page + 2, 1.0);
-                        } else {
-                            self.capture_cross_chapter_snapshot();
-                            self.next_chapter();
-                            self.start_cross_chapter_animation(1.0);
-                        }
                     } else {
-                        self.next_page();
+                        self.turn_reader_page(true);
                     }
                 }
             });
@@ -2321,81 +2484,66 @@ impl eframe::App for ReaderApp {
                 });
         }
 
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("panels_animating"), false));
         if self.view == AppView::Reader {
             self.ensure_reader_bg_texture(ctx);
-            egui::TopBottomPanel::top("toolbar")
-                .frame(
-                    egui::Frame::default()
-                        .inner_margin(egui::Margin {
-                            left: 16,
-                            right: 16,
-                            top: 8,
-                            bottom: 8,
-                        })
-                        .fill(ctx.style().visuals.panel_fill),
-                )
-                .show(ctx, |ui| {
-                    self.render_toolbar(ui);
-                });
 
             // TTS bar (between toolbar and content, Edge-style)
-            if self.show_tts_panel {
-                self.render_tts_bar(ctx);
-            }
+            self.render_tts_bar(ctx);
 
-            if self.show_toc && self.book.is_some() {
-                egui::SidePanel::left("toc_panel")
-                    .resizable(true)
-                    .default_width(280.0)
-                    .frame(
-                        egui::Frame::default()
-                            .inner_margin(egui::Margin {
-                                left: 12,
-                                right: 12,
-                                top: 12,
-                                bottom: 12,
-                            })
-                            .fill(ctx.style().visuals.window_fill()),
-                    )
-                    .show(ctx, |ui| {
-                        self.render_toc(ui);
-                    });
-            }
+            crate::ui::design::animated_side_panel(
+                ctx,
+                "toc_panel",
+                true,
+                280.,
+                self.show_toc && self.book.is_some(),
+                |ui| self.render_toc(ui),
+            );
         }
 
         let reader_fill = if self.view == AppView::Reader {
             self.reader_bg_color
-        } else if self.dark_mode {
-            egui::Color32::from_rgb(26, 26, 28)
         } else {
-            egui::Color32::from_rgb(250, 246, 238)
+            crate::ui::design::Palette::new(self.dark_mode).canvas
         };
 
         // ── Side-panels (rendered before CentralPanel) ──
         self.render_search_panel(ctx);
         self.render_annotations_panel(ctx);
-        if self.show_settings {
-            self.render_settings_panel(ctx);
-        }
+        self.render_settings_panel(ctx);
 
         // ── Review Panel ──
         self.render_review_panel(ctx);
 
+        let panels_moving = crate::ui::design::panels_animating(ctx);
+        if panels_moving && self.panel_reflow_anchor.is_none() {
+            self.panel_reflow_anchor = Some((self.current_chapter, self.current_block));
+            self.page_curl.clear();
+        }
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(reader_fill))
+            .frame(if self.view == AppView::Reader {
+                egui::Frame::NONE.fill(reader_fill)
+            } else {
+                egui::Frame::default().fill(reader_fill)
+            })
             .show(ctx, |ui| match self.view {
                 AppView::Library => self.render_library(ui),
                 AppView::Reader => self.render_reader(ui),
+                AppView::Sync => self.render_sync_page(ui),
             });
+
+        // Chrome floats over the paper; it never reserves space in pagination.
+        self.render_reader_chrome(ctx);
+
+        if !panels_moving {
+            self.panel_reflow_anchor = None;
+        }
 
         // ── Floating windows ──
         self.render_export_dialog(ctx);
         self.render_stats_window(ctx);
 
-        // ── Sharing Panel ──
-        if self.show_sharing_panel {
-            self.render_sharing(ctx);
-        }
+        self.render_sharing_dialogs(ctx);
 
         // ── About Window ──
         if self.show_about {
@@ -2412,6 +2560,7 @@ impl eframe::App for ReaderApp {
             self.render_txt_import(ctx);
         }
 
+        self.render_book_opening(ctx);
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
             settings.save(&self.data_dir);

@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 default = []
+github-sync = ["dep:reqwest"]
 keychain = ["keyring"]
 # CSC dynamic-plugin client side. Pulls in `libloading` only (~50 KB binary cost).
 # The actual ONNX inference engine is downloaded separately at runtime
@@ -34,3 +35,9 @@ regex = "1"
 thiserror = "2"
 # CSC dynamic plugin loader
 libloading = { version = "0.8", optional = true }
+
+# Portable TLS backend for desktop and future mobile sync adapters.
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"

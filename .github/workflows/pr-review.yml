@@ -38,10 +38,20 @@ jobs:
             artifact-prefix: rustepubreader-pr-android
         secrets: inherit
 
+    build-ios:
+        if: github.event.label.name == 'run-build' || github.event.label.name == 'Run-Build' || github.event.label.name == 'RUN-BUILD'
+        name: Build and check iOS
+        uses: ./.github/workflows/ios-build.yml
+        with:
+            ref: ${{ github.event.pull_request.head.sha }}
+            version: sha-${{ github.event.pull_request.head.sha }}
+            artifact-prefix: rustepubreader-pr-ios
+
     build-on-label:
         needs:
             - build-desktop
             - build-android
+            - build-ios
         if: github.event.label.name == 'run-build' || github.event.label.name == 'Run-Build' || github.event.label.name == 'RUN-BUILD'
         runs-on: ubuntu-latest
         steps:
@@ -55,7 +65,7 @@ jobs:
                         issue_number: context.issue.number,
                         owner: context.repo.owner,
                         repo: context.repo.repo,
-                        body: '✅ RustEpubReader 多平台构建完成，已生成桌面端安装包与 Android APK。'
+                        body: '✅ RustEpubReader 多平台构建完成，已生成桌面端安装包、Android APK 和 iOS 构建验证产物（模拟器应用及未签名真机归档；不是可安装 IPA）。'
                       });
                       await github.rest.issues.removeLabel({
                         issue_number: context.issue.number,

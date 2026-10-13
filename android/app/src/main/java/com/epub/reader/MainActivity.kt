@@ -2,13 +2,15 @@ package com.zhongbai233.epub.reader
 
 import android.net.Uri
 import android.os.Bundle
-import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -16,25 +18,27 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.foundation.background
-import androidx.compose.animation.core.tween
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.zhongbai233.epub.reader.i18n.I18n
 import com.zhongbai233.epub.reader.ui.library.AboutScreen
 import com.zhongbai233.epub.reader.ui.library.LibraryScreen
-import com.zhongbai233.epub.reader.ui.library.SharingDialog
+import com.zhongbai233.epub.reader.ui.library.SyncScreen
 import com.zhongbai233.epub.reader.ui.library.TxtImportDialog
-import com.zhongbai233.epub.reader.ui.reader.ReaderScreen
-import com.zhongbai233.epub.reader.ui.reader.SearchDialog
-import com.zhongbai233.epub.reader.ui.reader.ContributeDialog
 import com.zhongbai233.epub.reader.ui.reader.AnnotationsSheet
+import com.zhongbai233.epub.reader.ui.reader.ContributeDialog
+import com.zhongbai233.epub.reader.ui.reader.GithubSyncSettings
+import com.zhongbai233.epub.reader.ui.reader.MultiPlatformSyncDialog
+import com.zhongbai233.epub.reader.ui.reader.ReaderScreen
 import com.zhongbai233.epub.reader.ui.reader.ReviewPanel
+import com.zhongbai233.epub.reader.ui.reader.SearchDialog
 import com.zhongbai233.epub.reader.ui.reader.TocDrawerContent
 import com.zhongbai233.epub.reader.ui.theme.EpubReaderTheme
 import com.zhongbai233.epub.reader.viewmodel.ReaderViewModel
-import com.zhongbai233.epub.reader.i18n.I18n
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +53,7 @@ class MainActivity : ComponentActivity() {
             EpubReaderTheme(darkTheme = vm.isDarkMode) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = MaterialTheme.colorScheme.background,
                 ) {
                     MainContent(vm)
                 }
@@ -62,31 +66,49 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MainContent(vm: ReaderViewModel) {
     // 读取 I18n.version 以确保语言切换时触发重组
-    @Suppress("UNUSED_VARIABLE")
-    val langVersion = I18n.version
+    @Suppress("UNUSED_VARIABLE") val langVersion = I18n.version
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val uriHandler = LocalUriHandler.current
 
     // SAF 文件选择器：支持一次选择多本 EPUB。单个 TXT 仍走 TXT 导入流程。
-    val filePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris: List<Uri> ->
-        if (uris.isNotEmpty()) {
-            vm.importBooksFromUris(uris)
+    val filePicker =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenMultipleDocuments()
+        ) { uris: List<Uri> ->
+            if (uris.isNotEmpty()) {
+                vm.importBooksFromUris(uris)
+            }
         }
-    }
 
-    val backgroundImagePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        vm.updateReaderBgImage(uri?.toString())
-    }
+    val backgroundImagePicker =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) {
+            uri: Uri? ->
+            vm.updateReaderBgImage(uri?.toString())
+        }
 
     // 目录抽屉状态
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     // 共享对话框状态
-    var showSharingDialog by remember { mutableStateOf(false) }
+    var homeTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
+    var showMultiPlatformSyncDialog by remember { mutableStateOf(false) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, vm) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) vm.setGithubSyncForeground(true)
+            if (event == Lifecycle.Event.ON_STOP) vm.setGithubSyncForeground(false)
+        }
+        lifecycle.addObserver(observer)
+        vm.setGithubSyncForeground(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        onDispose {
+            lifecycle.removeObserver(observer)
+            vm.setGithubSyncForeground(false)
+        }
+    }
+    if (showMultiPlatformSyncDialog) {
+        MultiPlatformSyncDialog(vm, onDismiss = { showMultiPlatformSyncDialog = false })
+    }
 
     // 关于界面状态
     var showAboutScreen by remember { mutableStateOf(false) }
@@ -94,18 +116,19 @@ private fun MainContent(vm: ReaderViewModel) {
     val currentBook = vm.currentBook
 
     BackHandler(
-        enabled = vm.showTxtImport ||
-            showSharingDialog ||
-            vm.showContributeDialog ||
-            vm.showAnnotationsPanel ||
-            vm.showSearch ||
-            drawerState.isOpen ||
-            currentBook != null ||
-            showAboutScreen
+        enabled =
+            vm.showTxtImport ||
+                homeTab != 0 ||
+                vm.showContributeDialog ||
+                vm.showAnnotationsPanel ||
+                vm.showSearch ||
+                drawerState.isOpen ||
+                currentBook != null ||
+                showAboutScreen
     ) {
         when {
             vm.showTxtImport -> vm.dismissTxtImport()
-            showSharingDialog -> showSharingDialog = false
+            homeTab != 0 && currentBook == null -> homeTab = 0
             vm.showContributeDialog -> vm.dismissContributeDialog()
             vm.showAnnotationsPanel -> vm.showAnnotationsPanel = false
             vm.showSearch -> vm.showSearch = false
@@ -123,7 +146,7 @@ private fun MainContent(vm: ReaderViewModel) {
                 TextButton(onClick = { vm.dismissError() }) { Text(I18n.t("error.ok")) }
             },
             title = { Text(I18n.t("error.title")) },
-            text = { Text(msg) }
+            text = { Text(msg) },
         )
     }
 
@@ -136,18 +159,22 @@ private fun MainContent(vm: ReaderViewModel) {
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        TextButton(onClick = {
-                            vm.dismissUpdateDialog()
-                            runCatching { uriHandler.openUri(info.cdnDownloadUrl) }
-                        }) {
+                        TextButton(
+                            onClick = {
+                                vm.dismissUpdateDialog()
+                                runCatching { uriHandler.openUri(info.cdnDownloadUrl) }
+                            }
+                        ) {
                             Text(I18n.t("update.download_cdn"))
                         }
-                        TextButton(onClick = {
-                            vm.dismissUpdateDialog()
-                            runCatching { uriHandler.openUri(info.githubDownloadUrl) }
-                        }) {
+                        TextButton(
+                            onClick = {
+                                vm.dismissUpdateDialog()
+                                runCatching { uriHandler.openUri(info.githubDownloadUrl) }
+                            }
+                        ) {
                             Text(I18n.t("update.download_github"))
                         }
                         TextButton(onClick = { vm.dismissUpdateDialog() }) {
@@ -156,7 +183,7 @@ private fun MainContent(vm: ReaderViewModel) {
                     }
                 },
                 title = { Text(I18n.t("update.check")) },
-                text = { Text(I18n.tf1("update.new_version", info.tagName)) }
+                text = { Text(I18n.tf1("update.new_version", info.tagName)) },
             )
         }
     }
@@ -172,70 +199,63 @@ private fun MainContent(vm: ReaderViewModel) {
                     // ---- 关于界面 ----
                     AboutScreen(
                         onNavigateBack = { showAboutScreen = false },
-                        onExportLogs = { vm.exportFeedbackLogs() }
+                        onExportLogs = { vm.exportFeedbackLogs() },
                     )
                 } else {
-                // ---- 书库界面 ----
-                LibraryScreen(
-                    books = vm.books,
-                    coverCache = vm.coverCache,
-                    language = vm.readerLanguage,
-                    onRequestCover = { uri -> vm.requestCover(uri) },
-                    onOpenFilePicker = {
-                        filePicker.launch(arrayOf("application/epub+zip", "application/epub", "*/*"))
-                    },
-                    onOpenBook = { uri, chapter ->
-                        vm.openFromPath(uri, chapter)
-                    },
-                    onRemoveBook = { uri ->
-                        vm.removeBookByUri(uri)
-                    },
-                    onUpdateLanguage = { code ->
-                        vm.updateLanguage(code)
-                    },
-                    onOpenSharing = {
-                        if (!vm.sharingServerRunning && vm.sharingPin.isEmpty()) {
-                            vm.generatePin()
-                        }
-                        vm.loadPairedDevices()
-                        showSharingDialog = true
-                    },
-                    onRefreshLibrary = {
-                        vm.refreshLibrary()
-                    },
-                    onOpenAbout = { showAboutScreen = true }
-                )
-
-                // ── 共享对话框 ──
-                SharingDialog(
-                    showDialog = showSharingDialog,
-                    onDismiss = { showSharingDialog = false },
-                    serverRunning = vm.sharingServerRunning,
-                    serverAddr = vm.sharingServerAddr,
-                    pin = vm.sharingPin,
-                    connectAddr = vm.connectAddrInput,
-                    connectPin = vm.connectPinInput,
-                    sharingStatus = vm.sharingStatus,
-                    autoStartSharing = vm.autoStartSharing,
-                    pairedDevices = vm.pairedDevices,
-                    discoveredPeers = vm.discoveredPeers,
-                    onPinChange = { vm.sharingPin = it },
-                    onConnectAddrChange = { vm.connectAddrInput = it },
-                    onConnectPinChange = { vm.connectPinInput = it },
-                    onAutoStartChange = { vm.updateAutoStartSharing(it) },
-                    onStartServer = { vm.startSharingServer() },
-                    onStopServer = { vm.stopSharingServer() },
-                    onManualSync = { vm.manualSync() },
-                    onConnectToPeer = { addr, pin, deviceId -> vm.connectToPeer(addr, pin, deviceId) },
-                    onStartDiscovery = { vm.startDiscovery() },
-                    onRefreshPeers = { vm.refreshDiscoveredPeers() },
-                    onRemovePaired = { vm.removePairedDevice(it) },
-                    onOpenGithubFeedback = {
-                        runCatching {
-                            uriHandler.openUri("https://github.com/zhongbai233/RustEpubReader/issues/new/choose")
-                        }
-                    },
-                )
+                    // ---- 书库界面 ----
+                    if (homeTab == 1) {
+                        SyncScreen(vm, onLibrary = { homeTab = 0 })
+                    } else {
+                        LibraryScreen(
+                            syncing = vm.githubSyncRunning,
+                            onOpenSync = { homeTab = 1 },
+                            onToggleTheme = { vm.updateDarkMode(!vm.isDarkMode) },
+                            books = vm.books,
+                            coverCache = vm.coverCache,
+                            language = vm.readerLanguage,
+                            onExportBooks = { paths ->
+                                scope.launch {
+                                    try {
+                                        val uris = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+                                            paths.map { path ->
+                                                val source = java.io.File(path)
+                                                val file = java.io.File(dir, "${java.util.UUID.randomUUID()}.epub")
+                                                source.copyTo(file)
+                                                androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.exports", file)
+                                            }
+                                        }
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE).apply {
+                                            type = "application/epub+zip"
+                                            putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, ArrayList(uris))
+                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            clipData = android.content.ClipData.newUri(context.contentResolver, "EPUB", uris.first()).apply { uris.drop(1).forEach { addItem(android.content.ClipData.Item(it)) } }
+                                        }
+                                        context.startActivity(android.content.Intent.createChooser(intent, I18n.t("manage.export")))
+                                    } catch (_: Exception) { vm.reportExportFailure() }
+                                }
+                            },
+                            onRequestCover = { uri -> vm.requestCover(uri) },
+                            onOpenFilePicker = {
+                                filePicker.launch(
+                                    arrayOf("application/epub+zip", "application/epub", "*/*")
+                                )
+                            },
+                            onOpenBook = { uri, chapter ->
+                                vm.openFromPath(uri, chapter)
+                            },
+                            onRemoveBook = { uri ->
+                                vm.removeBookByUri(uri)
+                            },
+                            onUpdateLanguage = { code ->
+                                vm.updateLanguage(code)
+                            },
+                            onRefreshLibrary = {
+                                vm.refreshLibrary()
+                            },
+                            onOpenAbout = { showAboutScreen = true },
+                        )
+                    }
                 } // end else (showAboutScreen)
 
                 // ── TXT 导入对话框 ──
@@ -273,16 +293,23 @@ private fun MainContent(vm: ReaderViewModel) {
                                 },
                                 onClose = {
                                     scope.launch { drawerState.close() }
-                                }
+                                },
                             )
                         }
-                    }
+                    },
                 ) {
-                    val chapter = if (book.chapters.isNotEmpty()) {
-                        book.chapters[vm.currentChapter.coerceIn(0, book.chapters.size - 1)]
-                    } else null
+                    val chapter =
+                        if (book.chapters.isNotEmpty()) {
+                            book.chapters[vm.currentChapter.coerceIn(0, book.chapters.size - 1)]
+                        } else null
 
                     ReaderScreen(
+                        cloudSyncContent = {
+                            GithubSyncSettings(
+                                vm,
+                                onManageAccount = { showMultiPlatformSyncDialog = true },
+                            )
+                        },
                         book = book,
                         currentChapter = vm.currentChapter,
                         currentBlock = vm.currentBlock,
@@ -327,6 +354,7 @@ private fun MainContent(vm: ReaderViewModel) {
                         onToggleToc = {
                             scope.launch { drawerState.open() }
                         },
+                        toolsOverlayVisible = vm.showSearch || vm.showAnnotationsPanel,
                         onToggleSearch = { vm.showSearch = !vm.showSearch },
                         isChapterBookmarked = vm.isChapterBookmarked,
                         onToggleBookmark = { vm.toggleBookmark() },
@@ -378,13 +406,17 @@ private fun MainContent(vm: ReaderViewModel) {
                         cscModelLoading = vm.cscModelLoading,
                         cscCorrections = vm.cscCorrections,
                         onDownloadCscModel = { vm.downloadCscModel() },
-                        onCscCorrectionStatusChange = { correction, status -> vm.updateCorrectionStatus(correction, status) },
+                        onCscCorrectionStatusChange = { correction, status ->
+                            vm.updateCorrectionStatus(correction, status)
+                        },
                         // 段评
                         reviewChapterIndices = vm.reviewChapterIndices,
                         showReviewPanel = vm.showReviewPanel,
                         reviewPanelChapter = vm.reviewPanelChapter,
-                        onOpenReviewPanel = { chapter, anchor -> vm.openReviewPanel(chapter, anchor) },
-                        onCloseReviewPanel = { vm.closeReviewPanel() }
+                        onOpenReviewPanel = { chapter, anchor ->
+                            vm.openReviewPanel(chapter, anchor)
+                        },
+                        onCloseReviewPanel = { vm.closeReviewPanel() },
                     )
 
                     // 段评面板返回键拦截
@@ -403,7 +435,7 @@ private fun MainContent(vm: ReaderViewModel) {
                                 fontSize = vm.fontSize,
                                 showAll = vm.reviewPanelShowAll,
                                 onShowAllChanged = { vm.reviewPanelShowAll = it },
-                                onDismiss = { vm.closeReviewPanel() }
+                                onDismiss = { vm.closeReviewPanel() },
                             )
                         }
                     }
@@ -425,7 +457,7 @@ private fun MainContent(vm: ReaderViewModel) {
                             },
                             onRemoveHighlight = { hlId -> vm.removeHighlight(hlId) },
                             onEditNote = { hlId, content -> vm.saveNote(hlId, content) },
-                            onDismiss = { vm.showAnnotationsPanel = false }
+                            onDismiss = { vm.showAnnotationsPanel = false },
                         )
                     }
 
@@ -439,24 +471,21 @@ private fun MainContent(vm: ReaderViewModel) {
                             vm.goToChapter(chapterIdx)
                             vm.showSearch = false
                         },
-                        onDismiss = { vm.showSearch = false }
+                        onDismiss = { vm.showSearch = false },
                     )
 
                     ContributeDialog(
-                        show = vm.showContributeDialog,
+                        show = vm.showContributeDialog && !showMultiPlatformSyncDialog,
                         sampleCount = vm.contributeSampleCount,
                         samples = vm.contributeSamples,
                         githubUsername = vm.githubUsername,
-                        githubUserCode = vm.githubUserCode,
-                        githubVerificationUri = vm.githubVerificationUri,
-                        githubAuthPolling = vm.githubAuthPolling,
                         inProgress = vm.contributeInProgress,
                         status = vm.contributeStatus,
                         prUrl = vm.contributePrUrl,
                         onPrepare = { vm.prepareContribution() },
-                        onLogin = { vm.startGitHubLogin() },
+                        onLogin = { showMultiPlatformSyncDialog = true },
                         onSubmit = { vm.submitContribution() },
-                        onDismiss = { vm.dismissContributeDialog() }
+                        onDismiss = { vm.dismissContributeDialog() },
                     )
                 }
             }
@@ -466,22 +495,20 @@ private fun MainContent(vm: ReaderViewModel) {
         AnimatedVisibility(
             visible = vm.isLoading,
             enter = fadeIn(animationSpec = tween(0)),
-            exit = fadeOut(animationSpec = tween(400))
+            exit = fadeOut(animationSpec = tween(400)),
         ) {
             Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background),
-                contentAlignment = Alignment.Center
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
+                    com.zhongbai233.epub.reader.ui.library.OpeningBookAnimation()
                     vm.loadingMessage?.let { msg ->
                         Spacer(Modifier.height(16.dp))
                         Text(
                             text = msg,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
                         )
                     }
                 }

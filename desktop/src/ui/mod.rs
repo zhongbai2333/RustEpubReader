@@ -5,6 +5,7 @@ pub mod csc_contribute;
 pub mod csc_settings;
 pub mod export_dialog;
 pub mod github_oauth;
+pub mod github_sync;
 pub mod library;
 pub mod reader;
 pub mod reader_block;
@@ -18,3 +19,10 @@ pub mod toc;
 pub mod toolbar;
 pub mod tts;
 pub mod txt_import;
+
+pub(crate) mod curl_reader;
+pub mod design;
+pub mod github_account;
+pub(crate) mod page_curl;
+pub(crate) mod reader_chrome;
+pub mod shell;

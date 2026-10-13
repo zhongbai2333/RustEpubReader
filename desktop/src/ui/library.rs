@@ -1,414 +1,512 @@
-//! The main library view, displaying the collection of books.
+use super::design::{self, Icon, Palette};
 use crate::app::ReaderApp;
 use eframe::egui;
-use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use reader_core::epub::EpubBook;
-use reader_core::i18n::Language;
-
-const COVER_PALETTE: [Color32; 6] = [
-    Color32::from_rgb(56, 132, 255),
-    Color32::from_rgb(120, 87, 255),
-    Color32::from_rgb(255, 100, 100),
-    Color32::from_rgb(50, 180, 130),
-    Color32::from_rgb(255, 160, 50),
-    Color32::from_rgb(200, 80, 180),
-];
-
-const LIBRARY_CARD_WIDTH: f32 = 248.0;
-const LIBRARY_CARD_HEIGHT: f32 = 160.0;
-const LIBRARY_COVER_WIDTH: f32 = 78.0;
-const LIBRARY_GRID_PADDING: f32 = 32.0;
-const LIBRARY_GRID_GAP: f32 = 16.0;
-
-fn library_grid_columns(available_width: f32) -> usize {
-    let content_width = (available_width - LIBRARY_GRID_PADDING * 2.0).max(0.0);
-    ((content_width + LIBRARY_GRID_GAP) / (LIBRARY_CARD_WIDTH + LIBRARY_GRID_GAP))
-        .floor()
-        .max(1.0) as usize
-}
-
 impl ReaderApp {
     pub fn render_library(&mut self, ui: &mut egui::Ui) {
-        let mut action_open_path: Option<(String, usize)> = None;
-        let mut action_remove_path: Option<String> = None;
-        let mut action_export_path: Option<String> = None;
+        let mut action_open_path = None;
+        let mut action_remove_path = None;
+        let mut action_export_path = None;
         let mut action_open_dialog = false;
-
-        let dark = self.dark_mode;
-        let accent = Color32::from_rgb(56, 132, 255);
-        let card_bg = if dark {
-            Color32::from_rgb(38, 38, 42)
-        } else {
-            Color32::from_rgb(255, 255, 255)
-        };
-        let card_hover_bg = if dark {
-            Color32::from_rgb(48, 48, 54)
-        } else {
-            Color32::from_rgb(245, 245, 250)
-        };
-        let subtitle_color = if dark {
-            Color32::from_gray(140)
-        } else {
-            Color32::from_gray(110)
-        };
-        let border_color = if dark {
-            Color32::from_gray(55)
-        } else {
-            Color32::from_gray(220)
-        };
-        let heading_color = if dark {
-            Color32::from_gray(230)
-        } else {
-            Color32::from_gray(30)
-        };
-
-        ui.add_space(28.0);
-        ui.horizontal(|ui| {
-            ui.add_space(32.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(self.i18n.t("library.title"))
-                        .size(26.0)
-                        .strong()
-                        .color(heading_color),
-                );
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(self.i18n.t("library.subtitle"))
-                        .size(12.5)
-                        .color(subtitle_color),
-                );
-                ui.add_space(2.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("library.author"))
-                            .size(12.0)
-                            .color(subtitle_color),
-                    );
-                    ui.add_space(10.0);
-                    ui.hyperlink_to(
-                        self.i18n.t("library.project_link"),
-                        "https://github.com/zhongbai233/RustEpubReader",
-                    );
-                });
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(32.0);
-                let btn = egui::Button::new(
-                    egui::RichText::new(format!("＋ {}", self.i18n.t("library.open_new")))
-                        .size(14.0)
-                        .color(Color32::WHITE),
-                )
-                .fill(accent)
-                .stroke(Stroke::NONE)
-                .corner_radius(CornerRadius::same(6))
-                .min_size(Vec2::new(120.0, 36.0));
-                if ui.add(btn).clicked() {
-                    action_open_dialog = true;
+        let p = Palette::new(self.dark_mode);
+        self.library_selected
+            .retain(|id| self.library.books.iter().any(|e| &e.id == id));
+        let mut sorted = self.library.sorted_indices_by_recent();
+        let recent = sorted
+            .iter()
+            .copied()
+            .find(|&i| self.library.books[i].last_opened > 0);
+        if self.library_sort_title {
+            sorted.sort_by_key(|&i| self.library.books[i].title.to_lowercase());
+        }
+        sorted.retain(|&i| {
+            self.library.books[i]
+                .title
+                .to_lowercase()
+                .contains(&self.library_query.to_lowercase())
+        });
+        let ctx = ui.ctx().clone();
+        let mut loaded = 0;
+        for &idx in &sorted {
+            let path = self.library.books[idx].path.clone();
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                self.cover_textures.entry(path.clone())
+            {
+                if loaded >= 2 {
+                    ctx.request_repaint();
+                    break;
                 }
-                ui.add_space(8.0);
-                if ui
-                    .selectable_label(
-                        self.show_sharing_panel,
-                        egui::RichText::new(self.i18n.t("share.toolbar")).size(14.0),
-                    )
-                    .clicked()
-                {
-                    self.show_sharing_panel = !self.show_sharing_panel;
-                }
-                ui.add_space(8.0);
-                if ui
-                    .button(egui::RichText::new(self.i18n.t("about.title")).size(14.0))
-                    .clicked()
-                {
-                    self.show_about = true;
-                }
-                ui.add_space(8.0);
-                let current_label = self.i18n.language().label().to_string();
-                egui::ComboBox::from_id_salt("library_language_combo")
-                    .selected_text(&current_label)
-                    .show_ui(ui, |ui| {
-                        for lang in Language::all() {
-                            if ui
-                                .selectable_label(self.i18n.language() == lang, lang.label())
-                                .clicked()
-                            {
-                                self.i18n.set_language(lang.clone());
+                loaded += 1;
+                let texture = (|| {
+                    let book = EpubBook::open(&path).ok()?;
+                    let img = image::load_from_memory(book.cover_data.as_ref()?)
+                        .ok()?
+                        .to_rgba8();
+                    Some(ctx.load_texture(
+                        format!("cover_{path}"),
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [img.width() as usize, img.height() as usize],
+                            img.as_raw(),
+                        ),
+                        egui::TextureOptions::LINEAR,
+                    ))
+                })();
+                e.insert(texture);
+            }
+        }
+        egui::Frame::default()
+            .inner_margin(design::Geometry::PAGE_INSET)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.heading(self.i18n.t("library.title"));
+                            if self.cloud_sync.is_syncing() {
+                                ui.add_space(4.0);
+                                ui.add(egui::Spinner::new().size(14.0));
+                                ui.label(
+                                    egui::RichText::new(self.i18n.t("cloud.syncing_indicator"))
+                                        .small()
+                                        .color(p.muted),
+                                );
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                self.i18n
+                                    .tf1("ui.library_count", &self.library.books.len().to_string()),
+                            )
+                            .color(p.muted),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(self.i18n.t(if self.library_manage {
+                                "manage.done"
+                            } else {
+                                "manage.books"
+                            }))
+                            .clicked()
+                        {
+                            self.library_manage = !self.library_manage;
+                            if !self.library_manage {
+                                self.library_selected.clear();
                             }
                         }
+                        if ui
+                            .add(design::primary(
+                                egui::RichText::new(self.i18n.t("ui.import"))
+                                    .color(egui::Color32::WHITE),
+                            ))
+                            .clicked()
+                        {
+                            action_open_dialog = true;
+                        }
                     });
-            });
-        });
-        ui.add_space(8.0);
-        let separator_rect = ui.available_rect_before_wrap();
-        ui.painter().line_segment(
-            [
-                egui::pos2(separator_rect.left() + 32.0, separator_rect.top()),
-                egui::pos2(separator_rect.right() - 32.0, separator_rect.top()),
-            ],
-            Stroke::new(1.0_f32, border_color),
-        );
-        ui.add_space(12.0);
-
-        if self.library.books.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(80.0);
-                ui.label(egui::RichText::new("📚").size(48.0));
-                ui.add_space(16.0);
-                ui.label(
-                    egui::RichText::new(self.i18n.t("library.empty"))
-                        .size(18.0)
-                        .color(subtitle_color),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(self.i18n.t("library.empty_hint"))
-                        .size(14.0)
-                        .color(subtitle_color),
-                );
-            });
-        } else {
-            let sorted = self.library.sorted_indices_by_recent();
-            let ctx = ui.ctx().clone();
-            // Load covers incrementally: max 2 per frame to avoid blocking UI
-            let mut covers_loaded = 0usize;
-            for &idx in &sorted {
-                let path = self.library.books[idx].path.clone();
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    self.cover_textures.entry(path.clone())
-                {
-                    if covers_loaded >= 2 {
-                        ctx.request_repaint();
-                        break;
-                    }
-                    covers_loaded += 1;
-                    let tex = (|| {
-                        let book = EpubBook::open(&path).ok()?;
-                        let cover_bytes = book.cover_data.as_ref()?;
-                        let img = image::load_from_memory(cover_bytes).ok()?;
-                        let mut rgba = img.to_rgba8();
-                        apply_rounded_corners_rgba(&mut rgba, 18);
-                        let size = [rgba.width() as usize, rgba.height() as usize];
-                        let ci = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                        Some(ctx.load_texture(
-                            format!("cover_{}", path),
-                            ci,
-                            egui::TextureOptions::LINEAR,
-                        ))
-                    })();
-                    e.insert(tex);
-                }
-            }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(32.0);
-                    ui.label(
-                        egui::RichText::new(
-                            self.i18n
-                                .tf1("library.book_count", &sorted.len().to_string()),
-                        )
-                        .size(13.0)
-                        .color(subtitle_color),
-                    );
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new(self.i18n.t("library.tip"))
-                            .size(12.5)
-                            .color(subtitle_color),
-                    );
                 });
-                ui.add_space(12.0);
-                // Match the 32px horizontal padding used by the header so the
-                // last card always has a visible right margin.
-                let padding = LIBRARY_GRID_PADDING;
-                let gap = LIBRARY_GRID_GAP;
-                // Keep every book card at a fixed width. Only the number of columns changes
-                // with the window size, so cards don't stretch/shrink when resizing the window.
-                let card_width = LIBRARY_CARD_WIDTH;
-                let cols = library_grid_columns(ui.available_width());
-                // Fixed card height keeps rows uniform regardless of text wrapping.
-                let card_height = LIBRARY_CARD_HEIGHT;
-                let cover_w = LIBRARY_COVER_WIDTH;
-                let chunks: Vec<Vec<usize>> = sorted.chunks(cols).map(|c| c.to_vec()).collect();
-                let leading_pad = padding;
-                for chunk in &chunks {
-                    ui.horizontal(|ui| {
-                        ui.add_space(leading_pad);
-                        for (ci, &idx) in chunk.iter().enumerate() {
-                            let entry = &self.library.books[idx];
-                            let title = entry.title.clone();
-                            let path = entry.path.clone();
-                            let chapter = entry.last_chapter;
-                            let palette = &COVER_PALETTE;
-                            let hash = title
-                                .bytes()
-                                .fold(0u32, |acc, b| acc.wrapping_add(b as u32));
-                            let cover_color = palette[(hash as usize) % palette.len()];
-                            let card_id = ui.id().with(("card", idx));
-                            let (card_rect, card_response) = ui.allocate_exact_size(
-                                Vec2::new(card_width, card_height),
-                                egui::Sense::click(),
+                design::section_gap(ui);
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [
+                            ((ui.available_width() - 168.).max(100.)),
+                            design::Geometry::CONTROL_HEIGHT,
+                        ],
+                        super::design::text_edit(&mut self.library_query)
+                            .hint_text(self.i18n.t("ui.search_books"))
+                            .vertical_align(egui::Align::Center)
+                            .desired_width((ui.available_width() - 168.).max(100.)),
+                    );
+                    egui::ComboBox::from_id_salt("library_sort")
+                        .selected_text(self.i18n.t(if self.library_sort_title {
+                            "ui.sort_title"
+                        } else {
+                            "ui.sort_recent"
+                        }))
+                        .show_ui(ui, |ui| {
+                            super::design::menu_style(ui);
+                            ui.selectable_value(
+                                &mut self.library_sort_title,
+                                false,
+                                self.i18n.t("ui.sort_recent"),
                             );
-                            let hovered = card_response.hovered();
-                            let bg = if hovered { card_hover_bg } else { card_bg };
-                            ui.painter()
-                                .rect_filled(card_rect, CornerRadius::same(10), bg);
-                            ui.painter().rect_stroke(
-                                card_rect,
-                                CornerRadius::same(10),
-                                Stroke::new(
-                                    1.0_f32,
-                                    if hovered {
-                                        accent.linear_multiply(0.5)
-                                    } else {
-                                        border_color
-                                    },
-                                ),
-                                StrokeKind::Outside,
+                            ui.selectable_value(
+                                &mut self.library_sort_title,
+                                true,
+                                self.i18n.t("ui.sort_title"),
                             );
-                            let cover_rect = egui::Rect::from_min_max(
-                                egui::pos2(card_rect.left() + 10.0, card_rect.top() + 8.0),
-                                egui::pos2(
-                                    card_rect.left() + 10.0 + cover_w,
-                                    card_rect.bottom() - 8.0,
-                                ),
-                            );
-                            let cover_rounding = CornerRadius::same(8);
-                            let cover_texture =
-                                self.cover_textures.get(&path).and_then(|t| t.as_ref());
-                            if let Some(tex) = cover_texture {
-                                ui.painter().rect_filled(
-                                    cover_rect,
-                                    cover_rounding,
-                                    Color32::from_gray(30),
-                                );
-                                let tex_size = tex.size_vec2();
-                                let scale = (cover_rect.width() / tex_size.x)
-                                    .max(cover_rect.height() / tex_size.y);
-                                let img_size = tex_size * scale;
-                                let img_rect =
-                                    egui::Rect::from_center_size(cover_rect.center(), img_size);
-                                let clipped = ui.painter().with_clip_rect(cover_rect);
-                                clipped.image(
-                                    tex.id(),
-                                    img_rect,
-                                    egui::Rect::from_min_max(
-                                        egui::pos2(0.0, 0.0),
-                                        egui::pos2(1.0, 1.0),
-                                    ),
-                                    Color32::WHITE,
-                                );
-                            } else {
-                                ui.painter()
-                                    .rect_filled(cover_rect, cover_rounding, cover_color);
-                                let first_char = title.chars().next().unwrap_or('📖').to_string();
-                                ui.painter().text(
-                                    cover_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    &first_char,
-                                    egui::FontId::proportional(36.0),
-                                    Color32::WHITE,
-                                );
-                            }
-                            let content_rect = egui::Rect::from_min_max(
-                                egui::pos2(cover_rect.right() + 12.0, card_rect.top() + 14.0),
-                                egui::pos2(card_rect.right() - 12.0, card_rect.bottom() - 14.0),
-                            );
-                            let mut child = ui.new_child(
-                                egui::UiBuilder::new()
-                                    .id_salt(card_id)
-                                    .max_rect(content_rect)
-                                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                            );
-                            // Clip the child painter to content_rect so widgets never
-                            // paint outside the card border.
-                            let parent_clip = ui.clip_rect();
-                            child.set_clip_rect(parent_clip.intersect(content_rect));
-                            child.add_space(4.0);
-                            // Use egui's built-in single-line truncation so CJK titles
-                            // never wrap regardless of card width.
-                            child.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&title)
-                                        .size(15.0)
-                                        .strong()
-                                        .color(heading_color),
-                                )
-                                .truncate(),
-                            );
-                            child.add_space(6.0);
-                            child.add(
-                                egui::Label::new(
-                                    egui::RichText::new(
-                                        self.i18n.tf1(
-                                            "library.last_read_chapter",
-                                            entry
-                                                .last_chapter_title
-                                                .as_deref()
-                                                .unwrap_or(&format!("{}", chapter + 1)),
-                                        ),
-                                    )
-                                    .size(12.0)
-                                    .color(subtitle_color),
-                                )
-                                .truncate(),
-                            );
-                            child.add_space(8.0);
-                            let read_btn = egui::Button::new(
-                                egui::RichText::new(self.i18n.t("library.continue_reading"))
-                                    .size(12.5)
-                                    .color(Color32::WHITE),
+                        });
+                });
+                design::section_gap(ui);
+                if self.library_manage {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(
+                            self.i18n
+                                .tf1("manage.count", &self.library_selected.len().to_string()),
+                        );
+                        if ui.button(self.i18n.t("manage.all")).clicked() {
+                            self.library_selected
+                                .extend(sorted.iter().map(|&i| self.library.books[i].id.clone()));
+                        }
+                        if ui.button(self.i18n.t("manage.clear")).clicked() {
+                            self.library_selected.clear();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.library_selected.is_empty(),
+                                egui::Button::new(self.i18n.t("manage.export")),
                             )
-                            .fill(accent)
-                            .stroke(Stroke::NONE)
-                            .corner_radius(CornerRadius::same(5))
-                            .min_size(Vec2::new(0.0, 26.0));
-                            if child.add(read_btn).clicked() {
-                                action_open_path = Some((path.clone(), chapter));
+                            .clicked()
+                        {
+                            self.export_selected_books();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.library_selected.is_empty(),
+                                egui::Button::new(self.i18n.t("manage.delete")),
+                            )
+                            .clicked()
+                        {
+                            self.library_confirm_delete = true;
+                        }
+                    });
+                    design::block_gap(ui);
+                }
+                let mut content_clip = ui.clip_rect();
+                let scroll = egui::ScrollArea::vertical().show(ui, |ui| {
+                    content_clip = ui.clip_rect();
+                    if self.library_query.is_empty() && !self.library_manage {
+                        if let Some(idx) = recent {
+                            let e = &self.library.books[idx];
+                            egui::Frame::default()
+                                .fill(p.surface)
+                                .stroke(egui::Stroke::new(1.0_f32, p.border))
+                                .corner_radius(super::design::Geometry::RADIUS)
+                                .inner_margin(design::Geometry::CARD_INSET)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2((ui.available_width() - 140.).max(80.), 64.),
+                                            egui::Layout::top_down(egui::Align::LEFT),
+                                            |ui| {
+                                                ui.small(self.i18n.t("ui.recent"));
+                                                ui.label(
+                                                    egui::RichText::new(&e.title)
+                                                        .size(19.)
+                                                        .strong(),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        e.last_chapter_title
+                                                            .clone()
+                                                            .unwrap_or_else(|| {
+                                                                self.i18n.tf1(
+                                                                    "ui.chapter",
+                                                                    &(e.last_chapter + 1)
+                                                                        .to_string(),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .color(p.muted),
+                                                );
+                                            },
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .add(design::primary(
+                                                        egui::RichText::new(
+                                                            self.i18n.t("ui.continue"),
+                                                        )
+                                                        .color(egui::Color32::WHITE),
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    action_open_path =
+                                                        Some((e.path.clone(), e.last_chapter));
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                            design::section_gap(ui);
+                        }
+                    }
+                    if sorted.is_empty() {
+                        ui.add_space(56.);
+                        ui.vertical_centered(|ui| {
+                            ui.heading(self.i18n.t(if self.library.books.is_empty() {
+                                "library.empty"
+                            } else {
+                                "ui.no_results"
+                            }));
+                            if self.library.books.is_empty() {
+                                ui.label(self.i18n.t("ui.empty_hint"));
                             }
-                            child.add_space(4.0);
-                            child.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                let export_btn = egui::Button::new(
-                                    egui::RichText::new("↗").size(12.0).color(subtitle_color),
-                                )
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::new(1.0_f32, border_color))
-                                .corner_radius(CornerRadius::same(5))
-                                .min_size(Vec2::new(24.0, 26.0));
-                                if ui
-                                    .add(export_btn)
-                                    .on_hover_text(self.i18n.t("toolbar.export"))
-                                    .clicked()
-                                {
-                                    action_export_path = Some(path.clone());
-                                }
-                                let del_btn = egui::Button::new(
-                                    egui::RichText::new("🗑").size(12.0).color(subtitle_color),
-                                )
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::new(1.0_f32, border_color))
-                                .corner_radius(CornerRadius::same(5))
-                                .min_size(Vec2::new(24.0, 26.0));
-                                if ui.add(del_btn).clicked() {
-                                    action_remove_path = Some(path.clone());
+                            if !self.library_query.is_empty()
+                                && ui.button(self.i18n.t("ui.clear_search")).clicked()
+                            {
+                                self.library_query.clear();
+                            }
+                        });
+                    } else {
+                        ui.strong(self.i18n.t("ui.all_books"));
+                        design::block_gap(ui);
+                        let width = (if ui.available_width() < 400. {
+                            148.0_f32
+                        } else {
+                            160.0_f32
+                        })
+                        .min(ui.available_width());
+                        let cols = ((ui.available_width() + design::Geometry::BLOCK_GAP)
+                            / (width + design::Geometry::BLOCK_GAP))
+                            .floor()
+                            .max(1.) as usize;
+                        for row in sorted.chunks(cols) {
+                            ui.horizontal(|ui| {
+                                for &idx in row {
+                                    let e = &self.library.books[idx];
+                                    ui.push_id(&e.path, |ui| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(width, width * 1.5 + 72.),
+                                            egui::Layout::top_down(egui::Align::LEFT),
+                                            |ui| {
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2(width, width * 1.5),
+                                                    egui::Sense::click(),
+                                                );
+                                                response.widget_info(|| {
+                                                    egui::WidgetInfo::labeled(
+                                                        egui::WidgetType::Button,
+                                                        true,
+                                                        &e.title,
+                                                    )
+                                                });
+                                                if let Some(tex) = self
+                                                    .cover_textures
+                                                    .get(&e.path)
+                                                    .and_then(|t| t.as_ref())
+                                                {
+                                                    let aspect =
+                                                        tex.size_vec2().x / tex.size_vec2().y;
+                                                    let target = rect.width() / rect.height();
+                                                    let fraction = if aspect > target {
+                                                        egui::vec2(target / aspect, 1.)
+                                                    } else {
+                                                        egui::vec2(1., aspect / target)
+                                                    };
+                                                    let uv = egui::Rect::from_center_size(
+                                                        egui::pos2(0.5, 0.5),
+                                                        fraction,
+                                                    );
+                                                    egui::Image::new(tex)
+                                                        .uv(uv)
+                                                        .corner_radius(
+                                                            super::design::Geometry::RADIUS,
+                                                        )
+                                                        .paint_at(ui, rect);
+                                                } else {
+                                                    ui.painter().rect_filled(
+                                                        rect,
+                                                        design::Geometry::RADIUS,
+                                                        p.raised,
+                                                    );
+                                                    design::paint_icon(
+                                                        ui.painter(),
+                                                        egui::Rect::from_center_size(
+                                                            rect.center() - egui::vec2(0., 20.),
+                                                            egui::vec2(32., 32.),
+                                                        ),
+                                                        Icon::Book,
+                                                        p.muted,
+                                                    );
+                                                    ui.painter().text(
+                                                        rect.center() + egui::vec2(0., 20.),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        self.i18n.t("ui.cover_missing"),
+                                                        egui::FontId::proportional(13.),
+                                                        p.muted,
+                                                    );
+                                                }
+                                                if self.library_manage {
+                                                    let selected =
+                                                        self.library_selected.contains(&e.id);
+                                                    let check = egui::Rect::from_min_size(
+                                                        rect.right_top() + egui::vec2(-32., 8.),
+                                                        egui::vec2(24., 24.),
+                                                    );
+                                                    ui.painter().circle_filled(
+                                                        check.center(),
+                                                        12.,
+                                                        if selected {
+                                                            design::BUTTON_BLUE
+                                                        } else {
+                                                            p.surface
+                                                        },
+                                                    );
+                                                    if selected {
+                                                        let c = check.center();
+                                                        ui.painter().line_segment(
+                                                            [
+                                                                c + egui::vec2(-5., 0.),
+                                                                c + egui::vec2(-1., 4.),
+                                                            ],
+                                                            egui::Stroke::new(
+                                                                2.0_f32,
+                                                                egui::Color32::WHITE,
+                                                            ),
+                                                        );
+                                                        ui.painter().line_segment(
+                                                            [
+                                                                c + egui::vec2(-1., 4.),
+                                                                c + egui::vec2(6., -5.),
+                                                            ],
+                                                            egui::Stroke::new(
+                                                                2.0_f32,
+                                                                egui::Color32::WHITE,
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                                if response.clicked() {
+                                                    if self.library_manage {
+                                                        if !self
+                                                            .library_selected
+                                                            .insert(e.id.clone())
+                                                        {
+                                                            self.library_selected.remove(&e.id);
+                                                        }
+                                                    } else {
+                                                        action_open_path =
+                                                            Some((e.path.clone(), e.last_chapter));
+                                                    }
+                                                }
+                                                ui.horizontal(|ui| {
+                                                    let mut title = egui::text::LayoutJob::simple(
+                                                        e.title.clone(),
+                                                        egui::FontId::proportional(15.),
+                                                        p.text,
+                                                        width - 56.,
+                                                    );
+                                                    title.wrap.max_rows = 2;
+                                                    ui.add_sized(
+                                                        [width - 56., 40.],
+                                                        egui::Label::new(title),
+                                                    );
+                                                    if !self.library_manage {
+                                                        super::design::menu_button(
+                                                            ui,
+                                                            egui::Button::new("⋯")
+                                                                .frame(false)
+                                                                .min_size(egui::vec2(32., 32.)),
+                                                            |ui| {
+                                                                design::menu_style(ui);
+                                                                if design::menu_item(
+                                                                    ui,
+                                                                    self.i18n.t("toolbar.export"),
+                                                                    false,
+                                                                    false,
+                                                                )
+                                                                .clicked()
+                                                                {
+                                                                    action_export_path =
+                                                                        Some(e.path.clone());
+                                                                    ui.memory_mut(|m| {
+                                                                        m.close_popup()
+                                                                    });
+                                                                }
+                                                                if design::menu_item(
+                                                                    ui,
+                                                                    self.i18n.t("library.delete"),
+                                                                    false,
+                                                                    true,
+                                                                )
+                                                                .clicked()
+                                                                {
+                                                                    action_remove_path =
+                                                                        Some(e.path.clone());
+                                                                    ui.memory_mut(|m| {
+                                                                        m.close_popup()
+                                                                    });
+                                                                }
+                                                            },
+                                                        );
+                                                    }
+                                                });
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(
+                                                            e.last_chapter_title
+                                                                .clone()
+                                                                .unwrap_or_else(|| {
+                                                                    self.i18n.tf1(
+                                                                        "ui.chapter",
+                                                                        &(e.last_chapter + 1)
+                                                                            .to_string(),
+                                                                    )
+                                                                }),
+                                                        )
+                                                        .small()
+                                                        .color(p.muted),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            },
+                                        );
+                                    });
+                                    ui.add_space(
+                                        design::Geometry::BLOCK_GAP - ui.spacing().item_spacing.x,
+                                    );
                                 }
                             });
-                            if card_response.clicked() {
-                                action_open_path = Some((path.clone(), chapter));
+                            design::section_gap(ui);
+                        }
+                    }
+                });
+                design::scroll_edge_fades(
+                    ui.painter(),
+                    // ScrollArea expands its content clip to allow widget strokes.
+                    // Cover that same vertical extent so no unfaded strip leaks out.
+                    egui::Rect::from_min_max(
+                        egui::pos2(scroll.inner_rect.left(), content_clip.top()),
+                        egui::pos2(scroll.inner_rect.right(), content_clip.bottom()),
+                    ),
+                    p.canvas,
+                    scroll.state.offset.y > 1.,
+                    scroll.state.offset.y + scroll.inner_rect.height() + 1. < scroll.content_size.y,
+                );
+            });
+        if self.library_confirm_delete {
+            egui::Window::new(self.i18n.t("manage.confirm"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
+                .show(ui.ctx(), |ui| {
+                    ui.set_max_width(420.);
+                    ui.label(self.i18n.t("manage.delete_note"));
+                    ui.horizontal(|ui| {
+                        if ui.button(self.i18n.t("manage.delete")).clicked() {
+                            let paths: Vec<_> = self
+                                .library
+                                .books
+                                .iter()
+                                .filter(|e| self.library_selected.contains(&e.id))
+                                .map(|e| e.path.clone())
+                                .collect();
+                            for path in paths {
+                                self.cover_textures.remove(&path);
+                                self.library.remove_by_path(&self.data_dir, &path);
                             }
-                            // Add gap between cards, not after the last one
-                            if ci < chunk.len() - 1 {
-                                ui.add_space(gap);
-                            }
+                            self.library_selected.clear();
+                            self.library_confirm_delete = false;
+                        }
+                        if ui.button(self.i18n.t("settings.cancel")).clicked() {
+                            self.library_confirm_delete = false;
                         }
                     });
-                    ui.add_space(gap);
-                }
-                ui.add_space(32.0);
-            });
+                });
         }
-
         if action_open_dialog {
             self.open_file_dialog();
         }
@@ -429,74 +527,91 @@ impl ReaderApp {
             self.show_export_dialog = true;
         }
     }
-}
-
-fn apply_rounded_corners_rgba(image: &mut image::RgbaImage, radius: u32) {
-    let (w, h) = image.dimensions();
-    if w == 0 || h == 0 {
-        return;
+    pub fn render_book_opening(&mut self, ctx: &egui::Context) {
+        let Some(started) = self.opening_started else {
+            return;
+        };
+        let title = self
+            .pending_book_open
+            .as_ref()
+            .and_then(|(path, _, _)| self.library.books.iter().find(|e| &e.path == path))
+            .map(|e| e.title.clone())
+            .unwrap_or_default();
+        let response = egui::Modal::new(egui::Id::new("book_opening")).show(ctx, |ui| {
+            ui.set_width(260.);
+            ui.vertical_centered(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(132., 160.), egui::Sense::hover());
+                let motion = ctx.style().animation_time > 0.;
+                let phase = if motion {
+                    (started.elapsed().as_secs_f32() * 2.4).sin() * 0.5 + 0.5
+                } else {
+                    0.
+                };
+                let page = rect.shrink2(egui::vec2(10., 4.));
+                ui.painter()
+                    .rect_filled(page, 4., p_surface(self.dark_mode));
+                for line in 0..9 {
+                    let y = page.top() + 18. + line as f32 * 13.;
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(page.left() + 12., y),
+                            egui::pos2(page.right() - 12., y),
+                        ],
+                        egui::Stroke::new(1.0_f32, egui::Color32::GRAY),
+                    );
+                }
+                let width = page.width() * (0.70 - phase * 0.32);
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(page.min, egui::vec2(width, page.height())),
+                    4.,
+                    design::BUTTON_BLUE,
+                );
+                ui.label(egui::RichText::new(title).strong());
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(self.i18n.t("manage.opening"));
+                });
+            });
+        });
+        if response.should_close() {
+            self.pending_book_open = None;
+            self.opening_started = None;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
-
-    let r = radius.min(w / 2).min(h / 2) as i32;
-    if r <= 0 {
-        return;
-    }
-
-    let wi = w as i32;
-    let hi = h as i32;
-    let rr = r * r;
-
-    for y in 0..hi {
-        for x in 0..wi {
-            let dx = if x < r {
-                r - 1 - x
-            } else if x >= wi - r {
-                x - (wi - r)
-            } else {
-                0
-            };
-
-            let dy = if y < r {
-                r - 1 - y
-            } else if y >= hi - r {
-                y - (hi - r)
-            } else {
-                0
-            };
-
-            if dx > 0 && dy > 0 && (dx * dx + dy * dy) > rr {
-                let p = image.get_pixel_mut(x as u32, y as u32);
-                p.0[3] = 0;
+    fn export_selected_books(&mut self) {
+        let Some(directory) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        for e in self
+            .library
+            .books
+            .iter()
+            .filter(|e| self.library_selected.contains(&e.id))
+        {
+            let target = directory.join(format!(
+                "{}-{}.epub",
+                reader_core::sanitize_filename(&e.title),
+                e.id
+            ));
+            let result = (|| -> std::io::Result<()> {
+                let mut source = std::fs::File::open(&e.path)?;
+                let mut output = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&target)?;
+                std::io::copy(&mut source, &mut output)?;
+                output.sync_all()
+            })();
+            if let Err(error) = result {
+                self.error_msg = Some(error.to_string());
+                break;
             }
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grid_keeps_one_column_when_width_is_tight() {
-        assert_eq!(library_grid_columns(260.0), 1);
-    }
-
-    #[test]
-    fn grid_columns_change_without_changing_card_width() {
-        assert_eq!(LIBRARY_CARD_WIDTH, 248.0);
-        assert_eq!(library_grid_columns(600.0), 2);
-        assert_eq!(library_grid_columns(860.0), 3);
-    }
-
-    #[test]
-    fn grid_leaves_right_space_instead_of_centering() {
-        let window_width = 760.0;
-        let cols = library_grid_columns(window_width);
-        let used_width = LIBRARY_GRID_PADDING * 2.0
-            + LIBRARY_CARD_WIDTH * cols as f32
-            + LIBRARY_GRID_GAP * (cols.saturating_sub(1)) as f32;
-
-        assert_eq!(cols, 2);
-        assert!(window_width - used_width >= LIBRARY_GRID_PADDING);
-    }
+fn p_surface(dark: bool) -> egui::Color32 {
+    Palette::new(dark).surface
 }

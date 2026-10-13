@@ -12,6 +12,9 @@ use super::{Chapter, TocEntry};
 use html::parse_html_blocks;
 use image::load_referenced_images;
 
+/// Render blocks grouped by chapter, with shared block and scalar coordinates.
+pub type RenderChapters = Vec<Vec<(usize, usize, super::ContentBlock)>>;
+
 fn resource_key_to_string(key: &ResourceKey<'_>) -> Option<String> {
     match key {
         ResourceKey::Value(value) => Some(value.as_ref().to_string()),
@@ -271,6 +274,33 @@ impl EpubBook {
             chapter_reviews,
             review_chapter_indices,
         })
+    }
+
+    /// Render-only supplemental media; tuple indices retain the original shared
+    /// block/scalar coordinate. The canonical chapters and sync schema stay stable.
+    pub fn render_blocks<P: AsRef<Path>>(&self, path: P) -> Result<RenderChapters, String> {
+        let epub = RbookEpub::open(path).map_err(|e| e.to_string())?;
+        let images: Vec<String> = epub
+            .manifest()
+            .images()
+            .filter_map(|entry| resource_key_to_string(entry.resource().key()))
+            .map(|p| normalize_resource_path(&p))
+            .collect();
+        let mut resources = HashMap::new();
+        self.chapters
+            .iter()
+            .map(|chapter| {
+                let href = chapter
+                    .source_href
+                    .as_deref()
+                    .ok_or("Chapter source is missing")?;
+                let html = epub.read_resource_str(href).map_err(|e| e.to_string())?;
+                load_referenced_images(&html, href, &images, &mut resources, |p| {
+                    epub.read_resource_bytes(p).ok()
+                });
+                Ok(html::parse_render_blocks(&html, href, &resources))
+            })
+            .collect()
     }
 
     /// Compute SHA-256 hash of an epub file for cross-device identification

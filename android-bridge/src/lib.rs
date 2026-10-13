@@ -483,7 +483,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updatePosition(
             local.timestamp = timestamp;
         } else {
             store.progress.push(reader_core::sharing::ProgressEntry {
-                book_hash,
+                book_hash: book_hash.clone(),
                 title,
                 chapter,
                 block,
@@ -492,7 +492,17 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updatePosition(
                 timestamp,
             });
         }
+        let cloud_progress = store
+            .progress
+            .iter()
+            .find(|p| p.book_hash == book_hash)
+            .cloned();
+        let device_id = store.device_id.clone();
         store.save(&data_dir);
+        drop(store);
+        if let Some(progress) = cloud_progress {
+            github_sync::record_local(&data_dir, &device_id, progress);
+        }
     }
 }
 
@@ -1910,3 +1920,5 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_upsertCorrection(
 
     jni_string_or_null!(env, input.status)
 }
+
+mod github_sync;

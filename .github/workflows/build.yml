@@ -13,5 +13,5 @@ jobs:
         steps:
             - name: Print migration notice
               run: |
-                  echo "Build & Release has been split into CI, Desktop Build, Android Build, PR label build, and Release workflows."
+                  echo "Build & Release has been split into CI, Desktop Build, Android Build, iOS Build, PR label build, and Release workflows."
                   echo "Use .github/workflows/ci.yml for checks and .github/workflows/release.yml for publishing."

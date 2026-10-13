@@ -7,40 +7,29 @@
  */
 package com.zhongbai233.epub.reader.ui.reader
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.EditNote
-import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SwapVert
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -54,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.i18n.I18n
+import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
 
 // ─── 顶部工具栏 ───
 
@@ -65,58 +55,43 @@ internal fun ReaderTopBar(
     currentChapter: Int,
     totalChapters: Int,
     chapterProgress: Float,
-    statusText: String,
-    @Suppress("UNUSED_PARAMETER") batteryPercent: Int? = null,
-    isDarkMode: Boolean,
     previousChapter: Int?,
     isBookmarked: Boolean = false,
     onNavigateBack: () -> Unit,
     onGoBackChapter: () -> Unit,
     onToggleSearch: () -> Unit,
-    onToggleBookmark: () -> Unit = {}
+    onToggleBookmark: () -> Unit = {},
 ) {
     TopAppBar(
         title = {
             Column {
                 Text(
                     title,
-                    fontSize = 14.sp,
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (chapterTitle != null) {
                     Text(
                         "${currentChapter + 1}/$totalChapters  ·  $chapterTitle",
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 LinearProgressIndicator(
                     progress = { chapterProgress.coerceIn(0f, 1f) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp)
-                        .height(2.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(2.dp),
                     color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
                 )
-                if (statusText.isNotBlank()) {
-                    Text(
-                        statusText,
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
             }
         },
         navigationIcon = {
             IconButton(onClick = onNavigateBack) {
-                Icon(Icons.Default.Home, I18n.t("nav.back_to_library"))
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, I18n.t("nav.back_to_library"))
             }
         },
         actions = {
@@ -132,13 +107,14 @@ internal fun ReaderTopBar(
                 Icon(
                     if (isBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
                     contentDescription = I18n.t("annotations.add_bookmark"),
-                    tint = if (isBookmarked) Color(0xFFFF9800) else LocalContentColor.current
+                    tint = if (isBookmarked) Color(0xFFFF9800) else LocalContentColor.current,
                 )
             }
         },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-        )
+        colors =
+            TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+            ),
     )
 }
 
@@ -146,107 +122,41 @@ internal fun ReaderTopBar(
 
 @Composable
 internal fun ReaderBottomBar(
-    fontSize: Float,
-    scrollMode: Boolean,
-    isDarkMode: Boolean,
-    onFontSizeChange: (Float) -> Unit,
-    onToggleScrollMode: () -> Unit,
-    onToggleDarkMode: () -> Unit,
     onToggleToc: () -> Unit,
     onShowAnnotations: () -> Unit,
     onToggleTts: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-        modifier = Modifier
-            .fillMaxWidth()
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+        Row(
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            ReaderTool(Icons.AutoMirrored.Filled.FormatListBulleted, I18n.t("nav.toc"), onToggleToc)
+            ReaderTool(Icons.Default.EditNote, I18n.t("annotations.title"), onShowAnnotations)
+            ReaderTool(Icons.AutoMirrored.Filled.VolumeUp, I18n.t("toolbar.tts"), onToggleTts)
+            ReaderTool(Icons.Default.Settings, I18n.t("settings.title"), onOpenSettings)
+        }
+    }
+}
+
+@Composable
+private fun ReaderTool(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    action: () -> Unit,
+) {
+    androidx.compose.material3.TextButton(
+        onClick = action,
+        contentPadding = ReaderGeometry.ButtonPadding,
+        shape = ReaderGeometry.Shape,
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // 字体缩小
-                OutlinedButton(
-                    onClick = { if (fontSize > 12f) onFontSizeChange(fontSize - 2f) },
-                    modifier = Modifier.size(40.dp),
-                    shape = CircleShape,
-                    contentPadding = PaddingValues(0.dp),
-                    enabled = fontSize > 12f
-                ) {
-                    Text("A-", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-
-                Text("${fontSize.toInt()}sp", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-                // 字体放大
-                OutlinedButton(
-                    onClick = { if (fontSize < 40f) onFontSizeChange(fontSize + 2f) },
-                    modifier = Modifier.size(40.dp),
-                    shape = CircleShape,
-                    contentPadding = PaddingValues(0.dp),
-                    enabled = fontSize < 40f
-                ) {
-                    Text("A+", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-
-                // 分隔
-                Box(
-                    Modifier
-                        .width(1.dp)
-                        .height(24.dp)
-                        .background(MaterialTheme.colorScheme.outlineVariant)
-                )
-
-                // 滚动/翻页切换
-                IconButton(onClick = onToggleScrollMode) {
-                    if (scrollMode) {
-                        Icon(Icons.Default.SwapVert, I18n.t("nav.scroll_mode"))
-                    } else {
-                        Icon(Icons.AutoMirrored.Filled.MenuBook, I18n.t("nav.page_mode"))
-                    }
-                }
-
-                // 日/夜间模式
-                IconButton(onClick = onToggleDarkMode) {
-                    if (isDarkMode) {
-                        Icon(Icons.Default.DarkMode, I18n.t("nav.dark_mode"))
-                    } else {
-                        Icon(Icons.Default.LightMode, I18n.t("nav.light_mode"))
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 10.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onToggleToc) {
-                    Icon(Icons.AutoMirrored.Filled.FormatListBulleted, I18n.t("nav.toc"))
-                }
-                IconButton(onClick = onShowAnnotations) {
-                    Icon(Icons.Default.EditNote, I18n.t("annotations.title"))
-                }
-                @Suppress("DEPRECATION")
-                IconButton(onClick = onToggleTts) {
-                    Icon(Icons.Default.VolumeUp, I18n.t("toolbar.tts"))
-                }
-                IconButton(onClick = onOpenSettings) {
-                    Icon(Icons.Default.Settings, I18n.t("nav.reading_settings"))
-                }
-            }
+            Icon(icon, null, modifier = Modifier.size(22.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
         }
     }
 }
