@@ -7,9 +7,9 @@
 | `ci.yml`: main/dev pushes, PRs, manual | Rust fmt / locked metadata / strict Clippy / workspace tests; Android JVM tests and Release lint; all three platform builds |
 | `desktop-build.yml`: reusable | Windows x64/arm64 ZIP, Linux x64/arm64 ZIP, macOS Intel/Apple Silicon DMG |
 | `android-build.yml`: reusable | Three per-ABI Release APKs; publishing secrets are optional, otherwise development signing |
-| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift layout, OAuth, appearance, reading-mode, speech, contents and localization checks, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive |
+| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift checks, IPA packaging regressions, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive and IPA with SHA-256 receipt |
 | `pr-review.yml`: `run-build` label | Reuses all three builds for the PR head SHA |
-| `release.yml`: `v*` tag or manual tag | Requires all three builds; publishes desktop/Android assets. iOS validation artifacts remain in Actions |
+| `release.yml`: `v*` tag or manual tag | Requires all three builds; publishes desktop/Android assets and the unsigned iOS IPA, checksum, signing instructions and build information. iOS simulator/archive artifacts remain in Actions |
 
 Both `ios/**` and `ios-bridge/**` trigger CI. Shared Swift scheme and
 `Package.resolved` belong in Git; local Xcode user state and runtime data do not.
@@ -35,11 +35,18 @@ An iOS Actions artifact contains:
   ad-hoc signed for simulator Keychain access.
 - `RustEpubReader-iOS-UnsignedArchive.zip`: iPhone/iPad `.xcarchive`, Release,
   arm64, unsigned. It is not an installable IPA.
+- `RustEpubReader-iOS-arm64-<version>-unsigned.ipa` and `.ipa.sha256`: physical-device
+  Release application under `Payload/<app>.app`, without app signing credentials
+  or a provisioning profile. It must be signed before installation.
+- `RustEpubReader-iOS-SIGNING.md`: [user signing instructions](../ios/UNSIGNED_IPA.md).
 - `BUILD-INFO.txt`: source SHA, caller version label and tool versions.
 
 Build logs upload separately even if a build fails. No Apple credentials are
-required for these build checks. Signing, provisioning, IPA export and store
-submission are not configured. The project has host Swift checks and Rust tests,
+required for these build checks or unsigned IPA packaging. The packager preserves
+embedded frameworks and executable permissions; it rejects simulator/wrong-CPU
+executables, app signing metadata and invalid ZIP/checksum data. The publisher
+verifies the downloaded IPA before attaching it to a Release. Developer signing,
+provisioning and store submission are not configured. The project has host Swift checks and Rust tests,
 but no XCTest/UI test target. Compilation does not validate physical page-turn
 gestures, background behavior or App Store acceptance.
 
@@ -65,6 +72,7 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-features
 python3 scripts/check-i18n.py
 python3 scripts/test-i18n.py
+python3 -m unittest discover -s ios/Tests -p test_unsigned_ipa.py
 git diff --check
 ```
 
@@ -88,6 +96,12 @@ xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
   -derivedDataPath target/ios-local/Device \
   -archivePath target/ios-local/ReaderPreview.xcarchive \
   CODE_SIGNING_ALLOWED=NO ARCHS=arm64 archive
+python3 ios/scripts/package-unsigned-ipa.py pack \
+  --archive target/ios-local/ReaderPreview.xcarchive \
+  --output-dir target/ios-local/assets --version v1.0.8
+python3 ios/scripts/package-unsigned-ipa.py verify \
+  target/ios-local/assets/RustEpubReader-iOS-arm64-v1.0.8-unsigned.ipa \
+  --checksum target/ios-local/assets/RustEpubReader-iOS-arm64-v1.0.8-unsigned.ipa.sha256
 ```
 
 Android uses JDK 21 to align CI with the locally verified environment. The Java

@@ -966,8 +966,11 @@ impl ReaderApp {
         let font_discovery_result: FontDiscoveryResult = Arc::new(Mutex::new(None));
         {
             let result_slot = font_discovery_result.clone();
+            let font_data_dir = data_dir.clone();
             std::thread::spawn(move || {
-                let fonts = discover_system_fonts();
+                let (mut names, mut paths) = discover_system_fonts();
+                crate::ui::font_library::add_installed(&font_data_dir, &mut names, &mut paths);
+                let fonts = (names, paths);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(fonts);
                 }
@@ -2051,7 +2054,9 @@ impl eframe::App for ReaderApp {
                     // are available, and trigger re-registration so the fonts
                     // actually get loaded into egui.
                     if let Some(preferred) = self.pending_font_family.take() {
-                        if self.system_font_paths.contains_key(&preferred) {
+                        if !self.reader_font_family.is_empty()
+                            && self.system_font_paths.contains_key(&preferred)
+                        {
                             self.reader_font_family = preferred;
                         }
                     }
@@ -2331,7 +2336,7 @@ impl eframe::App for ReaderApp {
 
             let mut selected_latin_bound = matches!(
                 self.reader_font_family.as_str(),
-                "Sans" | "Serif" | "Monospace"
+                "" | "Sans" | "Serif" | "Monospace"
             );
             let mut selected_cjk_bound = matches!(self.reader_cjk_font_family.as_str(), "Sans");
 
@@ -2426,7 +2431,7 @@ impl eframe::App for ReaderApp {
             // Register custom Latin system font
             if !matches!(
                 self.reader_font_family.as_str(),
-                "Sans" | "Serif" | "Monospace"
+                "" | "Sans" | "Serif" | "Monospace"
             ) {
                 if let Some(path) = self.system_font_paths.get(&self.reader_font_family) {
                     if let Some(data) = path.load() {
@@ -2556,8 +2561,17 @@ impl eframe::App for ReaderApp {
                 emoji_fallback.push("emoji_font".to_owned());
             }
 
-            let mut reader_font_chain = reader_latin_fonts.clone();
-            extend_unique_font_chain(&mut reader_font_chain, reader_cjk_fonts.clone());
+            // An empty Latin selection uses the CJK face's own Latin glyphs.
+            // Keep the normal Latin chain afterward for missing characters.
+            let mut reader_font_chain = if self.reader_font_family.is_empty() {
+                let mut chain = reader_cjk_fonts.clone();
+                extend_unique_font_chain(&mut chain, reader_latin_fonts.clone());
+                chain
+            } else {
+                let mut chain = reader_latin_fonts.clone();
+                extend_unique_font_chain(&mut chain, reader_cjk_fonts.clone());
+                chain
+            };
             extend_unique_font_chain(&mut reader_font_chain, emoji_fallback.clone());
 
             let mut reader_cjk_chain = reader_cjk_fonts.clone();

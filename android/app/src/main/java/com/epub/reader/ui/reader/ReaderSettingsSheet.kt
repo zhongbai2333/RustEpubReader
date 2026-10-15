@@ -343,18 +343,28 @@ private fun SettingValueSlider(title:String, label:String, value:Float, range:Cl
 @Composable
 private fun ReaderSettingFontPicker(selected:String, fonts:List<FontItem>, onDismiss:()->Unit,onSelect:(String)->Unit) {
     var search by rememberSaveable {mutableStateOf("")}
+    var downloads by rememberSaveable {mutableStateOf(false)}
     val catalog = remember(fonts) { (listOf(FontItem("Sans",""),FontItem("Serif",""),FontItem("Monospace",""))+fonts).distinctBy {it.displayName} }
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val closeSheet = rememberReaderSheetDismiss(sheet, onDismiss)
     ModalBottomSheet(onDismissRequest=onDismiss,sheetState=sheet,sheetMaxWidth=560.dp) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.9f).padding(horizontal=16.dp)) {
-            Row(verticalAlignment=Alignment.CenterVertically) { Text(I18n.t("settings.font"),style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f)); TextButton(onClick=closeSheet){Text(I18n.t("settings.done"))} }
+            Row(verticalAlignment=Alignment.CenterVertically) {
+                if(downloads) IconButton(onClick={downloads=false}) { Icon(Icons.AutoMirrored.Filled.ArrowBack, I18n.t("settings.back")) }
+                Text(I18n.t(if(downloads) "fonts.library" else "settings.font"),style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f)); TextButton(onClick=closeSheet){Text(I18n.t("settings.done"))}
+            }
+            if(downloads) {
+                FontLibrarySettings(selected, true, onSelect)
+            } else {
+            FontImportAction()
+            TextButton(onClick={downloads=true}) { Text(I18n.t("fonts.library")); Spacer(Modifier.weight(1f));Icon(Icons.Default.ChevronRight,null) }
             OutlinedTextField(value=search,onValueChange={search=it},placeholder={Text(I18n.t("settings.search_font"))},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(12.dp))
             val filtered = catalog.filter {it.displayName.contains(search,ignoreCase=true)||friendlyFontLabel(it.displayName).contains(search,ignoreCase=true)}
             if(filtered.isEmpty()) Text(I18n.t("settings.no_font_match"),modifier=Modifier.padding(16.dp))
             LazyColumn { items(filtered,key={it.displayName}) { item ->
                 ListItem(headlineContent={Text(friendlyFontLabel(item.displayName),maxLines=1,overflow=TextOverflow.Ellipsis)},supportingContent={Text(fontPreviewText(item.displayName),fontFamily=previewFontFamily(item.displayName,item.path.takeIf {it.isNotEmpty()}))},trailingContent={if(selected==item.displayName)Icon(Icons.Default.Check,null)},modifier=Modifier.clickable{onSelect(item.displayName);closeSheet()})
             } }
+            }
         }
     }
 }

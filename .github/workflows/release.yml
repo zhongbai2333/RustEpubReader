@@ -36,12 +36,12 @@ jobs:
         secrets: inherit
 
     build-ios:
-        name: Validate iOS release
+        name: Build iOS unsigned release IPA
         uses: ./.github/workflows/ios-build.yml
         with:
             ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
             version: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-            artifact-prefix: ios-validation
+            artifact-prefix: release-ios
 
     publish:
         name: Publish GitHub Release
@@ -64,6 +64,13 @@ jobs:
 
             - name: List release assets
               run: find release-assets -maxdepth 3 -type f -print
+
+            - name: Verify downloaded iOS release IPA and checksum
+              run: |
+                  for ipa in release-assets/release-ios-arm64/*-unsigned.ipa; do
+                    test -f "$ipa"
+                    python3 ios/scripts/package-unsigned-ipa.py verify "$ipa" --checksum "$ipa.sha256"
+                  done
 
             - name: Generate Release Notes
               id: generate_notes
@@ -113,6 +120,7 @@ jobs:
                         body += "\n";
                       }
                       if (compareUrl) body += `**Full Changelog**: ${compareUrl}\n`;
+                      body += `\n### iOS installation\n\nThe iOS \`*-unsigned.ipa\` requires signing with your own identity and matching provisioning profile before installation. Embedded frameworks must also be re-signed. See the [signing instructions](https://github.com/${owner}/${repo}/blob/${encodeURIComponent(tag)}/ios/UNSIGNED_IPA.md). TestFlight and App Store distribution are not configured.\n`;
                       return body;
 
             - name: Create GitHub Release
@@ -121,6 +129,11 @@ jobs:
                   tag_name: ${{ env.RELEASE_TAG }}
                   name: RustEpubReader ${{ env.RELEASE_TAG }}
                   body: ${{ steps.generate_notes.outputs.result }}
+                  fail_on_unmatched_files: true
                   files: |
                       release-assets/release-desktop-*/RustEpubReader-*
                       release-assets/release-android-apk/RustEpubReader-Android-*.apk
+                      release-assets/release-ios-arm64/RustEpubReader-iOS-*-unsigned.ipa
+                      release-assets/release-ios-arm64/RustEpubReader-iOS-*-unsigned.ipa.sha256
+                      release-assets/release-ios-arm64/RustEpubReader-iOS-SIGNING.md
+                      release-assets/release-ios-arm64/BUILD-INFO.txt

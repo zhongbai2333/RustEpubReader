@@ -21,6 +21,7 @@ base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
 tempfile = "3"
+ttf-parser = "0.25"
 open = "5"
 urlencoding = "2"
 msedge-tts = "0.3"
@@ -40,7 +41,6 @@ winres = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-text = "22"
 keyring = { version = "3", features = ["apple-native"] }
-ttf-parser = "0.25"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

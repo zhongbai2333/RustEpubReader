@@ -12,9 +12,9 @@
 | macOS | Intel / Apple Silicon DMG；发布流程尚未配置 Developer ID 签名及公证 |
 | Linux | x64 / ARM64 压缩包；桌面构建依赖 GTK 3、ALSA 等系统库，见[构建说明](docs/BUILD_AND_CI.md) |
 | Android | Android 8.0 / API 26 及以上；按设备架构选择 APK |
-| iOS / iPadOS | 开发预览，最低 iOS 17；当前面向 arm64 真机与 Apple Silicon 模拟器。通过 Xcode 构建，安装真机需要自行配置签名 |
+| iOS / iPadOS | 开发预览，最低 iOS 17；arm64 真机可使用 Release 中的未签名 IPA，自行签名后安装；也可通过 Xcode 构建 |
 
-发布流程为桌面和 Android 打包安装文件。iOS CI 目前提供模拟器应用和**未签名真机归档**，它们不是可直接安装的 IPA；尚未配置 TestFlight 或 App Store 发布。各系统的实际兼容性仍需分别验证，构建通过不等于完成真机验收。
+发布流程会生成桌面安装包、Android APK 和 **iOS 未签名 IPA**。iOS IPA 需自行签名后安装，详见[签名说明](ios/UNSIGNED_IPA.md)。普通 CI 和 PR 构建的全部产物可在 Actions 下载；GitHub Release 附带 IPA、SHA-256 校验文件和签名说明，iOS 模拟器应用和未签名真机归档保留在 Actions。尚未配置 TestFlight 或 App Store 发布流程。各系统的实际兼容性仍需分别验证，构建通过不等于完成真机验收。
 
 iOS 的环境光读取使用私有 IOHID 接口，Debug 和 Release 构建均包含该实现（模拟器不启用）。构建成功不代表已具备 App Store 分发条件，详见 [iOS 说明](ios/README.md)。
 

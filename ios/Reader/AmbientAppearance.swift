@@ -9,12 +9,16 @@ struct AmbientAppearanceSwitch {
     mutating func sample(_ level: Double, at now: TimeInterval) -> Bool? {
         guard level.isFinite, level >= 0 else { interrupt(); return dark }
         let target: Bool?
-        if level < 15 { target = true }
-        else if level > 40 { target = false }
-        else { target = dark }
+        // Require deeper darkness for longer; ordinary dim indoor light should stay light.
+        if level < 5 { target = true }
+        else if level > 12 { target = false }
+        // On startup, a valid middle-band reading must settle instead of indefinitely
+        // inheriting a dark system theme. Once settled, retain hysteresis in this band.
+        else { target = dark ?? false }
         guard let target, target != dark else { interrupt(); return dark }
         if candidate != target { candidate = target; since = now }
-        if now - since >= 3 { dark = target; interrupt() }
+        let dwell: TimeInterval = target ? 5 : 3
+        if now - since >= dwell { dark = target; interrupt() }
         return dark
     }
     mutating func interrupt() { candidate = nil }

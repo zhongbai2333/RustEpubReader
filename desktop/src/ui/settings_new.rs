@@ -355,6 +355,7 @@ impl ReaderApp {
         }
     }
     fn render_settings_fonts(&mut self, ui: &mut egui::Ui) {
+        self.render_font_library_window(ui);
         let enabled = self.css_policy != reader_core::epub::native::CssPolicy::Publisher;
         ui.add_enabled_ui(enabled, |ui| {
             ui.horizontal(|ui| {
@@ -406,7 +407,12 @@ impl ReaderApp {
             ui.horizontal_wrapped(|ui| {
                 ui.label(self.i18n.t("settings.font_latin"));
                 let font_popup_id = ui.make_persistent_id("font_family_popup");
-                let btn = ui.add(egui::Button::new(&self.reader_font_family).truncate());
+                let font_label = if self.reader_font_family.is_empty() {
+                    self.i18n.t("fonts.follow_chinese").to_owned()
+                } else {
+                    self.reader_font_family.clone()
+                };
+                let btn = ui.add(egui::Button::new(font_label).truncate());
                 if btn.clicked() {
                     ui.memory_mut(|m| m.toggle_popup(font_popup_id));
                 }
@@ -418,6 +424,29 @@ impl ReaderApp {
                     |ui| {
                         super::design::menu_style(ui);
                         ui.set_width(248.0);
+                        if super::design::menu_item(
+                            ui,
+                            self.i18n.t("fonts.follow_chinese"),
+                            self.reader_font_family.is_empty(),
+                            false,
+                        )
+                        .on_hover_text(self.i18n.t("fonts.follow_chinese_desc"))
+                        .clicked()
+                        {
+                            self.reader_font_family.clear();
+                            self.pages_dirty = true;
+                            self.embedded_fonts_registered = false;
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
+                        if ui.button(self.i18n.t("fonts.import")).clicked() {
+                            self.import_reader_font(ui);
+                        }
+                        if ui.button(self.i18n.t("fonts.library")).clicked() {
+                            self.open_font_library(ui, true);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
                         let te = ui.add(super::design::text_edit(&mut self.font_search));
                         if btn.clicked() {
                             te.request_focus();
@@ -523,6 +552,14 @@ impl ReaderApp {
                     |ui| {
                         super::design::menu_style(ui);
                         ui.set_width(248.0);
+                        if ui.button(self.i18n.t("fonts.import")).clicked() {
+                            self.import_reader_font(ui);
+                        }
+                        if ui.button(self.i18n.t("fonts.library")).clicked() {
+                            self.open_font_library(ui, false);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        ui.separator();
                         let te = ui.add(super::design::text_edit(&mut self.cjk_font_search));
                         if btn.clicked() {
                             te.request_focus();

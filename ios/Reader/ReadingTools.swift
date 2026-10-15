@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import CoreText
+import UniformTypeIdentifiers
 struct ReadingToolsMenu: UIViewRepresentable {
     var tint: UIColor
     var contents: () -> Void
@@ -363,6 +364,7 @@ struct ReaderAppearanceSettings: View {
 
 struct ReaderFontPicker: View {
     @ObservedObject private var readerI18n = ReaderI18n.shared
+    @ObservedObject private var fonts = ReaderFonts.shared
     enum Kind { case latin, chinese
         var title: String { self == .latin ? L("settings.english_font") : L("settings.chinese_font") }
         var sample: String { self == .latin ? "The quick brown fox · 0123456789" : "春江潮水连海平，海上明月共潮生。" }
@@ -370,10 +372,14 @@ struct ReaderFontPicker: View {
     @Binding var selection: String
     var kind: Kind = .chinese
     @State private var search = ""
+    @State private var importing = false
+    @State private var systemPicker = false
     // Some CJK families can be instantiated but are omitted from familyNames.
     private static let cjkFonts = ["PingFangSC-Regular", "PingFangTC-Regular", "STSongti-SC-Regular", "STSongti-TC-Regular", "SongtiSC-Regular", "SongtiTC-Regular", "STKaitiSC-Regular", "KaitiSC-Regular", "STSong", "STHeitiSC-Light", "STHeitiTC-Light", "HiraginoSansGB-W3"]
         .compactMap { UIFont(name: $0, size: 18) }
     static func label(_ family: String) -> String {
+        if family.isEmpty { return L("fonts.follow_chinese") }
+        if let font = DownloadableFont.catalog.first(where: { UIFont(name: $0.postscript, size: 18)?.familyName == family }) { return font.title }
         switch family {
         case "PingFang SC": return L("settings.font_pingfang_sc")
         case "PingFang TC": return L("settings.font_pingfang_tc")
@@ -386,7 +392,8 @@ struct ReaderFontPicker: View {
         default: return family
         }
     }
-    static func supportsChinese(_ font: UIFont) -> Bool { supports("汉语阅读书籍", font: font) }
+    static func supportsChinese(_ font: UIFont) -> Bool { supports("汉语阅读书籍", font: font) || supports("\u{6F22}\u{8A9E}\u{95B1}\u{8B80}\u{66F8}\u{7C4D}", font: font) }
+    static func supportsLatin(_ font: UIFont) -> Bool { supports("Aa0123", font: font) }
     private static func supports(_ text: String, font: UIFont) -> Bool {
         let units = Array(text.utf16)
         var glyphs = [CGGlyph](repeating: 0, count: units.count)
@@ -394,7 +401,7 @@ struct ReaderFontPicker: View {
         return CTFontGetGlyphsForCharacters(ct, units, &glyphs, units.count) && glyphs.allSatisfy { $0 != 0 }
     }
     static func representative(_ family: String) -> UIFont? {
-        let names = UIFont.fontNames(forFamilyName: family)
+        let names = UIFont.fontNames(forFamilyName: family) + ReaderFonts.shared.names.filter { UIFont(name: $0, size: 18)?.familyName == family }
         let name = cjkFonts.first(where: { $0.familyName == family })?.fontName
             ?? names.first(where: { $0.localizedCaseInsensitiveContains("regular") }) ?? names.first ?? family
         return UIFont(name: name, size: 18)
@@ -408,15 +415,34 @@ struct ReaderFontPicker: View {
         } else { defaults.set("Helvetica", forKey: "preview.latinFontName") }
     }
     static func families(for kind: Kind) -> [String] {
-        Set(UIFont.familyNames + Self.cjkFonts.map(\.familyName)).sorted()
+        Set(UIFont.familyNames + Self.cjkFonts.map(\.familyName) + ReaderFonts.shared.names.compactMap { UIFont(name: $0, size: 18)?.familyName }).sorted()
             .filter { !["Apple Color Emoji", "Apple Symbols", "Zapf Dingbats", "Symbol", "Webdings", "Wingdings"].contains($0) }
-            .filter { family in guard let font = Self.representative(family) else { return false }; return kind == .chinese ? Self.supportsChinese(font) : !Self.supportsChinese(font) && Self.supports("Aa0123", font: font) }
+            .filter { family in guard let font = Self.representative(family) else { return false }; return kind == .chinese ? Self.supportsChinese(font) : Self.supportsLatin(font) }
     }
     private var families: [String] {
         Self.families(for: kind).filter { search.isEmpty || $0.localizedCaseInsensitiveContains(search) || Self.label($0).localizedCaseInsensitiveContains(search) }
     }
     var body: some View {
-        List(families, id: \.self) { family in
+        List {
+            if kind == .latin {
+                Section {
+                    Button { selection = "" } label: {
+                        HStack {
+                            Text(L("fonts.follow_chinese"))
+                            Spacer()
+                            if selection.isEmpty { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                        }.foregroundStyle(.primary)
+                    }.accessibilityAddTraits(selection.isEmpty ? [.isSelected] : [])
+                } footer: { Text(L("fonts.follow_chinese_desc")) }
+            }
+            Section {
+                Button(L("fonts.import")) { importing = true }.disabled(fonts.busy.contains("import"))
+                Button(L("fonts.system")) { systemPicker = true }
+                NavigationLink(L("fonts.library")) { ReaderFontDownloads(selection: $selection, kind: kind) }
+                if fonts.busy.contains("import") { HStack { ProgressView(); Text(L("fonts.importing")) } }
+            }
+            Section(L("fonts.available")) {
+            ForEach(families, id: \.self) { family in
             let name = Self.representative(family)?.fontName ?? family
             Button { selection = name } label: {
                 HStack {
@@ -428,10 +454,26 @@ struct ReaderFontPicker: View {
                     if UIFont(name: selection, size: 18)?.familyName == family { Image(systemName: "checkmark").foregroundStyle(.tint) }
                 }.padding(.vertical, 4).foregroundStyle(.primary)
             }.buttonStyle(.plain).accessibilityAddTraits(UIFont(name: selection, size: 18)?.familyName == family ? [.isSelected] : [])
+            }
+            }
         }.searchable(text: $search, prompt: L("settings.search_fonts"))
             .modifier(ReaderSearchNavigation()).navigationTitle(kind.title).navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color(uiColor: .systemGroupedBackground), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "ttf") ?? .font, UTType(filenameExtension: "otf") ?? .font], allowsMultipleSelection: true) { result in
+                switch result {
+                case .success(let urls): Task { await fonts.importFiles(urls) }
+                case .failure(let error): fonts.error = error.localizedDescription
+                }
+            }
+            .sheet(isPresented: $systemPicker) {
+                SystemReaderFontPicker(onSelect: { font in
+                    fonts.rememberSystemFont(font)
+                    if kind == .chinese ? Self.supportsChinese(font) : Self.supportsLatin(font) { selection = font.fontName }
+                    else { fonts.error = L("fonts.unsupported") }
+                }, onDismiss: { systemPicker = false })
+            }
+            .alert(L("fonts.error"), isPresented: Binding(get: { fonts.error != nil && !systemPicker }, set: { if !$0 { fonts.error = nil } })) { Button(L("error.ok")) { fonts.error = nil } } message: { Text(fonts.error ?? "") }
     }
 }
 

@@ -62,26 +62,15 @@ fn setup_fonts(ctx: &egui::Context) {
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
         "/System/Library/Fonts/PingFang.ttc",
     ];
-    let mut bold_loaded = false;
     for path in &bold_font_paths {
         if let Ok(font_data) = std::fs::read(path) {
             fonts.font_data.insert(
                 "cjk_bold".to_owned(),
                 egui::FontData::from_owned(font_data).into(),
             );
-            bold_loaded = true;
             break;
         }
     }
-    let mut bold_family = Vec::new();
-    if bold_loaded {
-        bold_family.push("cjk_bold".to_owned());
-    }
-    bold_family.push("cjk_font".to_owned());
-    fonts
-        .families
-        .insert(egui::FontFamily::Name("Bold".into()), bold_family);
-
     // Register Serif font family
     let serif_font_paths = [
         "C:\\Windows\\Fonts\\simsun.ttc",
@@ -89,22 +78,15 @@ fn setup_fonts(ctx: &egui::Context) {
         "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
         "/System/Library/Fonts/Songti.ttc",
     ];
-    let mut serif_family = Vec::new();
     for path in &serif_font_paths {
         if let Ok(font_data) = std::fs::read(path) {
             fonts.font_data.insert(
                 "serif_font".to_owned(),
                 egui::FontData::from_owned(font_data).into(),
             );
-            serif_family.push("serif_font".to_owned());
             break;
         }
     }
-    serif_family.push("cjk_font".to_owned());
-    fonts
-        .families
-        .insert(egui::FontFamily::Name("Serif".into()), serif_family);
-
     // Emoji / symbol fallback font
     let emoji_paths = [
         "C:\\Windows\\Fonts\\seguisym.ttf",
@@ -134,7 +116,29 @@ fn setup_fonts(ctx: &egui::Context) {
 
     #[cfg(target_os = "macos")]
     system_fonts::register_defaults(&mut fonts);
+    register_reader_font_families(&mut fonts);
     ctx.set_fonts(fonts);
+}
+
+fn register_reader_font_families(fonts: &mut egui::FontDefinitions) {
+    let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+    for (family, preferred) in [("Bold", "cjk_bold"), ("Serif", "serif_font")] {
+        // System CJK fonts are optional, including on headless Linux runners.
+        // Keep every family usable with egui's bundled fonts alone.
+        let mut chain: Vec<_> = [preferred, "cjk_font"]
+            .into_iter()
+            .filter(|name| fonts.font_data.contains_key(*name))
+            .map(str::to_owned)
+            .collect();
+        for name in &fallback {
+            if !chain.contains(name) {
+                chain.push(name.clone());
+            }
+        }
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(family.into()), chain);
+    }
 }
 
 fn debug_enabled_from_args<I, S>(args: I) -> bool
@@ -239,8 +243,52 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::{debug_enabled_from_args, startup_open_path_from_args};
+    use super::{
+        debug_enabled_from_args, register_reader_font_families, startup_open_path_from_args,
+    };
+    use eframe::egui;
     use std::ffi::OsString;
+
+    #[test]
+    fn reader_font_families_render_with_missing_or_partial_system_fonts() {
+        for available in 0..8 {
+            let mut fonts = egui::FontDefinitions::default();
+            let fallback = fonts.families[&egui::FontFamily::Proportional].clone();
+            let data = fonts.font_data[&fallback[0]].clone();
+            for (bit, name) in ["cjk_font", "cjk_bold", "serif_font"]
+                .into_iter()
+                .enumerate()
+            {
+                if available & (1 << bit) != 0 {
+                    fonts.font_data.insert(name.into(), data.clone());
+                }
+            }
+            register_reader_font_families(&mut fonts);
+            for (family, preferred) in [("Bold", "cjk_bold"), ("Serif", "serif_font")] {
+                let chain = &fonts.families[&egui::FontFamily::Name(family.into())];
+                assert!(chain.iter().all(|name| fonts.font_data.contains_key(name)));
+                assert!(fallback.iter().all(|name| chain.contains(name)));
+                if fonts.font_data.contains_key(preferred) {
+                    assert_eq!(chain.first().map(String::as_str), Some(preferred));
+                }
+            }
+            let ctx = egui::Context::default();
+            ctx.set_fonts(fonts);
+            let _ = ctx.run(Default::default(), |ctx| {
+                for family in ["Bold", "Serif"] {
+                    ctx.fonts(|fonts| {
+                        let galley = fonts.layout_no_wrap(
+                            "Latin 中文，？！".into(),
+                            egui::FontId::new(18., egui::FontFamily::Name(family.into())),
+                            egui::Color32::WHITE,
+                        );
+                        assert_eq!(galley.text(), "Latin 中文，？！");
+                        assert!(galley.rect.width() > 0.);
+                    });
+                }
+            });
+        }
+    }
 
     #[test]
     fn debug_flag_should_be_detected() {

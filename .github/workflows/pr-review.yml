@@ -56,7 +56,7 @@ jobs:
                         issue_number: context.issue.number,
                         owner: context.repo.owner,
                         repo: context.repo.repo,
-                        body: '✅ RustEpubReader 多平台构建完成，已生成桌面端安装包、Android APK 和 iOS 构建验证产物（模拟器应用及未签名真机归档；不是可安装 IPA）。'
+                        body: '✅ RustEpubReader 多平台构建任务已完成，构建产物已上传至 Actions：桌面端安装包、Android APK、iOS 未签名 IPA（需自行签名后安装）、iOS 模拟器应用和未签名真机归档。'
                       });
                       await github.rest.issues.removeLabel({
                         issue_number: context.issue.number,

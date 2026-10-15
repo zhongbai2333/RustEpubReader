@@ -5,6 +5,7 @@ name: CI
         branches: ["main", "dev"]
         paths:
             - "scripts/**"
+            - "resources/**"
             - "vendor/**"
             - "core/**"
             - "desktop/**"
@@ -24,6 +25,7 @@ name: CI
         branches: ["main", "dev"]
         paths:
             - "scripts/**"
+            - "resources/**"
             - "vendor/**"
             - "core/**"
             - "desktop/**"
@@ -79,7 +81,9 @@ jobs:
             - name: Validate shared translations
               run: |
                   python3 scripts/check-i18n.py
+                  python3 scripts/check-font-catalog.py
                   python3 scripts/test-i18n.py
+                  python3 -m unittest discover -s ios/Tests -p test_unsigned_ipa.py
 
             - name: Check formatting
               run: cargo fmt --all -- --check

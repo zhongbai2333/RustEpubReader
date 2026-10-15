@@ -12,9 +12,9 @@ An EPUB reader with a shared Rust core and clients for Windows, macOS, Linux, An
 | macOS | Intel / Apple Silicon DMG; Developer ID signing and notarization are not configured in the release workflow |
 | Linux | x64 / ARM64 archives; desktop builds require GTK 3, ALSA, and other system libraries listed in the [build guide](docs/BUILD_AND_CI.md) |
 | Android | Android 8.0 / API 26 or newer; choose the APK matching your device architecture |
-| iOS / iPadOS | Development preview, minimum iOS 17; arm64 devices and Apple Silicon simulators. Build with Xcode; physical installation requires your own signing configuration |
+| iOS / iPadOS | Development preview, minimum iOS 17; arm64 device IPA from Releases requires your own signing; building with Xcode is also supported |
 
-Release workflows package desktop and Android applications. iOS CI currently produces a simulator application and an **unsigned device archive**, not an installable IPA. TestFlight and App Store publishing are not configured. Runtime compatibility needs testing on each platform; a successful build does not establish physical-device acceptance.
+Release workflows package desktop applications, Android APKs and an **unsigned iOS IPA**. The IPA requires your own signing before installation; see the [signing instructions](ios/UNSIGNED_IPA.md). Normal CI and PR artifacts are available in Actions. GitHub Releases attach the IPA, SHA-256 receipt and signing instructions; the iOS simulator application and unsigned device archive remain in Actions. TestFlight and App Store publishing are not configured. Runtime compatibility needs testing on each platform; a successful build does not establish physical-device acceptance.
 
 Ambient-light reading on iOS currently uses private IOHID APIs in both Debug and Release (disabled in the simulator). Successful builds do not establish App Store distribution readiness; see the [iOS notes](ios/README.md).
 

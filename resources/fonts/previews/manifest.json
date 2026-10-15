@@ -1,0 +1,206 @@
+{
+  "font_size" : 68,
+  "renderer" : "CoreText; white glyphs on transparent RGBA",
+  "samples" : [
+    {
+      "file" : "lxgw-wenkai.png",
+      "font_sha256" : "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
+      "height" : 216,
+      "id" : "lxgw-wenkai",
+      "postscript" : "LXGWWenKai-Regular",
+      "sha256" : "a2242409d3b59a364ba79651f0c50f4fbb95c501afcf0f0341653405a7038d2a",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "source-han-serif-sc.png",
+      "font_sha256" : "78aa7a328fd974df2d688c8a9fd74a33d8334dfa84ab24d9d11efb2ffc464117",
+      "height" : 216,
+      "id" : "source-han-serif-sc",
+      "postscript" : "SourceHanSerifSC-Regular",
+      "sha256" : "e268be5be2cea2d937b620f5484d0e4d737f9b70e2cb58c4af9f1f213c8aa4b9",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "source-han-sans-sc.png",
+      "font_sha256" : "f1d8611151880c6c336aabeac4640ef434fa13cbfbf1ffe82d0a71b2a5637256",
+      "height" : 216,
+      "id" : "source-han-sans-sc",
+      "postscript" : "SourceHanSansSC-Regular",
+      "sha256" : "9679906b8642824fec9cb656aff335f8ccf31608a3a8a23166dfebbe69e4cc24",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "lxgw-wenkai-screen.png",
+      "font_sha256" : "cd1a6fa39c4ea42fd8f4e289945789b0e510cf7016435640f8893cdad9b220f3",
+      "height" : 216,
+      "id" : "lxgw-wenkai-screen",
+      "postscript" : "LXGWWenKaiScreen",
+      "sha256" : "66243671abd07af038a7b098a9a43685244b2216c8ec82ae15160eae886011a2",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "source-han-serif-tc.png",
+      "font_sha256" : "659c9606d8fda03372247b99ec5e5bbc5a034e06a70d80fb00546772c582d3e5",
+      "height" : 216,
+      "id" : "source-han-serif-tc",
+      "postscript" : "SourceHanSerifTC-Regular",
+      "sha256" : "5da9e017812b55809890e5536e222d34e45e2a71214eb5796b46dfeb0e53d1f5",
+      "text" : "春江潮水連海平，海上明月共潮生。\n書中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "lxgw-wenkai-tc.png",
+      "font_sha256" : "4fcc5aec11cbbf737b0cfab7b63796f7f280087a7a656b2f13342cd5e5318d95",
+      "height" : 216,
+      "id" : "lxgw-wenkai-tc",
+      "postscript" : "LXGWWenKaiTC-Regular",
+      "sha256" : "f281ceaf04f192ae173d666a88aca1ce534f3f09cfbbbfa7f08e5352366ee006",
+      "text" : "春江潮水連海平，海上明月共潮生。\n書中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "literata.png",
+      "font_sha256" : "0390890de9bb9d5862a6ba4125b82c61792ccc3d66b63e73eee75c1a16fcd208",
+      "height" : 216,
+      "id" : "literata",
+      "postscript" : "Literata-Regular",
+      "sha256" : "5ffd0781a2c0d02b75e8909468c3573188202dcae1bf2f7bf334f8010aadfeac",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "source-serif-4.png",
+      "font_sha256" : "e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b",
+      "height" : 216,
+      "id" : "source-serif-4",
+      "postscript" : "SourceSerif4-Regular",
+      "sha256" : "6309277a0a6b8b03c736160538a343880d0397bad1371c483112e632069608b1",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "lora.png",
+      "font_sha256" : "822a6621ccbe8d97d20ac88c1c41f5615c9c2c202eaa75f272cd452aac6475a7",
+      "height" : 216,
+      "id" : "lora",
+      "postscript" : "Lora-Regular",
+      "sha256" : "5ad659506ed7db401263bc37d1c2c3f7ef6ca5260b02a458b6d9a3fb3eb70f74",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "crimson-pro.png",
+      "font_sha256" : "c328c0eff9c9a0947d8e61efa9432ca17843863366580d4a0a16208fa0be5273",
+      "height" : 216,
+      "id" : "crimson-pro",
+      "postscript" : "CrimsonPro-Regular",
+      "sha256" : "8df3eb2cbeed6dd0d1fad7ad689f516e22c41bb6c3d28363d9072411780ef35b",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "source-sans-3.png",
+      "font_sha256" : "4644c81b86ec9caaa76b634889968ed3c4f4f52f054855933acc7c2b21e53b0f",
+      "height" : 216,
+      "id" : "source-sans-3",
+      "postscript" : "SourceSans3-Regular",
+      "sha256" : "9d9cc9b6a3cb54b2fe879bb7010cbf68a881a0f73ac982d606c793948ba59c7a",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "atkinson-hyperlegible.png",
+      "font_sha256" : "7fb917c89019896d0b52ee84b7cbb3304c18cb90b19a62f5e32712bd23e97669",
+      "height" : 216,
+      "id" : "atkinson-hyperlegible",
+      "postscript" : "AtkinsonHyperlegible-Regular",
+      "sha256" : "e1e467cd783a8803e5dfa413dbf914c255c8ea2f1dffec45c37bc92b72bc5acf",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "alegreya.png",
+      "font_sha256" : "ba5564634b93a8f8ba57b48cd4f1ae7417d2b4656fbac779028679b00de3cf12",
+      "height" : 216,
+      "id" : "alegreya",
+      "postscript" : "Alegreya-Regular",
+      "sha256" : "4d518aafd538fd651cb19841597fe725c4e90fc5dfdf857d51a34598089e1554",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "eb-garamond.png",
+      "font_sha256" : "ef9512f92f6d579e5dc75af59a5a4b1b8b47d2eda89e00b954d44520e5369027",
+      "height" : 216,
+      "id" : "eb-garamond",
+      "postscript" : "EBGaramond-Regular",
+      "sha256" : "c0c080845cdbf71770d431d06310516ca97acc455660c7b862445c09d89f2b44",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "arvo.png",
+      "font_sha256" : "f41bd41471ec2db7140351bdde614da5341524503598ff7fe79f3c89c13b605e",
+      "height" : 216,
+      "id" : "arvo",
+      "postscript" : "Arvo",
+      "sha256" : "7d0e338cb499bb47a0e6c3a565290309b2831072b15a65c325477539ab1773c9",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "andika.png",
+      "font_sha256" : "202b96b1f174a4a43baefe885b40dacacb81786755efd08ed4b7704e79c45515",
+      "height" : 216,
+      "id" : "andika",
+      "postscript" : "Andika",
+      "sha256" : "7a53871ae71fbc36fe789830e296b086eee6c7aaa08057ecd034d94e12111c77",
+      "text" : "The moon rises over a quiet sea.\nAa Bb Qq · 0123456789",
+      "width" : 1200
+    },
+    {
+      "file" : "lxgw-marker-gothic.png",
+      "font_sha256" : "e6a55cfd5f18dc393f92670a164397a69242cb4eabe1d3feb5dc22fc4947a8ba",
+      "height" : 216,
+      "id" : "lxgw-marker-gothic",
+      "postscript" : "LXGWMarkerGothic-Regular",
+      "sha256" : "53c085aed7d41504be491877637dceaec7f15b15dd4cb6c55fb9a248774adc77",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "lxgw-zhenkai.png",
+      "font_sha256" : "bf4ea8c39b51784469020120125715d3075137233fe337b5d0a7327f9dfc03bd",
+      "height" : 216,
+      "id" : "lxgw-zhenkai",
+      "postscript" : "LXGWZhenKaiSlabGB-Regular",
+      "sha256" : "5736c5452294534e0b656cd10aaef49be7c6dbd3a13a4d41869b1fc9c15011af",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "xiaolai.png",
+      "font_sha256" : "e2f68daf0e72777a8cf58bc83de1b98634b251e537ddbfca24b0ae50d1802da2",
+      "height" : 216,
+      "id" : "xiaolai",
+      "postscript" : "Xiaolai",
+      "sha256" : "aa28bcf350e93596cf44c5ef1dd46d97df4785f09ac58b90689e43071b35fd69",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    },
+    {
+      "file" : "yozai.png",
+      "font_sha256" : "25071998a0fe6a72f54c235e714986d259633e5ff670b1a2b5e264387f3316ac",
+      "height" : 216,
+      "id" : "yozai",
+      "postscript" : "Yozai-Regular",
+      "sha256" : "e13aa334110995831deed9719c8399e60b1477602255c1ada3e53b1d055451f3",
+      "text" : "春江潮水连海平，海上明月共潮生。\n书中自有山川日月。Aa 0123",
+      "width" : 1200
+    }
+  ]
+}

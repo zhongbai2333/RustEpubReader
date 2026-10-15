@@ -70,10 +70,20 @@ impl BookPresentation {
         target: egui::Rect,
         ctx: &egui::Context,
     ) -> egui::Rect {
+        self.shelf_card_rect_at(path, target, ctx, Instant::now())
+    }
+
+    fn shelf_card_rect_at(
+        &mut self,
+        path: &str,
+        target: egui::Rect,
+        ctx: &egui::Context,
+        now: Instant,
+    ) -> egui::Rect {
         let Some(started) = self.reorder_started else {
             return target;
         };
-        let t = started.elapsed().as_secs_f32() / 0.38;
+        let t = now.saturating_duration_since(started).as_secs_f32() / 0.38;
         if t >= 1. || ctx.style().animation_time <= 0. {
             self.reorder_started = None;
             self.reorder_from.clear();
@@ -360,14 +370,15 @@ mod shelf_order_tests {
         let ctx = egui::Context::default();
         let old = Rect::from_min_size(pos2(200., 400.), vec2(160., 240.));
         let target = Rect::from_min_size(pos2(20., 40.), vec2(160., 312.));
+        let now = Instant::now();
         shelf.reorder_from.insert("book".into(), old);
-        shelf.reorder_started = Some(Instant::now() - Duration::from_millis(190));
-        let middle = shelf.shelf_card_rect("book", target, &ctx);
+        shelf.reorder_started = Some(now - Duration::from_millis(190));
+        let middle = shelf.shelf_card_rect_at("book", target, &ctx, now);
         assert!(middle.left() > target.left() && middle.left() < old.left());
         assert!(middle.top() > target.top() && middle.top() < old.top());
         assert_eq!(middle.size(), target.size());
-        shelf.reorder_started = Some(Instant::now() - Duration::from_millis(400));
-        assert_eq!(shelf.shelf_card_rect("book", target, &ctx), target);
+        shelf.reorder_started = Some(now - Duration::from_millis(400));
+        assert_eq!(shelf.shelf_card_rect_at("book", target, &ctx, now), target);
         assert!(shelf.reorder_started.is_none());
     }
     #[test]

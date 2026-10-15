@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 @main struct ReaderPreviewApp: App {
     init() {
+        ReaderFonts.shared.restoreSystemFonts()
         #if DEBUG
         if CommandLine.arguments.contains("--verify-appearance") { ReadingAppearanceRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-book-share") { BookShareRuntimeCheck.run() }
@@ -16,6 +17,7 @@ import UniformTypeIdentifiers
     }
     var body: some Scene { WindowGroup { AppHome().task {
         #if DEBUG
+        if CommandLine.arguments.contains("--verify-fonts") { await FontsRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-speech") { await SpeechRuntimeCheck.run() }
         #endif
     } } }

@@ -10,6 +10,7 @@ use super::reader_state::*;
 
 pub(crate) fn family_from_name(name: &str) -> FontFamily {
     match name {
+        "" => FontFamily::Name("ReaderFont".into()),
         "Monospace" => FontFamily::Monospace,
         "Serif" => FontFamily::Name("Serif".into()),
         "Sans" => FontFamily::Proportional,
@@ -1528,6 +1529,17 @@ mod tests {
     fn unicode_punctuation_wraps_across_font_runs_without_changing_source_offsets() {
         let ctx = egui::Context::default();
         crate::setup_fonts(&ctx);
+        assert_unicode_punctuation_wraps(&ctx);
+
+        // Exercise the CI case even on hosts with installed Chinese fonts.
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::register_reader_font_families(&mut fonts);
+        ctx.set_fonts(fonts);
+        assert_unicode_punctuation_wraps(&ctx);
+    }
+
+    fn assert_unicode_punctuation_wraps(ctx: &egui::Context) {
         let prefix = "不管怎么说，就算真有什么圣女，也还是很离谱呀，上哪和圣女说话去";
         for font in [14., 18., 26.] {
             for ending in [

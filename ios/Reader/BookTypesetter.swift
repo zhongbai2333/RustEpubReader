@@ -42,7 +42,8 @@ enum BookTypesetter {
     static let imageDescriptionKey=NSAttributedString.Key("ReaderImageDescription")
     static let imageKey = NSAttributedString.Key("ReaderImage")
     static func chapters(_ chapters: [BookChapter], options: ReaderOptions, rect: CGRect) -> [LaidOutChapter] {
-        let font = UIFont(name: options.fontName, size: options.fontSize) ?? .systemFont(ofSize: options.fontSize)
+        let name = options.fontName.isEmpty ? (options.cjkFontName ?? "") : options.fontName
+        let font = UIFont(name: name, size: options.fontSize) ?? .systemFont(ofSize: options.fontSize)
         return chapters.map { layoutChapter($0, font: font, options: options, rect: rect) }
     }
     private static func layoutChapter(_ chapter: BookChapter, font: UIFont, options: ReaderOptions, rect: CGRect) -> LaidOutChapter {

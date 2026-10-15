@@ -52,15 +52,18 @@ Homebrew Rust. The shared scheme and pinned `Package.resolved` must be committed
 The workflow runs core/bridge tests and all seven host check groups (layout,
 OAuth, appearance, reading mode, speech, contents and localization), builds an
 ad-hoc signed arm64 simulator app, and archives an **unsigned arm64 Release** for
-physical iPhone/iPad. Normal CI, `run-build` PR builds and release validation reuse
-this workflow; it also supports manual dispatch. Logs and build provenance are
-uploaded. Release validation artifacts stay in Actions rather than masquerading
-as installable GitHub Release assets.
+physical iPhone/iPad, then packages an **unsigned IPA** with a SHA-256 receipt.
+Normal CI, `run-build` PR builds and release builds reuse this workflow; it also
+supports manual dispatch. Logs and build provenance are uploaded. GitHub Releases
+attach the unsigned IPA, checksum, signing instructions and build information;
+simulator applications and device archives remain in Actions.
 
-No signing secrets are required for these checks. This is build validation, not
-XCTest/UI gesture coverage or distribution: there is no XCTest target, exported
-IPA, provisioning-profile installation, TestFlight or App Store upload. Device
-installation/export requires configuring the owner's signing team separately.
+No signing secrets are required for these checks or unsigned IPA packaging.
+The IPA requires signing the app and all embedded frameworks with the user's
+own identity and matching provisioning profile before installation; see
+[unsigned IPA installation](UNSIGNED_IPA.md). The workflow checks package
+structure and integrity, not successful installation. There is no XCTest target,
+publisher signing/provisioning, TestFlight or App Store upload.
 See [build/CI notes](../docs/BUILD_AND_CI.md) and the
 [Windows handoff checklist](../docs/WINDOWS_TESTING.md).
 

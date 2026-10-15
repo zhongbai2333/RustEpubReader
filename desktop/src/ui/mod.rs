@@ -6,6 +6,7 @@ pub mod book_share;
 pub mod csc_contribute;
 pub mod csc_settings;
 pub mod export_dialog;
+pub(crate) mod font_library;
 pub mod github_oauth;
 pub mod github_sync;
 pub mod library;

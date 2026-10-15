@@ -654,13 +654,17 @@ fun ReaderScreen(
     val activeBgImageAlpha = appearanceVariant?.strength ?: bgImageAlpha
     val linkColor = if (textColor.luminance() < 0.45f) Color(0xFF78B4FF) else Color(0xFF3366CC)
 
+    val fontContext = androidx.compose.ui.platform.LocalContext.current
+    val availableFonts = remember(systemFonts, com.zhongbai233.epub.reader.util.FontLibrary.revision) {
+        (systemFonts + com.zhongbai233.epub.reader.util.FontLibrary.installedFonts(fontContext)).distinctBy { it.displayName }
+    }
     val fontFamily: FontFamily =
-        remember(fontFamilyName, systemFonts) {
+        remember(fontFamilyName, availableFonts) {
             when (fontFamilyName) {
                 "Serif" -> FontFamily.Serif
                 "Monospace" -> FontFamily.Monospace
                 else -> {
-                    val item = systemFonts.find { it.displayName == fontFamilyName }
+                    val item = availableFonts.find { it.displayName == fontFamilyName }
                     if (item != null) fontFamilyFromFile(item.path) else FontFamily.SansSerif
                 }
             }
@@ -1253,7 +1257,7 @@ fun ReaderScreen(
                     bgImageAlpha = activeBgImageAlpha,
                     language = language,
                     showImmersiveStatus = showImmersiveStatus,
-                    systemFonts = systemFonts,
+                    systemFonts = availableFonts,
                     onDismiss = { showSettingsSheet = false },
                     onFontSizeChange = onFontSizeChange,
                     onScrollModeChange = onUpdateScrollMode,

@@ -22,7 +22,7 @@ permissions:
 
 jobs:
     build-ios:
-        name: Swift checks / simulator / unsigned device archive
+        name: Swift checks / simulator / unsigned device IPA
         runs-on: macos-15
         timeout-minutes: 60
         defaults:
@@ -69,6 +69,7 @@ jobs:
 
             - name: Verify shared core and native layout / OAuth
               run: |
+                  python3 -m unittest discover -s ios/Tests -p test_unsigned_ipa.py
                   cargo test --locked -p reader_ios -p reader_core --features reader_core/github-sync
                   ios/scripts/check-layout.sh
                   ios/scripts/check-oauth.sh
@@ -106,7 +107,14 @@ jobs:
                     -archivePath target/ios-ci/ReaderPreview.xcarchive \
                     CODE_SIGNING_ALLOWED=NO ARCHS=arm64 archive 2>&1 | tee target/ios-ci/logs/device.log
 
-            - name: Package build validation artifacts
+            - name: Package and verify unsigned device IPA
+              run: |
+                  python3 ios/scripts/package-unsigned-ipa.py pack \
+                    --archive target/ios-ci/ReaderPreview.xcarchive \
+                    --output-dir ios-assets --version "$BUILD_VERSION" \
+                    | tee target/ios-ci/logs/ipa.log
+
+            - name: Package supporting iOS artifacts
               run: |
                   mkdir -p ios-assets
                   ditto -c -k --sequesterRsrc --keepParent \
@@ -117,9 +125,10 @@ jobs:
                   printf 'Source: %s\nLabel: %s\n' "$(git rev-parse HEAD)" "$BUILD_VERSION" > ios-assets/BUILD-INFO.txt
                   xcodebuild -version >> ios-assets/BUILD-INFO.txt
                   rustc --version >> ios-assets/BUILD-INFO.txt
-                  printf '\nSimulator: arm64, ad-hoc signed, Debug.\nDevice archive: arm64, Release, unsigned. Requires your signing team and export before installation. No IPA / TestFlight / App Store upload.\n' >> ios-assets/BUILD-INFO.txt
+                  cp ios/UNSIGNED_IPA.md ios-assets/RustEpubReader-iOS-SIGNING.md
+                  printf '\nSimulator: arm64, ad-hoc signed, Debug.\nDevice archive and IPA: arm64, Release, unsigned application. The IPA requires your own signing identity and matching provisioning profile, including re-signing embedded frameworks, before installation. See RustEpubReader-iOS-SIGNING.md. No TestFlight / App Store upload.\n' >> ios-assets/BUILD-INFO.txt
 
-            - name: Upload iOS validation artifacts
+            - name: Upload iOS IPA and supporting artifacts
               uses: actions/upload-artifact@v4
               with:
                   name: ${{ inputs.artifact-prefix || 'ios-build' }}-arm64

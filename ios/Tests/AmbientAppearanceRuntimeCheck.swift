@@ -3,7 +3,8 @@ import UIKit
 
 enum AmbientAppearanceRuntimeCheck {
     final class Sensor: AmbientLightReading {
-        var level: Double? = 100
+        // Start inside the hysteresis band to verify a real light decision at startup.
+        var level: Double? = 7
         var starts = 0, stops = 0
         func start() -> Bool { starts += 1; return true }
         func read() -> Double? { level }
@@ -81,6 +82,18 @@ enum AmbientAppearanceRuntimeCheck {
                     coordinator.ambientDark == false && !coordinator.appDark && !coordinator.readingDark && paintMatches(coordinator)
                 }
                 capture(out.appendingPathComponent("ambient-light.png"))
+                sensor.level = 10
+                try await Task.sleep(for: .seconds(6))
+                guard coordinator.ambientDark == false && !coordinator.readingDark && paintMatches(coordinator) else {
+                    throw CoreFailure(message: "Dim indoor reading incorrectly selected dark")
+                }
+                sensor.level = 0
+                try await Task.sleep(for: .seconds(2))
+                sensor.level = 7
+                try await Task.sleep(for: .seconds(4))
+                guard coordinator.ambientDark == false && !coordinator.readingDark && paintMatches(coordinator) else {
+                    throw CoreFailure(message: "Brief covering incorrectly selected dark")
+                }
                 sensor.level = 0
                 try await wait("Dark sensor did not update native reader") {
                     coordinator.ambientDark == true && coordinator.appDark && coordinator.readingDark && paintMatches(coordinator)
@@ -94,7 +107,7 @@ enum AmbientAppearanceRuntimeCheck {
                 try await wait("Independent ambient reading did not apply") {
                     !coordinator.appDark && coordinator.readingDark && paintMatches(coordinator)
                 }
-                sensor.level = 100
+                sensor.level = 13
                 try await wait("Independent reading did not respond to bright light") {
                     !coordinator.readingDark && !coordinator.appDark && paintMatches(coordinator)
                 }
@@ -123,6 +136,7 @@ enum AmbientAppearanceRuntimeCheck {
                     throw CoreFailure(message: "Preference not persisted")
                 }
                 report = ["passed": true, "physical": false, "productionHost": true,
+                    "middleBandStartupLight": true, "dimRoomRemainsLight": true, "briefCoverRemainsLight": true,
                     "lightAndDarkPaint": true, "independentReading": true, "backgroundRelease": true,
                     "missingDataFallback": true, "recovery": true, "manualStopsSampling": true,
                     "anchorAndFontPreserved": true, "persisted": true]

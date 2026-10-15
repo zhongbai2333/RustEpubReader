@@ -75,6 +75,7 @@ android {
 
     sourceSets.getByName("androidTest").assets.srcDir("../../core/tests/fixtures")
     sourceSets.getByName("test").resources.srcDir("../../core/tests/fixtures")
+    sourceSets.getByName("main").assets.srcDir("../../resources")
 
     packaging {
         jniLibs {

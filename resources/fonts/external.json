@@ -1,0 +1,26 @@
+[
+  {
+    "id": "hanyi-senty-song",
+    "name_zh": "汉仪新蒂手写宋",
+    "name_en": "Hanyi Senty Song",
+    "language": "zh",
+    "description_zh": "带手写笔意的宋体风格。",
+    "description_en": "A Song style with a handwritten touch.",
+    "project_url": "https://sentyfont.com/song.htm",
+    "license_url": "https://sentyfont.com/song.htm",
+    "license": "personal-noncommercial",
+    "checked_at": "2026-10-15"
+  },
+  {
+    "id": "hanyi-senty-pine",
+    "name_zh": "汉仪新蒂青松小楷",
+    "name_en": "Hanyi Senty Pine",
+    "language": "zh",
+    "description_zh": "钢笔小楷风格，用于随笔与散文。",
+    "description_en": "A fountain-pen Kai style for essays and prose.",
+    "project_url": "https://sentyfont.com/pine.htm",
+    "license_url": "https://sentyfont.com/pine.htm",
+    "license": "personal-noncommercial",
+    "checked_at": "2026-10-15"
+  }
+]

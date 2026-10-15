@@ -46,6 +46,8 @@ deletion, annotations or synchronization.
 | Startup | First start and restart; no missing DLLs; credentials remain available after restarting |
 | Library | EPUB import, invalid file rejection, cover loading, search/sort, opening animation, multi-select/export/local delete |
 | Fonts/layout | Chinese fonts available on Windows; no Japanese fallback for Chinese; scale 100%/150%/200%, window resizing, light/dark theme |
+| Font library | Open the separate download view; verify Chinese/English filtering and offline specimens before downloading; download and apply a font; import valid TTF/OTF, reject invalid files and retry failed downloads |
+| English override | Select Follow Chinese Font, verify Latin glyphs use the selected Chinese font, reopen settings and restart; select an explicit English face and verify the override survives restart |
 | Reading | Scroll and curl, single/double page, partial mouse drag, reversal/cancellation, rapid repeated turns, forward/backward across chapter boundaries |
 | Reader UI | Hidden toolbar recovery, animated panels, compact TOC, no spine shadow jumps, correct page overlap and top/bottom gradients |
 | Local progress | Reopen the same book, restart the app, change font size/mode; restore text position rather than another device's page number |
