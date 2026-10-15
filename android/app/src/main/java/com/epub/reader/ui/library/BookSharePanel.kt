@@ -29,8 +29,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.zhongbai233.epub.reader.i18n.I18n
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
@@ -178,33 +176,29 @@ private fun BookShareHistory(model: BookShareModel, token: String?, authorized: 
     }
     deleting?.let { id -> AlertDialog(onDismissRequest = { deleting = null }, title = { Text(I18n.t("transfer.delete")) }, text = { Text(I18n.t("transfer.delete_confirm")) }, confirmButton = { TextButton(onClick = { deleting = null; model.command("delete_share", JSONObject().put("id", id).put("token", token)) }) { Text(I18n.t("transfer.delete")) } }, dismissButton = { TextButton(onClick = { deleting = null }) { Text(I18n.t("settings.cancel")) } }) }
 }
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BookShareReceiver(model: BookShareModel, onDismiss: () -> Unit) {
     WatchBookShare(model)
     val context = LocalContext.current
-    val scanner = rememberLauncherForActivityResult(ScanContract()) { result -> result.contents?.let { model.receive(it) } }
     val image = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { model.scanImage(context, it) } }
-    ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { model.cancel(); onDismiss() }) {
-        Column(Modifier.fillMaxWidth().fillMaxHeight(0.9f).padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(I18n.t("transfer.receive"), style = MaterialTheme.typography.headlineSmall)
-            val preview = model.state.optJSONObject("preview")
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (preview != null) {
-                    Text(I18n.t("transfer.import_hint"))
-                    val books = preview.getJSONArray("books")
-                    for (index in 0 until books.length()) Text(books.getJSONObject(index).getString("title"))
-                } else {
-                    Button(onClick = { scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(I18n.t("transfer.scan")).setOrientationLocked(false)) }, enabled = !model.busy) { Text(I18n.t("transfer.scan")) }
-                    OutlinedButton(onClick = { image.launch("image/*") }, enabled = !model.busy) { Text(I18n.t("transfer.image")) }
-                    Text(I18n.t("transfer.camera_hint"), style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(model.link, { model.link = it }, label = { Text(I18n.t("transfer.link")) }, modifier = Modifier.fillMaxWidth(), maxLines = 4)
-                }
-                BookShareProgress(model)
-            }
-            Button(onClick = { if (preview != null) model.command("accept") else model.receive(model.link) }, enabled = !model.busy && (preview != null || model.link.isNotBlank()), modifier = Modifier.fillMaxWidth()) { Text(I18n.t(if (preview != null) "transfer.import" else "transfer.connect")) }
-            if (model.busy) OutlinedButton(onClick = { model.cancel() }, modifier = Modifier.fillMaxWidth()) { Text(I18n.t("transfer.cancel")) }
-            Spacer(Modifier.height(16.dp))
+    val scanner = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            if (result.data?.getBooleanExtra(BookScanActivity.PICK_IMAGE, false) == true) image.launch("image/*")
+            else result.data?.getStringExtra(BookScanActivity.CONTENTS)?.let { model.receive(it) }
         }
     }
+    val progress = model.state.optJSONObject("progress")
+    val total = progress?.optLong("total") ?: 0L
+    val preview = model.state.optJSONObject("preview")?.optJSONArray("books")
+    val books = preview?.let { array -> (0 until array.length()).map { i ->
+        val book = array.getJSONObject(i); ReceivePreviewBook(book.getString("title"), book.optLong("size"))
+    } }
+    val error = model.error ?: progress?.optString("error")?.takeIf { it.isNotBlank() && it != "null" }
+    ReceiveBookSheet(ReceiveSheetState(model.busy, model.phase,
+        if (total > 0) ((progress?.optLong("done") ?: 0L).toFloat() / total).coerceIn(0f, 1f) else null,
+        books, error, model.result), model.link, { model.link = it },
+        scan = { scanner.launch(android.content.Intent(context, BookScanActivity::class.java)) },
+        image = { image.launch("image/*") }, receive = { model.receive(model.link.trim()) },
+        accept = { model.command("accept") }, cancel = { model.cancel() }, reset = { model.resetReceiver() },
+        onDismiss = { model.cancel(); onDismiss() })
 }

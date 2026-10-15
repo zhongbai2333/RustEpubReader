@@ -271,16 +271,34 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getCover(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let book = match get_book(&path) {
-        Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    match &book.cover_data {
+    match EpubBook::read_cover(&path).ok().flatten() {
         Some(data) => {
-            let encoded = base64_encode(data);
+            let encoded = base64_encode(&data);
             jni_string_or_null!(env, encoded)
         }
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Shelf requests never acquire BOOK_CACHE or parse chapter HTML/CSS.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getShelfCover(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    path: JString,
+) -> jstring {
+    let Ok(data_dir) = env.get_string(&data_dir) else {
+        return std::ptr::null_mut();
+    };
+    let data_dir: String = data_dir.into();
+    let Ok(path) = env.get_string(&path) else {
+        return std::ptr::null_mut();
+    };
+    let path: String = path.into();
+    let cache = std::path::Path::new(&data_dir).join(".cache/shelf-covers-v1");
+    match reader_core::library::covers::thumbnail(std::path::Path::new(&path), &cache) {
+        Some(bytes) => jni_string_or_null!(env, base64_encode(&bytes)),
         None => std::ptr::null_mut(),
     }
 }

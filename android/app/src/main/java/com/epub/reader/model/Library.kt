@@ -11,7 +11,7 @@ import java.io.File
  * - 所有持久化/迁移/去重/uuid.json 写入均交由 Rust core 统一处理
  * - Kotlin 仅保留轻量状态与 UI 友好接口
  */
-class Library(private val context: Context) {
+class Library(private val context: Context, loadImmediately: Boolean = true) {
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
     private val dataDir: String
@@ -21,7 +21,7 @@ class Library(private val context: Context) {
         private set
 
     init {
-        load()
+        if (loadImmediately) load()
     }
 
     fun reload() { load() }

@@ -26,6 +26,8 @@ pub struct ShareUI {
     poll: Instant,
     delete: Option<String>,
     copied: Option<Instant>,
+    picker: Option<mpsc::Receiver<Option<std::path::PathBuf>>>,
+    focus_link: bool,
 }
 impl Default for ShareUI {
     fn default() -> Self {
@@ -44,6 +46,8 @@ impl Default for ShareUI {
             poll: Instant::now(),
             delete: None,
             copied: None,
+            picker: None,
+            focus_link: false,
         }
     }
 }
@@ -70,6 +74,9 @@ impl ShareUI {
     pub fn open_receive(&mut self, root: &str) {
         self.receive = true;
         self.initialize(root);
+        self.result = None;
+        self.error = None;
+        self.focus_link = true;
     }
     fn start(&mut self, root: &str, mut request: Value, ctx: &egui::Context) {
         if self.busy {
@@ -109,6 +116,7 @@ impl ShareUI {
     pub(super) fn cancel(&mut self, root: &str) {
         reader_core::book_share::stop(root);
         self.receiver = None;
+        self.picker = None;
         self.busy = false;
         self.qr = None;
         self.state = reader_core::book_share::state(root);
@@ -494,30 +502,200 @@ impl ReaderApp {
         if !self.book_share.receive {
             return;
         }
-        let mut open = true;
+        if let Some(result) = self
+            .book_share
+            .picker
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        {
+            self.book_share.picker = None;
+            if let Some(path) = result {
+                self.book_share.start(
+                    &self.data_dir,
+                    json!({"op":"decode_image","path":path}),
+                    ctx,
+                );
+            }
+        }
+        let p = super::design::Palette::new(self.dark_mode);
+        let width = (ctx.screen_rect().width() - 72.).clamp(240., 520.);
+        let mut close = ctx.input(|input| input.key_pressed(egui::Key::Escape));
         egui::Window::new(self.i18n.t("transfer.receive"))
             .id(egui::Id::new("receive-books"))
-            .open(&mut open)
+            .title_bar(false)
             .collapsible(false)
-            .default_width(480.)
+            .resizable(false)
+            .default_width(width)
+            .max_width(width)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(p.surface)
+                    .corner_radius(16)
+                    .inner_margin(20),
+            )
             .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height((ctx.screen_rect().height() - 190.).max(130.))
-                    .show(ui, |ui| {
-                        if self.book_share.state["preview"].is_object() {
-                            ui.label(self.i18n.t("transfer.import_hint"));
-                            if let Some(books) =
-                                self.book_share.state["preview"]["books"].as_array()
-                            {
-                                for book in books {
-                                    ui.label(book["title"].as_str().unwrap_or(""));
-                                }
-                            }
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(8., 12.);
+                ui.horizontal(|ui| {
+                    ui.heading(self.i18n.t("transfer.receive"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Keep the close target in the content layout. Egui's
+                        // built-in title-bar double-click target overlaps its X
+                        // when the window has a generous inner margin.
+                        let response = ui.add_sized([40., 40.], egui::Button::new("").frame(false));
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                true,
+                                self.i18n.t("settings.close"),
+                            )
+                        });
+                        let c = response.rect.center();
+                        let stroke = egui::Stroke::new(1.5_f32, p.text);
+                        ui.painter().line_segment(
+                            [c + egui::vec2(-5., -5.), c + egui::vec2(5., 5.)],
+                            stroke,
+                        );
+                        ui.painter().line_segment(
+                            [c + egui::vec2(-5., 5.), c + egui::vec2(5., -5.)],
+                            stroke,
+                        );
+                        #[cfg(test)]
+                        ctx.data_mut(|data| {
+                            data.insert_temp(egui::Id::new("receive-close-test"), response.rect)
+                        });
+                        close |= response
+                            .on_hover_text(self.i18n.t("settings.close"))
+                            .clicked();
+                    });
+                });
+                // Reserve the title, summary, padding and footer before sizing
+                // the preview list, including the minimum-height desktop window.
+                let height = (ctx.screen_rect().height() - 320.).clamp(44., 260.);
+                if let Some((imported, skipped)) = self.book_share.result {
+                    ui.add_space(8.);
+                    ui.strong(self.i18n.t("transfer.imported"));
+                    ui.label(self.i18n.tf2(
+                        "transfer.result",
+                        &imported.to_string(),
+                        &skipped.to_string(),
+                    ));
+                    ui.add_space(12.);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        close |= ui
+                            .add_sized(
+                                [120., 40.],
+                                super::design::primary(self.i18n.t("manage.done")),
+                            )
+                            .clicked();
+                    });
+                } else if self.book_share.busy {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(20.));
+                        ui.label(
+                            self.i18n
+                                .t(&format!("transfer.{}", self.book_share.phase())),
+                        );
+                    });
+                    let progress = &self.book_share.state["progress"];
+                    if let Some(total) = progress["total"].as_u64().filter(|total| *total > 0) {
+                        let done = progress["done"].as_u64().unwrap_or(0);
+                        ui.add(
+                            egui::ProgressBar::new((done as f32 / total as f32).clamp(0., 1.))
+                                .show_percentage(),
+                        );
+                    }
+                    ui.add_space(16.);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_sized(
+                                [120., 40.],
+                                egui::Button::new(self.i18n.t("transfer.cancel")),
+                            )
+                            .clicked()
+                        {
+                            self.book_share.cancel(&self.data_dir);
+                            self.book_share.focus_link = true;
+                        }
+                    });
+                } else if let Some(books) = self.book_share.state["preview"]["books"]
+                    .as_array()
+                    .cloned()
+                {
+                    ui.strong(self.i18n.t("receive.preview_title"));
+                    ui.label(egui::RichText::new(self.i18n.t("receive.ready_hint")).color(p.muted));
+                    ui.label(
+                        egui::RichText::new(self.i18n.count("ui.library_count", books.len()))
+                            .color(p.accent),
+                    );
+                    egui::Frame::default()
+                        .fill(p.raised)
+                        .corner_radius(12)
+                        .inner_margin(12)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("receive-preview")
+                                .max_height(height.min(260.))
+                                .show_rows(ui, 44., books.len(), |ui, range| {
+                                    for index in range {
+                                        let book = &books[index];
+                                        let title = book["title"].as_str().unwrap_or("");
+                                        let size =
+                                            book["size"].as_u64().unwrap_or(0) as f64 / 1048576.;
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(ui.available_width(), 44.),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                let remaining =
+                                                    (ui.available_width() - 90.).max(60.);
+                                                ui.add_sized(
+                                                    [remaining, 40.],
+                                                    egui::Label::new(title).truncate(),
+                                                )
+                                                .on_hover_text(title);
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(format!(
+                                                                "{size:.1} MB"
+                                                            ))
+                                                            .small()
+                                                            .color(p.muted),
+                                                        );
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    }
+                                });
+                        });
+                    if let Some(error) = self.book_share.error.as_deref() {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            self.i18n.tf1("transfer.failed", error),
+                        );
+                    }
+                    ui.add_space(4.);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_sized(
+                                [110., 40.],
+                                egui::Button::new(self.i18n.t("receive.choose_again")),
+                            )
+                            .clicked()
+                        {
+                            self.book_share.cancel(&self.data_dir);
+                            self.book_share.focus_link = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .add_enabled(
-                                    !self.book_share.busy,
-                                    egui::Button::new(self.i18n.t("transfer.import")),
+                                .add_sized(
+                                    [140., 40.],
+                                    super::design::primary(self.i18n.t("transfer.import")),
                                 )
                                 .clicked()
                             {
@@ -525,53 +703,91 @@ impl ReaderApp {
                                 self.book_share
                                     .start(&self.data_dir, json!({"op":"accept"}), ctx);
                             }
-                        } else {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.book_share.link)
-                                    .desired_rows(3)
-                                    .hint_text(self.i18n.t("transfer.link")),
-                            );
-                            if ui
+                        });
+                    });
+                } else {
+                    ui.label(self.i18n.t("receive.link_title"));
+                    let response = ui.add_sized(
+                        [ui.available_width(), 40.],
+                        super::design::text_edit(&mut self.book_share.link)
+                            .hint_text(self.i18n.t("receive.link_placeholder")),
+                    );
+                    if self.book_share.focus_link {
+                        response.request_focus();
+                        self.book_share.focus_link = false;
+                    }
+                    let enter = response.lost_focus()
+                        && ctx.input(|input| input.key_pressed(egui::Key::Enter));
+                    if ui
+                        .add_enabled(
+                            self.book_share.picker.is_none(),
+                            egui::Button::new(
+                                egui::RichText::new(self.i18n.t("transfer.image")).color(p.accent),
+                            )
+                            .min_size(egui::vec2(0., 36.)),
+                        )
+                        .clicked()
+                    {
+                        let (sender, receiver) = mpsc::channel();
+                        self.book_share.picker = Some(receiver);
+                        let context = ctx.clone();
+                        std::thread::spawn(move || {
+                            let file = rfd::FileDialog::new()
+                                .add_filter("QR", &["png", "jpg", "jpeg", "webp"])
+                                .pick_file();
+                            let _ = sender.send(file);
+                            context.request_repaint();
+                        });
+                    }
+                    if self.book_share.picker.is_some() {
+                        ui.spinner();
+                    }
+                    if let Some(error) = self
+                        .book_share
+                        .error
+                        .as_deref()
+                        .or(self.book_share.state["progress"]["error"].as_str())
+                    {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            self.i18n.tf1("transfer.failed", error),
+                        );
+                    }
+                    ui.label(
+                        egui::RichText::new(self.i18n.t("receive.no_login"))
+                            .small()
+                            .color(p.muted),
+                    );
+                    ui.add_space(8.);
+                    ui.horizontal(|ui| {
+                        close |= ui
+                            .add_sized([90., 40.], egui::Button::new(self.i18n.t("settings.close")))
+                            .clicked();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let allowed = !self.book_share.link.trim().is_empty()
+                                && self.book_share.picker.is_none();
+                            if (ui
                                 .add_enabled(
-                                    !self.book_share.busy,
-                                    egui::Button::new(self.i18n.t("transfer.image")),
+                                    allowed,
+                                    super::design::primary(self.i18n.t("transfer.connect"))
+                                        .min_size(egui::vec2(140., 40.)),
                                 )
                                 .clicked()
+                                || enter)
+                                && allowed
                             {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("QR", &["png", "jpg", "jpeg", "webp"])
-                                    .pick_file()
-                                {
-                                    self.book_share.start(
-                                        &self.data_dir,
-                                        json!({"op":"decode_image","path":path}),
-                                        ctx,
-                                    );
-                                }
-                            }
-                            if ui
-                                .add_enabled(
-                                    !self.book_share.busy
-                                        && !self.book_share.link.trim().is_empty(),
-                                    egui::Button::new(self.i18n.t("transfer.connect")),
-                                )
-                                .clicked()
-                            {
+                                let link = self.book_share.link.trim();
                                 self.book_share.start(
                                     &self.data_dir,
-                                    json!({"op":"receive","link":self.book_share.link}),
+                                    json!({"op":"receive","link":link}),
                                     ctx,
                                 );
                             }
-                        }
-                        self.render_book_share_status(ui);
-                        self.render_published_shares(ui);
+                        });
                     });
-                if ui.button(self.i18n.t("transfer.cancel")).clicked() {
-                    self.book_share.cancel(&self.data_dir);
                 }
             });
-        if !open {
+        if close {
             self.book_share.receive = false;
             self.book_share.cancel(&self.data_dir);
         }
@@ -677,4 +893,125 @@ pub(super) fn share_action_row(
         stroke,
     ));
     response
+}
+
+#[cfg(debug_assertions)]
+impl ShareUI {
+    pub(crate) fn receive_fixture(scene: &str) -> Self {
+        let mut view = Self::default();
+        view.receive = true;
+        view.focus_link = true;
+        match scene {
+            "preview" => {
+                view.state = json!({"preview":{"books":[
+                {"title":"阅读与时间","size":1430000}, {"title":"山河来信","size":2180000},
+                {"title":"城市漫游：街巷里的故事","size":4260000}, {"title":"Notes on Light","size":630000} ]}})
+            }
+            "busy" => {
+                view.busy = true;
+                view.state = json!({"progress":{"phase":"verifying","done":63,"total":100}});
+            }
+            "success" => view.result = Some((3, 1)),
+            "error" => view.error = Some("Invalid share link".into()),
+            _ => {}
+        }
+        view
+    }
+}
+
+#[cfg(test)]
+mod receive_tests {
+    use super::*;
+    #[test]
+    fn receive_states_stay_inside_small_and_scaled_viewports() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let root = tempfile::tempdir().unwrap();
+        let mut app = ReaderApp::from_data_dir(root.path().to_string_lossy().into());
+        for size in [
+            egui::vec2(360., 500.),
+            egui::vec2(600., 400.),
+            egui::vec2(1200., 800.),
+        ] {
+            for scale in [1., 2.] {
+                for scene in ["entry", "preview", "busy", "success", "error"] {
+                    app.book_share = ShareUI::receive_fixture(scene);
+                    let ctx = egui::Context::default();
+                    ctx.set_pixels_per_point(scale);
+                    super::super::design::apply(&ctx, true);
+                    for _ in 0..3 {
+                        let _ = ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    size,
+                                )),
+                                ..Default::default()
+                            },
+                            |ctx| app.render_receive_books(ctx),
+                        );
+                    }
+                    let area = ctx
+                        .memory(|memory| memory.area_rect(egui::Id::new("receive-books")))
+                        .unwrap();
+                    assert!(
+                        area.min.x >= -1.
+                            && area.min.y >= -1.
+                            && area.max.x <= size.x + 1.
+                            && area.max.y <= size.y + 1.,
+                        "{scene} {size:?}@{scale}: {area:?}"
+                    );
+                    let target: egui::Rect = ctx
+                        .data(|data| data.get_temp(egui::Id::new("receive-close-test")))
+                        .unwrap();
+                    assert!(target.width() >= 40. && target.height() >= 40.);
+                    // Use actual pointer press/release: Escape alone missed the
+                    // old title-bar hit-region regression.
+                    for pressed in [true, false] {
+                        let _ = ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    size,
+                                )),
+                                events: vec![
+                                    egui::Event::PointerMoved(target.center()),
+                                    egui::Event::PointerButton {
+                                        pos: target.center(),
+                                        button: egui::PointerButton::Primary,
+                                        pressed,
+                                        modifiers: Default::default(),
+                                    },
+                                ],
+                                ..Default::default()
+                            },
+                            |ctx| app.render_receive_books(ctx),
+                        );
+                    }
+                    assert!(
+                        !app.book_share.receive && !app.book_share.busy,
+                        "X did not close {scene} {size:?}@{scale}"
+                    );
+                    app.book_share = ShareUI::receive_fixture(scene);
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                            events: vec![egui::Event::Key {
+                                key: egui::Key::Escape,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: Default::default(),
+                            }],
+                            ..Default::default()
+                        },
+                        |ctx| app.render_receive_books(ctx),
+                    );
+                    assert!(
+                        !app.book_share.receive && !app.book_share.busy,
+                        "Escape did not close {scene}"
+                    );
+                }
+            }
+        }
+    }
 }

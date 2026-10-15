@@ -46,7 +46,10 @@ class BookShareModel(private val root: String, private val beforeImport: () -> U
             try {
                 val value = withContext(Dispatchers.IO) { call(request) }
                 if (generation != intent) return@launch
-                state = withContext(Dispatchers.IO) { call(JSONObject().put("op", "state")) }
+                val snapshot = withContext(Dispatchers.IO) { call(JSONObject().put("op", "state")) }
+                // Cancel/reset may run while the final state request is in flight.
+                if (generation != intent) return@launch
+                state = snapshot
                 jobId = state.optString("job_id")
                 busy = false
                 if (op == "accept") { result = value.optInt("imported") to value.optInt("skipped"); imported() }
@@ -92,6 +95,9 @@ class BookShareModel(private val root: String, private val beforeImport: () -> U
                 busy = false; command("decode_image", JSONObject().put("path", file.absolutePath), file)
             } catch (failure: Exception) { file?.delete(); if (generation == intent) { error = failure.message; busy = false } }
         }
+    }
+    fun resetReceiver() {
+        cancel(); jobId = null; state = JSONObject(); result = null; error = null; link = ""
     }
     fun close() { cancel() }
 }

@@ -1,4 +1,5 @@
 //! Library management, book cataloging, and metadata parsing.
+pub mod covers;
 mod types;
 pub use types::*;
 

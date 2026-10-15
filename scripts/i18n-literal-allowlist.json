@@ -978,5 +978,20 @@
     "path": "ios/Reader/ReaderI18n.swift",
     "text": "中文",
     "reason": "Native language self-name is retained in both interface languages."
+  },
+  {
+    "path": "desktop/src/ui/book_share.rs",
+    "text": "阅读与时间",
+    "reason": "Debug-only generated book title fixture, not an application UI label."
+  },
+  {
+    "path": "desktop/src/ui/book_share.rs",
+    "text": "山河来信",
+    "reason": "Debug-only generated book title fixture, not an application UI label."
+  },
+  {
+    "path": "desktop/src/ui/book_share.rs",
+    "text": "城市漫游：街巷里的故事",
+    "reason": "Debug-only generated book title fixture, not an application UI label."
   }
 ]

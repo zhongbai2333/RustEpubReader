@@ -39,6 +39,7 @@ library.json
 peers.json
 settings.json
 books/
+.cache/shelf-covers-v1/
 models/
 android/app/src/main/jniLibs/
 # Device-local sync journal (no credentials)

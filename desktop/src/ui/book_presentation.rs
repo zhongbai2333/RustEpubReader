@@ -64,6 +64,13 @@ impl BookPresentation {
     pub fn promoted_card(&self, path: &str) -> bool {
         self.reorder_started.is_some() && self.reorder_book.as_deref() == Some(path)
     }
+    pub fn reorders_from_visible(&self, path: &str, viewport: egui::Rect) -> bool {
+        self.reorder_started.is_some()
+            && self
+                .reorder_from
+                .get(path)
+                .is_some_and(|rect| viewport.intersects(*rect))
+    }
     pub fn shelf_card_rect(
         &mut self,
         path: &str,

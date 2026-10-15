@@ -98,12 +98,19 @@ private struct BookShareReply: Decodable { let imported: Int?; let skipped: Int?
             if generation == intent { state = snapshot; jobID = snapshot.job_id }
         } catch {}
     }
+    func resetReceiver() {
+        cancel()
+        let history = state.history
+        state = BookShareState(); state.history = history
+        jobID = nil; result = nil; link = ""
+    }
     func cancel() {
         generation = UUID(); busy = false; error = nil
+        let intent = generation
         let client = self.client, stopping = jobID
         Task {
             let snapshot: BookShareState? = try? await Task.detached { try client.call("book_share", ["request": ["op": "cancel", "job_id": stopping ?? ""]]) }.value
-            if jobID == stopping, let snapshot { state = snapshot }
+            if generation == intent, jobID == stopping, let snapshot { state = snapshot }
         }
         UIApplication.shared.isIdleTimerDisabled = false
     }
@@ -125,6 +132,7 @@ struct BookShareStatusView: View {
 }
 struct ShareBookSummary: View {
     let books: [LibraryEntry]
+    let covers: ShelfCoverStore
     @State private var cover: UIImage?
     @State private var selection = false
     var body: some View {
@@ -140,8 +148,11 @@ struct ShareBookSummary: View {
             Spacer(minLength: 0)
             if books.count > 1 { Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary) }
         }.contentShape(Rectangle()).onTapGesture { if books.count > 1 { selection = true } }
-            .task(id: books.first?.coverPath) {
-                if let path = books.first?.coverPath, let data = try? await Task.detached(operation: { try Data(contentsOf: URL(fileURLWithPath: path)) }).value { cover = UIImage(data: data) }
+            .task(id: books.first?.id) {
+                if let book = books.first {
+                    let loaded = await covers.image(id: book.id, path: book.path)
+                    if !Task.isCancelled { cover = loaded }
+                }
             }
             .sheet(isPresented: $selection) {
                 NavigationStack {
@@ -259,35 +270,125 @@ struct ReceiveBooksView: View {
     @ObservedObject var account: GitHubAccount
     @Environment(\.dismiss) private var dismiss
     @State private var scanning = false
+    @State private var editingLink = false
     @State private var image: PhotosPickerItem?
+    @FocusState private var linkFocused: Bool
+    private var inputVisible: Bool { !sharing.busy && sharing.result == nil && sharing.state.preview == nil }
+    private var displayedError: String? { sharing.error ?? sharing.state.progress.error }
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let preview = sharing.state.preview {
-                        Text(L("transfer.import_hint"))
-                        ForEach(Array(preview.books.enumerated()), id: \.offset) { _, book in Text(book.title) }
-                    } else {
-                        Button(L("transfer.scan"), systemImage: "qrcode.viewfinder") { scanning = true }.buttonStyle(.borderedProminent).disabled(sharing.busy)
-                        PhotosPicker(selection: $image, matching: .images) { Label(L("transfer.image"), systemImage: "photo") }.disabled(sharing.busy)
-                        Text(L("transfer.camera_hint")).font(.footnote).foregroundStyle(.secondary)
-                        TextField(L("transfer.link"), text: $sharing.link, axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).autocorrectionDisabled()
+            List {
+                if let (imported, skipped) = sharing.result {
+                    Section {
+                        Label(L("transfer.imported"), systemImage: "checkmark.circle")
+                            .font(.headline)
+                        Text(L("transfer.result", imported, skipped))
                     }
-                    BookShareStatusView(sharing: sharing)
-                    if sharing.busy { Button(L("transfer.cancel"), role: .destructive) { sharing.cancel() } }
-                    PublishedBookShares(sharing: sharing, account: account)
-                }.padding(20)
-            }.safeAreaInset(edge: .bottom) {
-                Button(sharing.state.preview == nil ? L("transfer.connect") : L("transfer.import")) {
-                    if sharing.state.preview != nil { sharing.command("accept") } else { sharing.receive(sharing.link) }
-                }.buttonStyle(.borderedProminent).disabled(sharing.busy || (sharing.state.preview == nil && sharing.link.isEmpty)).padding(20).frame(maxWidth: .infinity).background(.bar)
-            }
-            .navigationTitle(L("transfer.receive")).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("settings.close")) { sharing.cancel(); dismiss() } } }
-            .sheet(isPresented: $scanning) { NavigationStack { ShareQRScanner { payload in scanning = false; sharing.receive(payload) }.ignoresSafeArea(edges: .bottom).navigationTitle(L("transfer.scan")).toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("settings.close")) { scanning = false } } } } }
-            .task(id: image) { if let image, let bytes = try? await image.loadTransferable(type: Data.self), !Task.isCancelled { sharing.scanImage(bytes) } }
-            .task { while !Task.isCancelled { await sharing.poll(); try? await Task.sleep(for: .milliseconds(500)) } }
-        }.onDisappear { sharing.cancel() }
+                } else if sharing.busy {
+                    Section {
+                        HStack(spacing: 14) {
+                            ProgressView()
+                            Text(L("transfer." + sharing.phase))
+                        }.padding(.vertical, 8)
+                        if sharing.state.progress.total > 0 {
+                            ProgressView(value: Double(sharing.state.progress.done), total: Double(sharing.state.progress.total))
+                        }
+                    }
+                } else if let preview = sharing.state.preview {
+                    Section {
+                        Text(L("receive.ready_hint")).font(.subheadline).foregroundStyle(.secondary)
+                    } header: { Text(L("receive.preview_title")) }
+                    Section {
+                        ForEach(Array(preview.books.enumerated()), id: \.offset) { _, book in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(book.title).lineLimit(2)
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: book.size), countStyle: .file))
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }.padding(.vertical, 2)
+                        }
+                    } header: { Text(L("manage.count", preview.books.count)) }
+                } else if editingLink {
+                    Section {
+                        TextField(L("receive.link_placeholder"), text: $sharing.link, axis: .vertical)
+                            .lineLimit(1...3).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .keyboardType(.URL).focused($linkFocused)
+                            .accessibilityLabel(L("receive.link_title"))
+                    } header: { Text(L("receive.link_title")) }
+                      footer: { Text(L("receive.no_login")) }
+                } else {
+                    Section {
+                        Button { scanning = true } label: { sourceLabel("transfer.scan", "qrcode.viewfinder") }
+                        PhotosPicker(selection: $image, matching: .images) { sourceLabel("transfer.image", "photo") }
+                        Button { editingLink = true } label: { sourceLabel("transfer.link", "link") }
+                    } footer: { Text(L("receive.no_login")) }
+                }
+                if let error = displayedError {
+                    Section { Text(L("transfer.failed", error)).font(.footnote).foregroundStyle(.red) }
+                }
+            }.listStyle(.insetGrouped)
+             .scrollDismissesKeyboard(.interactively)
+             .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+             .navigationTitle(L(editingLink && inputVisible ? "receive.link_title" : "transfer.receive"))
+             .navigationBarTitleDisplayMode(.inline)
+             .toolbar {
+                 if editingLink && inputVisible {
+                     ToolbarItem(placement: .cancellationAction) {
+                         Button { linkFocused = false; editingLink = false } label: {
+                             Label(L("settings.back"), systemImage: "chevron.left")
+                         }
+                     }
+                 }
+                 ToolbarItem(placement: .confirmationAction) {
+                     Button(L("settings.close")) { sharing.cancel(); dismiss() }
+                 }
+             }
+             .sheet(isPresented: $scanning) {
+                 NavigationStack {
+                     ShareQRScanner { payload in scanning = false; sharing.receive(payload) }
+                         .ignoresSafeArea(edges: .bottom)
+                         .navigationTitle(L("transfer.scan")).navigationBarTitleDisplayMode(.inline)
+                         .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("settings.close")) { scanning = false } } }
+                 }
+             }
+             .task(id: image) {
+                 if let selected = image, let bytes = try? await selected.loadTransferable(type: Data.self), !Task.isCancelled {
+                     image = nil; sharing.scanImage(bytes)
+                 }
+             }
+             .task(id: editingLink && inputVisible) { linkFocused = editingLink && inputVisible }
+             .task {
+                 editingLink = !sharing.link.isEmpty
+                 while !Task.isCancelled { await sharing.poll(); try? await Task.sleep(for: .milliseconds(500)) }
+             }
+        }.interactiveDismissDisabled(sharing.busy)
+         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+    }
+    private func sourceLabel(_ key: String, _ symbol: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).foregroundStyle(.tint).frame(width: 24)
+            Text(L(key)).foregroundStyle(Color.primary)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Color(.tertiaryLabel))
+        }.padding(.vertical, 6).contentShape(Rectangle())
+    }
+    @ViewBuilder private var footer: some View {
+        if sharing.result != nil || sharing.busy || sharing.state.preview != nil || editingLink {
+            VStack(spacing: 8) {
+                if sharing.result != nil {
+                    Button(L("manage.done")) { dismiss() }.buttonStyle(.borderedProminent)
+                } else if sharing.busy {
+                    Button(L("transfer.cancel")) { sharing.cancel() }.buttonStyle(.bordered)
+                } else if sharing.state.preview != nil {
+                    Button(L("transfer.import")) { sharing.command("accept") }.buttonStyle(.borderedProminent)
+                    Button(L("receive.choose_again")) { sharing.resetReceiver(); editingLink = false }
+                } else {
+                    Button(L("transfer.connect")) {
+                        linkFocused = false
+                        sharing.receive(sharing.link.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }.buttonStyle(.borderedProminent).disabled(sharing.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }.controlSize(.large).frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
+        }
     }
 }
 struct ShareQRScanner: UIViewControllerRepresentable {

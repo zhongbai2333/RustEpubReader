@@ -136,6 +136,8 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
 
     // 共享对话框状态
     var homeTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
+    var libraryQuery by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var librarySearching by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(homeTab) { if(homeTab != 0) bookMotion.shelfOrder.reset() }
     var showMultiPlatformSyncDialog by remember { mutableStateOf(false) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -277,9 +279,12 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                 } else {
                     // ---- 书库界面 ----
                     if (homeTab == 1) {
-                        SyncScreen(vm, onLibrary = { homeTab = 0 })
+                        SyncScreen(vm, onLibrary = { homeTab = 0 }, onSearch = { homeTab = 0; librarySearching = true })
                     } else {
                         LibraryScreen(
+                            active = book == null && !bookMotion.active,
+                            query = libraryQuery, searchActive = librarySearching,
+                            onQueryChange = { libraryQuery = it }, onSearchActiveChange = { librarySearching = it },
                             shelfOrder = bookMotion.shelfOrder,
                             shelfRevision = bookMotion.shelfRevision,
                             promotedUri = bookMotion.sourceUri,
@@ -296,7 +301,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             githubToken = vm.githubToken,
                             githubAuthorized = vm.githubRepoAuthorized,
                             onGithubLogin = { homeTab = 1; vm.startGitHubLogin(privateSync = true, enableAfterLogin = false) },
-                            onReceiveBooks = { vm.receivingSharedBooks = true; vm.bookSharing.refresh() },
+                            onReceiveBooks = { vm.bookSharing.resetReceiver(); vm.receivingSharedBooks = true },
                             onRenameBook = { uri, title -> vm.renameBook(uri, title) },
                             exportingBooks = preparingBookExport,
                             onExportBooks = { paths ->
@@ -342,7 +347,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                                 vm.updateLanguage(code)
                             },
                             onRefreshLibrary = {
-                                vm.refreshLibrary()
+                                vm.refreshLibrary().join()
                             },
                             onOpenAbout = { showAboutScreen = true },
                         )

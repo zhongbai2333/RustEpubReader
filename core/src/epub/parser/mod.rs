@@ -410,6 +410,41 @@ impl EpubBook {
         crate::file_hash(path)
     }
 
+    /// Read the manifest cover without reading chapter HTML, CSS, images or fonts.
+    pub fn read_cover<P: AsRef<Path>>(path: P) -> Result<Option<Vec<u8>>, String> {
+        let epub = RbookEpub::options()
+            .skip_toc(true)
+            .skip_spine(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        epub.manifest()
+            .cover_image()
+            .map(|entry| {
+                // Stop ZIP decompression before an oversized cover can allocate
+                // an unbounded buffer. No chapter/resource cache is involved.
+                struct CoverBytes(Vec<u8>);
+                impl std::io::Write for CoverBytes {
+                    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                        if bytes.len() > (16 * 1024 * 1024_usize).saturating_sub(self.0.len()) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Cover exceeds shelf image limit",
+                            ));
+                        }
+                        self.0.extend_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                    fn flush(&mut self) -> std::io::Result<()> {
+                        Ok(())
+                    }
+                }
+                let mut bytes = CoverBytes(Vec::new());
+                entry.copy_bytes(&mut bytes).map_err(|e| e.to_string())?;
+                Ok(bytes.0)
+            })
+            .transpose()
+    }
+
     /// Read only the title metadata from an epub file without full parsing.
     pub fn read_title<P: AsRef<Path>>(path: P) -> Option<String> {
         let epub = RbookEpub::options()

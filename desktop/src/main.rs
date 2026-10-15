@@ -211,6 +211,17 @@ fn main() -> eframe::Result {
             setup_fonts(&cc.egui_ctx);
             let mut app = ReaderApp::default();
             #[cfg(debug_assertions)]
+            if std::env::args().any(|arg| arg == "--ui-preview") {
+                if let Ok(scene) = std::env::var("READER_RECEIVE_PREVIEW") {
+                    app.book_share = ui::book_share::ShareUI::receive_fixture(&scene);
+                    app.i18n
+                        .set_language(reader_core::i18n::Language::from_code("zh_cn"));
+                    app.dark_mode = std::env::var("READER_RECEIVE_DARK").as_deref() == Ok("1");
+                    app.appearance_linkage.set_app(app.dark_mode);
+                }
+            }
+
+            #[cfg(debug_assertions)]
             if std::env::args().any(|a| a == "--appearance-linkage-preview") {
                 app.show_appearance_linkage = true;
                 app.i18n

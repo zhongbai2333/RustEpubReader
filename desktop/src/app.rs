@@ -320,6 +320,10 @@ fn generate_pin() -> String {
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 struct AppSettings {
+    #[serde(default)]
+    library_list_mode: bool,
+    #[serde(default)]
+    library_sort_title: bool,
     #[serde(default = "default_scripts_enabled")]
     scripts_enabled: bool,
     #[serde(default)]
@@ -449,6 +453,8 @@ impl AppSettings {
         let mut reading_themes = app.reading_themes.clone();
         reading_themes.capture(appearance_paints.clone());
         Self {
+            library_list_mode: app.library_list_mode,
+            library_sort_title: app.library_sort_title,
             scripts_enabled: app.scripts_enabled,
             css_policy: app.css_policy,
             font_size: app.font_size,
@@ -497,6 +503,8 @@ impl AppSettings {
     }
 
     fn apply_to_app(&self, app: &mut ReaderApp) {
+        app.library_list_mode = self.library_list_mode;
+        app.library_sort_title = self.library_sort_title;
         app.font_size = self.font_size.clamp(12.0, 40.0);
         app.reader_introduction_seen = self
             .reader_introduction_seen
@@ -676,6 +684,7 @@ pub struct ReaderApp {
     pub library_confirm_delete: bool,
     pub library_query: String,
     pub library_sort_title: bool,
+    pub library_list_mode: bool,
     pub sync_tab: usize,
     pub library: Library,
     pub scroll_mode: bool,
@@ -686,6 +695,7 @@ pub struct ReaderApp {
     pub page_block_ranges: crate::ui::reader_pagination::PageRanges,
     pub pages_dirty: bool,
     pub cover_textures: HashMap<String, Option<egui::TextureHandle>>,
+    pub(crate) shelf_covers: crate::ui::shelf_covers::ShelfCovers,
     pub last_avail_width: f32,
     pub last_avail_height: f32,
     pub page_anim_from: usize,
@@ -1038,6 +1048,7 @@ impl ReaderApp {
             library_confirm_delete: false,
             library_query: String::new(),
             library_sort_title: false,
+            library_list_mode: false,
             sync_tab: 0,
             library,
             scroll_mode: false,
@@ -1048,6 +1059,7 @@ impl ReaderApp {
             page_block_ranges: Default::default(),
             pages_dirty: true,
             cover_textures: HashMap::new(),
+            shelf_covers: Default::default(),
             last_avail_width: 0.0,
             last_avail_height: 0.0,
             page_anim_from: 0,

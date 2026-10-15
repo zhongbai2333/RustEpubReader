@@ -86,11 +86,10 @@ impl Drop for ImportScratch {
         let _ = std::fs::remove_file(&self.0);
     }
 }
-fn entry_value(root: &str, entry: &BookEntry) -> Value {
+fn entry_value(_root: &str, entry: &BookEntry) -> Value {
     let mut value = json!(entry);
-    value["cover_path"] = json!(PathBuf::from(root)
-        .join("books")
-        .join(format!("{}.cover", entry.id)));
+    // Legacy cover_path remains decodable; shelf images are requested separately.
+    value["cover_path"] = Value::Null;
     value
 }
 fn book(root: &str, entry: &BookEntry) -> Result<EpubBook, String> {
@@ -143,6 +142,24 @@ fn dispatch(v: Value) -> Result<Value, String> {
     }
     std::fs::create_dir_all(root).map_err(|_| "Cannot create library storage")?;
     match field(&v, "op")? {
+        "shelf_cover" => {
+            let id = field(&v, "id")?;
+            // Snapshot lookup is brief. Cover decompression must not hold the
+            // mutation lock, reader cache, or the Swift CoreStore actor.
+            let book = {
+                let _guard = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                Library::read_snapshot(root)?
+                    .books
+                    .into_iter()
+                    .find(|book| book.id == id)
+                    .ok_or("Book is no longer in the library")?
+            };
+            let bytes = reader_core::library::covers::thumbnail(
+                std::path::Path::new(&book.path),
+                &PathBuf::from(root).join(".cache/shelf-covers-v1"),
+            );
+            Ok(json!({"data": bytes.map(|data| reader_core::base64_encode(&data))}))
+        }
         "book_share" => {
             let request = v["request"].clone();
             if request["op"].as_str() == Some("accept") {
@@ -262,27 +279,11 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     let paths = reader_core::export::export_originals(&books, &directory)?;
                     Ok(json!(paths))
                 }
-                "library" => {
-                    let entries = Library::load_from(root).books;
-                    let mut values = Vec::new();
-                    for e in entries {
-                        let cover = PathBuf::from(root)
-                            .join("books")
-                            .join(format!("{}.cover", e.id));
-                        if !cover.exists() {
-                            let data = EpubBook::open(&e.path)
-                                .ok()
-                                .and_then(|b| b.cover_data)
-                                .filter(|d| d.len() <= 8 * 1024 * 1024)
-                                .unwrap_or_default();
-                            let _ = std::fs::write(&cover, data);
-                        }
-                        let mut value = json!(e);
-                        value["cover_path"] = json!(cover);
-                        values.push(value);
-                    }
-                    Ok(json!(values))
-                }
+                "library" => Ok(json!(Library::load_from(root)
+                    .books
+                    .iter()
+                    .map(|entry| entry_value(root, entry))
+                    .collect::<Vec<_>>())),
                 "import" => {
                     let path = field(&v, "path")?;
                     // Local books can be larger than the cloud's 20 MiB limit.
@@ -539,6 +540,53 @@ mod tests {
         reader_core::txt::convert_txt_to_epub(&text, &PathBuf::from(root), &Default::default())
             .unwrap()
             .epub_path
+    }
+    #[test]
+    fn large_shelf_returns_catalog_without_extracting_or_parsing_books() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let directory = dir.path().join("books");
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut entries = Vec::new();
+        for n in 0..500 {
+            let id = format!("00000000-0000-4000-8000-{n:012}");
+            let path = directory.join(format!("{id}.epub"));
+            // A catalog load must not open/parse this intentionally invalid EPUB.
+            std::fs::write(&path, b"not a ZIP").unwrap();
+            std::fs::write(directory.join(format!("{id}.json")), b"{}").unwrap();
+            entries.push(json!({"id":id,"title":format!("Book {n}"),"path":path,
+                "last_chapter":0,"last_opened":1}));
+        }
+        std::fs::write(
+            dir.path().join("library.json"),
+            json!({"books":entries}).to_string(),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let reply = request(root, "library", json!({}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        let books = reply["result"].as_array().unwrap();
+        assert_eq!(books.len(), 500);
+        assert!(books.iter().all(|book| book["cover_path"].is_null()));
+        assert_eq!(
+            std::fs::read_dir(&directory).unwrap().count(),
+            1000,
+            "catalog eagerly wrote covers"
+        );
+        assert!(!dir.path().join(".cache").exists());
+        println!(
+            "500-book iOS catalog without cover work: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            request(root, "shelf_cover", json!({"id":books[0]["id"]}))["ok"],
+            true
+        );
+        assert_eq!(
+            request(root, "shelf_cover", json!({"id":"unknown"}))["ok"],
+            false
+        );
     }
     #[test]
     fn annotations_roundtrip_unicode_validation_and_local_batch_delete_preserve_external_source() {

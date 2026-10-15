@@ -19,6 +19,7 @@ pub mod review_panel;
 pub mod search;
 pub mod settings_new;
 pub mod sharing;
+pub(crate) mod shelf_covers;
 pub mod stats;
 pub mod toc;
 pub mod toolbar;

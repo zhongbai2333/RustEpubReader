@@ -261,7 +261,7 @@ struct BookShareView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 18) {
-                ShareBookSummary(books: books).padding(.horizontal, 24).padding(.top, 10)
+                ShareBookSummary(books: books, covers: library.covers).padding(.horizontal, 24).padding(.top, 10)
                 ScrollView {
                     BookShareSender(sharing: library.bookSharing, account: account, ids: books.map(\.id), stage: $stage, exporting: preparing, export: export).padding(.horizontal, 24).padding(.bottom, 24)
                     if let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal, 24) }
@@ -277,5 +277,94 @@ struct BookShareView: View {
         }.interactiveDismissDisabled(preparing)
             .presentationDetents(stage == 1 || (stage == 2 && library.bookSharing.phase == "published") ? [.large] : [.height(490), .large])
             .presentationDragIndicator(.visible)
+    }
+}
+
+// Search is a shelf tool, not a third destination or another mounted shelf.
+struct LibrarySearchPlacement: ViewModifier {
+    @Binding var query: String
+    let bottom: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if bottom { content }
+        else { content.searchable(text: $query, prompt: L("ui.search_books")) }
+    }
+}
+
+struct LibraryBottomBar: View {
+    @Binding var selection: Int
+    @Binding var query: String
+    @Binding var searching: Bool
+    var readerActive: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @FocusState private var focused: Bool
+    @Namespace private var morph
+    @ScaledMetric(relativeTo: .caption2) private var itemHeight = 48.0
+    @ScaledMetric(relativeTo: .body) private var fieldHeight = 52.0
+    private var height: CGFloat { max(itemHeight + 8, fieldHeight) }
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .trailing) {
+                if !searching {
+                    HStack {
+                        chrome(HStack(spacing: 0) {
+                            tab(0, "toolbar.library", "books.vertical")
+                            tab(1, "sync.multiplatform", "arrow.triangle.2.circlepath")
+                        }.padding(4))
+                        .frame(width: min(220, geometry.size.width - 68))
+                        .transition(.opacity)
+                        Spacer(minLength: 12)
+                        chrome(Button {
+                            selection = 0; searching = true
+                        } label: {
+                            Image(systemName: "magnifyingglass").font(.title3)
+                                .frame(width: fieldHeight, height: fieldHeight)
+                        }.accessibilityLabel(L("ui.search_books")))
+                        .matchedGeometryEffect(id: "shelf-search", in: morph)
+                    }
+                } else {
+                    chrome(HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary).padding(.leading, 14)
+                        TextField(L("ui.search_books"), text: $query)
+                            .focused($focused).submitLabel(.search).autocorrectionDisabled()
+                            .textInputAutocapitalization(.never).onSubmit { focused = false }
+                            .accessibilityLabel(L("ui.search_books"))
+                        if !query.isEmpty {
+                            Button { query = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(width: 44, height: 44)
+                            }.accessibilityLabel(L("ui.clear_search"))
+                        }
+                        Button(L("settings.cancel")) { cancel() }
+                            .frame(minWidth: 44, minHeight: 44).padding(.trailing, 10)
+                    }.frame(minHeight: fieldHeight))
+                    .matchedGeometryEffect(id: "shelf-search", in: morph)
+                }
+            }.frame(height: height)
+        }.frame(height: height).padding(.horizontal, 16).padding(.bottom, 8)
+         .animation(reduceMotion ? nil : .easeInOut(duration: 0.26), value: searching)
+         .task(id: searching) {
+             if searching {
+                 try? await Task.sleep(for: .milliseconds(reduceMotion ? 0 : 120))
+                 if !Task.isCancelled && !readerActive { focused = true }
+             } else { focused = false }
+         }
+         .onChange(of: readerActive) { _, active in if active { focused = false } }
+    }
+    private func cancel() { focused = false; query = ""; searching = false }
+    private func tab(_ value: Int, _ key: String, _ symbol: String) -> some View {
+        Button { cancel(); selection = value } label: {
+            VStack(spacing: 3) {
+                Image(systemName: symbol).font(.system(size: 18, weight: .medium))
+                Text(L(key)).font(.caption2).lineLimit(2).multilineTextAlignment(.center)
+            }.frame(maxWidth: .infinity, minHeight: itemHeight)
+             .foregroundStyle(selection == value ? Color.accentColor : Color.primary)
+             .background(selection == value ? Color.accentColor.opacity(0.13) : .clear, in: Capsule())
+             .contentShape(Capsule())
+        }.buttonStyle(.plain).accessibilityAddTraits(selection == value ? [.isSelected] : [])
+    }
+    @ViewBuilder private func chrome<Content: View>(_ content: Content) -> some View {
+        if reduceTransparency { content.background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule()) }
+        else if #available(iOS 26.0, *) { content.glassEffect(.regular.interactive(), in: Capsule()) }
+        else { content.background(.regularMaterial, in: Capsule()) }
     }
 }

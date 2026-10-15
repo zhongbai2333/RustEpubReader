@@ -17,6 +17,7 @@ object RustBridge {
     external fun nativeNote(path: String, chapter: Int, href: String): String?
     external fun nativePresentation(path: String, chapter: Int, policy: String, scripts: Boolean, events: String): String?
     external fun getCover(path: String): String?
+    external fun getShelfCover(dataDir: String, path: String): String?
 
     // Library management
     external fun loadLibrary(dataDir: String): String?

@@ -74,7 +74,9 @@ struct SyncSummary: Decodable {
 }
 
 @MainActor final class PreviewLibrary: ObservableObject {
-    @Published var books: [LibraryEntry] = []
+    @Published var books: [LibraryEntry] = [] {
+        didSet { recentBooks = books.sorted { $0.lastOpened > $1.lastOpened } }
+    }
     @Published var anchors: [String: ReadingAnchor] = [:]
     @Published var busy = false
     @Published var error: String?
@@ -83,11 +85,12 @@ struct SyncSummary: Decodable {
     var openPath = ""
     let client: CoreClient
     let store: CoreStore
+    let covers: ShelfCoverStore
     lazy var bookSharing = BookSharing(library: self)
     @Published var receivingSharedBooks = false
     private var saveTask: Task<Void, Never>?
     var recent: String { recentBooks.first?.id ?? "" }
-    var recentBooks: [LibraryEntry] { books.sorted { $0.lastOpened > $1.lastOpened } }
+    private(set) var recentBooks: [LibraryEntry] = []
     init() {
         let documents = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let root = documents.appendingPathComponent("ReaderLibrary", isDirectory: true)
@@ -98,6 +101,7 @@ struct SyncSummary: Decodable {
         let device = UserDefaults.standard.string(forKey: "reader.device") ?? UUID().uuidString
         UserDefaults.standard.set(device, forKey: "reader.device")
         client = .init(root: root.path, device: device); store = CoreStore(client: client)
+        covers = ShelfCoverStore(client: client)
         Task { await reload() }
     }
     func reload() async {

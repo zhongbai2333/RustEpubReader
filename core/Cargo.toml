@@ -31,7 +31,7 @@ hkdf = "0.12"
 qrcode = { version = "0.14.1", default-features = false }
 quircs = "0.10.3"
 libc = "0.2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 uuid = { version = "1", features = ["v4"] }
 keyring = { version = "3", optional = true }
 # TXT-to-EPUB

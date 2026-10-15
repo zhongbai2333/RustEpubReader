@@ -14,7 +14,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -24,6 +30,8 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInRoot
@@ -44,6 +52,11 @@ import kotlinx.coroutines.withContext
 @Composable
 fun LibraryScreen(
     books: List<BookEntry>,
+    active: Boolean = true,
+    query: String = "",
+    searchActive: Boolean = false,
+    onQueryChange: (String) -> Unit = {},
+    onSearchActiveChange: (Boolean) -> Unit = {},
     coverCache: Map<String, ByteArray?>,
     language: String,
     onOpenFilePicker: () -> Unit,
@@ -59,7 +72,7 @@ fun LibraryScreen(
     onReceiveBooks: () -> Unit = {},
     onRequestCover: (String) -> Unit = {},
     onUpdateLanguage: (String) -> Unit = {},
-    onRefreshLibrary: () -> Unit = {},
+    onRefreshLibrary: suspend () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenSync: () -> Unit = {},
     onOpenStatistics: () -> Unit = {},
@@ -80,82 +93,113 @@ fun LibraryScreen(
     var renameTitle by remember { mutableStateOf("") }
     LaunchedEffect(books.map { it.uri }) { selected = selected.filter { uri -> books.any { it.uri == uri } } }
     BackHandler(enabled = managing) { managing = false; selected = emptyList() }
-    var query by rememberSaveable { mutableStateOf("") }
-    var sortTitle by rememberSaveable { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var showMore by remember { mutableStateOf(false) }
+    val preferences = LocalContext.current.getSharedPreferences("library-display", android.content.Context.MODE_PRIVATE)
+    var sortTitle by rememberSaveable { mutableStateOf(preferences.getBoolean("sort-title", false)) }
+    var listMode by rememberSaveable { mutableStateOf(preferences.getBoolean("list", false)) }
+    val chooseSort: (Boolean) -> Unit = { value -> sortTitle = value; shelfOrder.reset(); preferences.edit().putBoolean("sort-title", value).apply(); showMore = false }
+    val chooseDisplay: (Boolean) -> Unit = { value -> listMode = value; preferences.edit().putBoolean("list", value).apply(); showMore = false }
     var showLanguage by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val ranked=if(sortTitle) books.sortedBy {it.title.lowercase()} else books.sortedByDescending {it.lastOpened}
-    val ranks=shelfOrder.resolve(ranked.map {it.uri},sortTitle,shelfRevision)
-        .withIndex().associate {it.value to it.index}
-    val filtered=ranked.sortedBy {ranks[it.uri] ?: Int.MAX_VALUE}.filter {it.title.contains(query,ignoreCase=true)}
-    val recent = books.maxByOrNull { it.lastOpened }?.takeIf { it.lastOpened > 0 }
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                I18n.t("library.title"),
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            if (syncing) {
-                                Spacer(Modifier.width(4.dp))
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp).semantics { contentDescription = I18n.t("cloud.syncing") },
-                                    strokeWidth = 1.5.dp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(I18n.t("cloud.syncing_indicator"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
+    val shelfBooks = books.toList()
+    val ranked = remember(shelfBooks, sortTitle) { if(sortTitle) shelfBooks.sortedBy {it.title.lowercase()} else shelfBooks.sortedByDescending {it.lastOpened} }
+    val ranks = remember(ranked, sortTitle, shelfRevision) {
+        shelfOrder.resolve(ranked.map {it.uri},sortTitle,shelfRevision).withIndex().associate {it.value to it.index}
+    }
+    val searchTerm = query.trim()
+    val filtered = remember(ranked, ranks, searchTerm) { ranked.sortedBy {ranks[it.uri] ?: Int.MAX_VALUE}.filter {it.title.contains(searchTerm,ignoreCase=true)} }
+    val recent = remember(shelfBooks) { shelfBooks.maxByOrNull { it.lastOpened }?.takeIf { it.lastOpened > 0 } }
+    val libraryHeader: @Composable () -> Unit = {
+        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            I18n.count("ui.library_count", books.size),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            I18n.t("library.title"),
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        if (syncing) {
+                            Spacer(Modifier.width(4.dp))
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp).semantics { contentDescription = I18n.t("cloud.syncing") },
+                                strokeWidth = 1.5.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(I18n.t("cloud.syncing_indicator"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Text(
+                        I18n.count("ui.library_count", books.size),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val outline = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                val buttonColors = IconButtonDefaults.outlinedIconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow, contentColor = MaterialTheme.colorScheme.primary)
+                OutlinedIconButton(onClick = onOpenFilePicker, border = outline, colors = buttonColors, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Add, I18n.t("ui.import"), Modifier.size(22.dp)) }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { managing = !managing; if (!managing) selected = emptyList() }, enabled = books.isNotEmpty(), shape = CircleShape, border = outline,
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.heightIn(min = 40.dp)) { Text(I18n.t(if (managing) "manage.done" else "manage.books"), maxLines = 1) }
+                Spacer(Modifier.width(8.dp))
+                Box {
+                    OutlinedIconButton(onClick = { showMore = true }, border = outline, colors = buttonColors, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.MoreHoriz, I18n.t("ui.more"), Modifier.size(22.dp))
+                    }
+                    DropdownMenu(showMore, { showMore = false }) {
+                        Text(I18n.t("common.sort"), Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        for ((title, value) in listOf("library.sort_recently_read" to false, "txt.book_title" to true)) {
+                            DropdownMenuItem(text = { Text(I18n.t(title)) }, onClick = { chooseSort(value) },
+                                modifier = Modifier.semantics { this.selected = sortTitle == value },
+                                trailingIcon = { if (sortTitle == value) Icon(Icons.Default.Check, null, Modifier.size(20.dp)) })
+                        }
+                        HorizontalDivider()
+                        Text(I18n.t("library.display"), Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        for ((title, value) in listOf("library.view_grid" to false, "library.view_list" to true)) {
+                            DropdownMenuItem(text = { Text(I18n.t(title)) }, onClick = { chooseDisplay(value) },
+                                modifier = Modifier.semantics { this.selected = listMode == value },
+                                trailingIcon = { if (listMode == value) Icon(Icons.Default.Check, null, Modifier.size(20.dp)) })
+                        }
+                        HorizontalDivider()
+                        DropdownMenuItem(text={Text(I18n.t("transfer.receive"))},onClick={showMore=false;onReceiveBooks()})
+                        DropdownMenuItem(text={Text(I18n.t("stats.title"))},onClick={showMore=false;onOpenStatistics()})
+                        DropdownMenuItem(
+                            text = { Text(I18n.t("ui.language")) },
+                            onClick = {
+                                showMore = false
+                                showLanguage = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(I18n.t("ui.appearance")) },
+                            onClick = {
+                                showMore = false
+                                onToggleTheme()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(I18n.t("about.title")) },
+                            onClick = {
+                                showMore = false
+                                onOpenAbout()
+                            },
                         )
                     }
-                },
-                actions = {
-                    TextButton(onClick = { managing = !managing; if (!managing) selected = emptyList() }, enabled = books.isNotEmpty()) { Text(I18n.t(if (managing) "manage.done" else "manage.books")) }
-                    Box {
-                        IconButton(onClick = { showMore = true }) {
-                            Icon(Icons.Default.MoreVert, I18n.t("ui.more"))
-                        }
-                        DropdownMenu(showMore, { showMore = false }) {
-                            DropdownMenuItem(text={Text(I18n.t("transfer.receive"))},onClick={showMore=false;onReceiveBooks()})
-                            DropdownMenuItem(text={Text(I18n.t("stats.title"))},onClick={showMore=false;onOpenStatistics()})
-                            DropdownMenuItem(
-                                text = { Text(I18n.t("ui.language")) },
-                                onClick = {
-                                    showMore = false
-                                    showLanguage = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(I18n.t("ui.appearance")) },
-                                onClick = {
-                                    showMore = false
-                                    onToggleTheme()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(I18n.t("about.title")) },
-                                onClick = {
-                                    showMore = false
-                                    onOpenAbout()
-                                },
-                            )
-                        }
-                    }
-                },
-            )
-        },
-        bottomBar = { HomeNavigation(false, {}, onOpenSync) },
+                }
+            }
+        }
+    }
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        bottomBar = { HomeNavigation(false, {}, onOpenSync,
+            onSearch = { onSearchActiveChange(true) }, searching = searchActive, query = query,
+            onQueryChange = onQueryChange, interactive = active, onSearchClose = { onSearchActiveChange(false); onQueryChange("") }) },
     ) { padding ->
         PullToRefreshBox(
             isRefreshing = refreshing,
@@ -164,6 +208,8 @@ fun LibraryScreen(
                     refreshing = true
                     try {
                         shelfOrder.reset()
+                        // Commit the refreshing state before even a fast cached refresh completes.
+                        withFrameNanos { }
                         onRefreshLibrary()
                     } finally {
                         refreshing = false
@@ -173,35 +219,12 @@ fun LibraryScreen(
             modifier = Modifier.fillMaxSize().padding(padding),
         ) {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(144.dp),
+                columns = if (listMode) GridCells.Fixed(1) else GridCells.Adaptive(144.dp),
                 contentPadding = PaddingValues(ReaderGeometry.PageInset),
                 horizontalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
-                verticalArrangement = Arrangement.spacedBy(ReaderGeometry.SectionGap),
+                verticalArrangement = Arrangement.spacedBy(if (listMode) 8.dp else ReaderGeometry.SectionGap),
             ) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
-                    ) {
-                        OutlinedTextField(
-                            value = query,
-                            onValueChange = { query = it },
-                            placeholder = { Text(I18n.t("ui.search_books")) },
-                            leadingIcon = { Icon(Icons.Default.Search, null) },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                            shape = ReaderGeometry.Shape,
-                        )
-                        Button(
-                            onClick = onOpenFilePicker,
-                            contentPadding = ReaderGeometry.ButtonPadding,
-                            modifier = Modifier.height(56.dp),
-                            shape = ReaderGeometry.Shape,
-                        ) {
-                            Text(I18n.t("ui.import"))
-                        }
-                    }
-                }
+                item(span = { GridItemSpan(maxLineSpan) }) { libraryHeader() }
                 if (!managing && query.isEmpty() && recent != null)
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Card(
@@ -239,7 +262,7 @@ fun LibraryScreen(
                                     )
                                 }
                                 Button(
-                                    onClick = { onCoverBounds(recent.uri, Rect.Zero); onOpenBook(recent.uri, recent.lastChapter) },
+                                    onClick = { focusManager.clearFocus(); keyboard?.hide(); onCoverBounds(recent.uri, Rect.Zero); onOpenBook(recent.uri, recent.lastChapter) },
                                     contentPadding = ReaderGeometry.ButtonPadding,
                                     shape = ReaderGeometry.Shape,
                                 ) {
@@ -255,16 +278,7 @@ fun LibraryScreen(
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.weight(1f),
                         )
-                        TextButton(
-                            onClick = { sortTitle = !sortTitle },
-                            shape = ReaderGeometry.Shape,
-                            contentPadding = ReaderGeometry.ButtonPadding,
-                        ) {
-                            Text(
-                                I18n.t(if (sortTitle) "ui.sort_title" else "ui.sort_recent"),
-                                style = MaterialTheme.typography.labelMedium,
-                            )
-                        }
+
                     }
                 }
                 if (filtered.isEmpty())
@@ -281,21 +295,21 @@ fun LibraryScreen(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                I18n.t(if (books.isEmpty()) "library.empty" else "ui.no_results"),
+                                I18n.t(if (books.isEmpty() && query.isBlank()) "library.empty" else "ui.no_results"),
                                 style = MaterialTheme.typography.titleMedium,
                             )
-                            if (books.isEmpty()) {
+                            if (books.isEmpty() && query.isBlank()) {
                                 Text(I18n.t("ui.empty_hint"))
                                 Button(
                                     onClick = onOpenFilePicker,
-                                    shape = ReaderGeometry.Shape,
+                                    shape = CircleShape,
                                     contentPadding = ReaderGeometry.ButtonPadding,
                                 ) {
                                     Text(I18n.t("ui.import"))
                                 }
                             } else
                                 TextButton(
-                                    onClick = { query = "" },
+                                    onClick = { onQueryChange("") },
                                     shape = ReaderGeometry.Shape,
                                     contentPadding = ReaderGeometry.ButtonPadding,
                                 ) {
@@ -324,9 +338,10 @@ fun LibraryScreen(
                     BookCard(
                         entry,
                         coverCache[entry.uri],
-                        { if (managing) selected = if (entry.uri in selected) selected - entry.uri else selected + entry.uri else onOpenBook(entry.uri, entry.lastChapter) },
+                        { if (managing) selected = if (entry.uri in selected) selected - entry.uri else selected + entry.uri else { focusManager.clearFocus(); keyboard?.hide(); onOpenBook(entry.uri, entry.lastChapter) } },
                         { onRemoveBook(entry.uri) },
                         managing, entry.uri in selected,
+                        listMode = listMode,
                         onShare = { shareTargets = listOf(entry.uri) },
                         onRename = { renaming = entry; renameTitle = entry.title },
                         onBounds = { onCoverBounds(entry.uri, it) },
@@ -402,12 +417,12 @@ private fun BookCard(
     onDelete: () -> Unit,
     managing: Boolean = false,
     selected: Boolean = false,
+    listMode: Boolean = false,
     onBounds: (Rect) -> Unit = {},
     onShare: () -> Unit = {},
     onRename: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    var more by remember { mutableStateOf(false) }
     val bitmap by
         produceState<android.graphics.Bitmap?>(null, coverBytes) {
             value =
@@ -415,6 +430,27 @@ private fun BookCard(
                     coverBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
                 }
         }
+    if (listMode) {
+        Column(modifier) {
+            Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(52.dp, 78.dp).onGloballyPositioned { onBounds(it.boundsInRoot()) }
+                    .clip(ReaderGeometry.Shape).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                    bitmap?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+                        ?: Icon(Icons.AutoMirrored.Filled.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(entry.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(entry.lastChapterTitle ?: I18n.tf1("ui.chapter", "${entry.lastChapter+1}"), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (managing) Checkbox(checked = selected, onCheckedChange = { onClick() })
+                else BookActionsMenu(onShare, onRename, onDelete)
+            }
+            HorizontalDivider(Modifier.padding(start = 64.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+        }
+        return
+    }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Box(
             Modifier.fillMaxWidth()
@@ -456,23 +492,7 @@ private fun BookCard(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).clickable(onClick = onClick),
             )
-            Box {
-                IconButton(onClick = { more = true }, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.Default.MoreVert, I18n.t("ui.more"), modifier = Modifier.size(20.dp))
-                }
-                DropdownMenu(more, { more = false }) {
-                    DropdownMenuItem(text = { Text(I18n.t("book.share")) }, onClick = { more = false; onShare() })
-                    DropdownMenuItem(text = { Text(I18n.t("book.rename")) }, onClick = { more = false; onRename() })
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text(I18n.t("library.delete")) },
-                        onClick = {
-                            more = false
-                            onDelete()
-                        },
-                    )
-                }
-            }
+            BookActionsMenu(onShare, onRename, onDelete)
         }
         Text(
             entry.lastChapterTitle ?: I18n.tf1("ui.chapter", "${entry.lastChapter+1}"),
@@ -481,5 +501,19 @@ private fun BookCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+@Composable
+private fun BookActionsMenu(onShare: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+    var more by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { more = true }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.MoreHoriz, I18n.t("ui.more"), Modifier.size(20.dp)) }
+        DropdownMenu(more, { more = false }) {
+            DropdownMenuItem(text = { Text(I18n.t("book.share")) }, onClick = { more = false; onShare() })
+            DropdownMenuItem(text = { Text(I18n.t("book.rename")) }, onClick = { more = false; onRename() })
+            HorizontalDivider()
+            DropdownMenuItem(text = { Text(I18n.t("library.delete")) }, onClick = { more = false; onDelete() })
+        }
     }
 }

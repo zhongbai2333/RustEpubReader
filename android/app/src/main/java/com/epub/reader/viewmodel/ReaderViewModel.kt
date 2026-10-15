@@ -42,6 +42,8 @@ import com.zhongbai233.epub.reader.util.GitHubTokenStore
 import com.zhongbai233.epub.reader.util.resolveResumeChapter
 import com.zhongbai233.epub.reader.util.canApplyGithubSync
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 data class TxtChapterPreview(val title: String, val lineStart: Int, val charCount: Int)
 
@@ -64,7 +66,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     } } }
 
     private val context get() = getApplication<Application>()
-    private val library = Library(context)
+    private val library = Library(context, loadImmediately = false)
+    private var libraryStartup: Job? = null
+    private var libraryRefresh: Job? = null
+    private val coverRequests = mutableSetOf<String>()
+    private val coverWorkers = Semaphore(2)
+    private val coverAccess = java.util.LinkedHashMap<String, Unit>(96, 0.75f, true)
     private var currentBookUri: String? = null
     val originalBookPath: String get() = currentBookUri.orEmpty()
     val currentBookId: String?
@@ -370,8 +377,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         if (autoStartSharing) {
             try { startSharingServer() } catch (_: Exception) { }
         }
-        loadLibrary()
-        scanBooksDir()
+        libraryStartup = viewModelScope.launch {
+            withContext(Dispatchers.IO) { library.reload(); scanBooksDir() }
+            loadLibrary()
+            val lastUri = prefs.getString(PrefKeys.LAST_BOOK_URI, null)
+            if (lastUri != null) openFromPath(lastUri, prefs.getInt(PrefKeys.LAST_BOOK_CHAPTER, 0))
+        }
         try { loadPairedDevices() } catch (_: Exception) { }
         try { startDiscovery() } catch (_: Exception) { }
         viewModelScope.launch(Dispatchers.IO) {
@@ -381,11 +392,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
         // �Զ��ָ��ϴ��Ķ�
-        val lastUri = prefs.getString(PrefKeys.LAST_BOOK_URI, null)
-        if (lastUri != null) {
-            val lastChapter = prefs.getInt(PrefKeys.LAST_BOOK_CHAPTER, 0)
-            openFromPath(lastUri, lastChapter)
-        }
 
         // 启动时检查更新
         viewModelScope.launch {
@@ -524,15 +530,23 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     // ---- ������ ----
 
     private fun loadLibrary() {
-        books.clear()
-        books.addAll(library.sortedIndicesByRecent().map { library.books[it] })
+        val sorted = library.sortedIndicesByRecent().map { library.books[it] }
+        androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+            books.clear(); books.addAll(sorted)
+        }
     }
 
     /** Public refresh: scan books dir for new files + apply progress + reload library UI */
-    fun refreshLibrary() {
-        scanBooksDir()
-        applySyncedProgress()
-        loadLibrary()
+    fun refreshLibrary(): Job {
+        libraryRefresh?.takeIf { it.isActive }?.let { return it }
+        return viewModelScope.launch {
+            try {
+                libraryStartup?.join()
+                withContext(Dispatchers.IO) { library.reload(); scanBooksDir(); applySyncedProgress() }
+                loadLibrary()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { errorMessage = failure.message ?: I18n.t("common.error_unknown") }
+        }.also { libraryRefresh = it }
     }
 
     /** Read synced progress from PeerStore and apply chapter numbers to library entries */
@@ -564,7 +578,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }
             // Match library books by hash
             var updated = 0
-            for (book in library.books) {
+            val newestRemote = progressMap.values.maxOf { it.timestamp }
+            for (book in library.books.toList()) {
+                // There cannot be a newer matching position; avoid reading every
+                // EPUB just to hash it again on an ordinary pull-to-refresh.
+                if (book.uri == currentBookUri || book.lastOpened / 1000L >= newestRemote) continue
                 val hash = RustBridge.fileHash(book.uri) ?: continue
                 val remote = progressMap[hash] ?: continue
                 val shouldUpdate =
@@ -595,26 +613,24 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun requestCover(uri: String) {
-        if (coverCache.containsKey(uri)) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val file = File(uri)
-            if (!file.exists()) {
-                withContext(Dispatchers.Main) { coverCache[uri] = null }
-                return@launch
-            }
-
-            runCatching {
-                val coverBase64 = RustBridge.getCover(uri)
-                if (coverBase64 != null) {
-                    val decoded = Base64.decode(coverBase64, Base64.DEFAULT)
-                    withContext(Dispatchers.Main) { coverCache[uri] = decoded }
-                } else {
-                    withContext(Dispatchers.Main) { coverCache[uri] = null }
+        if (coverCache.containsKey(uri)) { coverAccess[uri] = Unit; return }
+        if (!coverRequests.add(uri)) return
+        viewModelScope.launch {
+            try {
+                val decoded = coverWorkers.withPermit {
+                    withContext(Dispatchers.IO) {
+                        runCatching { RustBridge.getShelfCover(dataDir, uri)?.let { Base64.decode(it, Base64.DEFAULT) } }.getOrNull()
+                    }
                 }
-            }.onFailure {
-                withContext(Dispatchers.Main) { coverCache[uri] = null }
-            }
+                if (books.any { it.uri == uri }) {
+                    // Bounded encoded thumbnails; full-resolution covers never enter this cache.
+                    coverAccess[uri] = Unit
+                    while (coverAccess.size > 96) {
+                        val oldest = coverAccess.keys.first(); coverAccess.remove(oldest); coverCache.remove(oldest)
+                    }
+                    coverCache[uri] = decoded
+                }
+            } finally { coverRequests.remove(uri) }
         }
     }
 
@@ -679,7 +695,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
         if (added > 0) {
             addLog("scanBooksDir: registered $added new book(s)")
-            loadLibrary()
         }
     }
 
@@ -693,6 +708,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         viewModelScope.launch {
+            libraryStartup?.join()
             isLoading = true
             loadingMessage = if (uris.size == 1) I18n.t("common.importing_book") else I18n.tf("common.importing_batch_books", (uris.size).toString())
             errorMessage = null
@@ -750,6 +766,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun openFromUri(uri: Uri) {
         viewModelScope.launch {
+            libraryStartup?.join()
             isLoading = true
             loadingMessage = I18n.t("common.opening_book")
             errorMessage = null
@@ -815,6 +832,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         cancelPendingBookOpen()
         val generation=bookOpenGeneration
         pendingBookOpenJob = viewModelScope.launch {
+            libraryStartup?.join()
             isLoading = true
             loadingMessage = I18n.t("common.opening_book")
             errorMessage = null
@@ -955,7 +973,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
         val persistedEntry = library.addOrUpdate(book.title, managedPath, currentChapter, chapterTitle)
         if (book.coverData != null) {
-            coverCache[persistedEntry.uri] = book.coverData
+            requestCover(persistedEntry.uri)
         }
         currentBookUri = persistedEntry.uri
         githubSyncOffer = null
@@ -1612,9 +1630,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
                         if (!hasError) {
                             sharingStatus = I18n.t("share.status_sync_done")
-                            scanBooksDir()
-                            applySyncedProgress()
-                            loadLibrary()
+                            refreshLibrary()
                         }
                     } else {
                         sharingStatus = I18n.tf1("share.status_connect_failed", "no response")
@@ -1981,6 +1997,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         githubSyncRunning = true
         githubSyncStatus = I18n.t("cloud.syncing")
         githubSyncJob = viewModelScope.launch {
+            libraryStartup?.join()
             try {
                 for (progressOnly in listOf(true, false)) {
                     if (!canApplyGithubSync(generation, githubSyncGeneration, owner, githubUsername, githubSyncEnabled, githubSyncForeground)) return@launch

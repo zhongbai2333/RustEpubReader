@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.zhongbai233.epub.reader.i18n.I18n
@@ -18,27 +19,9 @@ import com.zhongbai233.epub.reader.ui.reader.GithubAccountContent
 import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
 import com.zhongbai233.epub.reader.viewmodel.ReaderViewModel
 
-@Composable
-fun HomeNavigation(sync: Boolean, onLibrary: () -> Unit, onSync: () -> Unit) {
-    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-        NavigationBarItem(
-            selected = !sync,
-            onClick = onLibrary,
-            icon = { Icon(Icons.AutoMirrored.Filled.MenuBook, null) },
-            label = { Text(I18n.t("library.title")) },
-        )
-        NavigationBarItem(
-            selected = sync,
-            onClick = onSync,
-            icon = { Icon(Icons.Default.Sync, null) },
-            label = { Text(I18n.t("sync.multiplatform")) },
-        )
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SyncScreen(vm: ReaderViewModel, onLibrary: () -> Unit = {}, onBack: (() -> Unit)? = null) {
+fun SyncScreen(vm: ReaderViewModel, onLibrary: () -> Unit = {}, onBack: (() -> Unit)? = null, onSearch: () -> Unit = {}) {
     var tab by rememberSaveable { mutableStateOf(0) }
     val uriHandler = LocalUriHandler.current
     val githubScroll = rememberScrollState()
@@ -52,6 +35,8 @@ fun SyncScreen(vm: ReaderViewModel, onLibrary: () -> Unit = {}, onBack: (() -> U
     Scaffold(
         topBar = {
             TopAppBar(
+                expandedHeight = if (LocalDensity.current.fontScale > 1.3f) 72.dp else 56.dp,
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = { Text(I18n.t("sync.multiplatform")) },
                 navigationIcon = {
                     onBack?.let {
@@ -62,7 +47,7 @@ fun SyncScreen(vm: ReaderViewModel, onLibrary: () -> Unit = {}, onBack: (() -> U
                 },
             )
         },
-        bottomBar = { if (onBack == null) HomeNavigation(true, onLibrary, {}) },
+        bottomBar = { if (onBack == null) HomeNavigation(true, onLibrary, {}, onSearch = onSearch) },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             TabRow(selectedTabIndex = tab) {

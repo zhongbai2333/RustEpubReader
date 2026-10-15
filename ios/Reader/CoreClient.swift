@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 struct CoreFailure: LocalizedError { let message: String; var errorDescription: String? { ReaderErrors.display(message) } }
 struct CoreEnvelope<T: Decodable>: Decodable { let ok: Bool; let result: T?; let error: String? }
@@ -33,4 +34,28 @@ actor CoreStore {
         try client.call("save", ["id": id, "chapter": anchor.chapter, "block": anchor.block, "char_offset": anchor.charOffset])
     }
     func apply(epoch: UInt64, openPath: String) throws -> SyncSummary { try client.call("apply_sync", ["epoch": epoch, "open_path": openPath]) }
+}
+
+// Independent serial worker: shelf extraction/decode never queues ahead of an
+// open/save/sync operation on CoreStore and never performs disk IO in View.body.
+actor ShelfCoverStore {
+    private let client: CoreClient
+    private let cache = NSCache<NSString, UIImage>()
+    init(client: CoreClient) {
+        self.client = client
+        cache.countLimit = 64; cache.totalCostLimit = 64 * 1024 * 1024
+    }
+    func image(id: String, path: String) -> UIImage? {
+        if Task.isCancelled { return nil }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "\(id):\(path):\(attributes?[.size] ?? 0):\(modified)" as NSString
+        if let image = cache.object(forKey: key) { return image }
+        struct Response: Decodable { let data: String? }
+        guard let reply: Response = try? client.call("shelf_cover", ["id": id]),
+              let encoded = reply.data, let data = Data(base64Encoded: encoded),
+              let source = UIImage(data: data), let image = source.preparingForDisplay() else { return nil }
+        cache.setObject(image, forKey: key, cost: Int(image.size.width * image.size.height * 4))
+        return image
+    }
 }

@@ -44,6 +44,11 @@ struct AppHome: View {
         _nearby = StateObject(wrappedValue: NearbySync(library: library))
     }
     @State private var destination: Int? = 0
+    @State private var libraryQuery = ""
+    @State private var librarySearching = false
+    @AppStorage("library.sort-title") private var shelfSortTitle = false
+    @AppStorage("library.list") private var shelfListMode = false
+    @State private var sharedShelfOrder = StableShelfOrder()
     @State private var selectedBook: PreviewBook?
     @State private var openingBook: LibraryEntry?
     @State private var coverFrames: [String: CGRect] = [:]
@@ -77,16 +82,28 @@ struct AppHome: View {
                 } detail: {
                     NavigationStack {
                         if destination == 1 { SyncDesignView(account: account, nearby: nearby) }
-                        else { LibraryDesignView(library: library, account: account, releases: releases, shelfRevision: shelfRevision, open: openBook, openSync: { destination = 1 }) }
+                        else { LibraryDesignView(library: library, account: account, releases: releases, shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode, shelfOrder: sharedShelfOrder, bottomSearch: false, open: openBook, openSync: { destination = 1 }) }
                     }
                 }
+            } else if #available(iOS 26.0, *) {
+                modernHome
             } else {
-                TabView(selection: $destination) {
-                    NavigationStack { LibraryDesignView(library: library, account: account, releases: releases, shelfRevision: shelfRevision, open: openBook, openSync: { destination = 1 }) }
-                        .tabItem { Label(L("toolbar.library"), systemImage: "books.vertical") }.tag(Optional(0))
+                ZStack {
+                    NavigationStack {
+                        LibraryDesignView(library: library, account: account, releases: releases,
+                            shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode, shelfOrder: sharedShelfOrder, bottomSearch: true,
+                            open: openBook, openSync: { destination = 1 })
+                    }.opacity(destination == 1 ? 0 : 1)
+                     .allowsHitTesting(destination != 1).accessibilityHidden(destination == 1)
                     NavigationStack { SyncDesignView(account: account, nearby: nearby) }
-                        .tabItem { Label(L("sync.multiplatform"), systemImage: "arrow.triangle.2.circlepath") }.tag(Optional(1))
+                        .opacity(destination == 1 ? 1 : 0)
+                        .allowsHitTesting(destination == 1).accessibilityHidden(destination != 1)
+                }.safeAreaInset(edge: .bottom, spacing: 0) {
+                    LibraryBottomBar(selection: Binding(get: { destination ?? 0 }, set: { destination = $0 }),
+                        query: $libraryQuery, searching: $librarySearching,
+                        readerActive: openingBook != nil || selectedBook != nil || closing)
                 }
+
             }
         }
         .allowsHitTesting(openingBook == nil && selectedBook == nil && !closing)
@@ -131,7 +148,7 @@ struct AppHome: View {
                 library.receivingSharedBooks = true; library.bookSharing.receive(url.absoluteString)
             } else { Task { await library.importBook(url) } }
         }
-        .sheet(isPresented: $library.receivingSharedBooks) { ReceiveBooksView(sharing: library.bookSharing, account: account) }
+        .sheet(isPresented: $library.receivingSharedBooks, onDismiss: { library.bookSharing.cancel() }) { ReceiveBooksView(sharing: library.bookSharing, account: account) }
         .task {
             readerI18n.refresh(); account.setForeground(scenePhase == .active)
             #if DEBUG
@@ -250,7 +267,39 @@ struct AppHome: View {
         }
     }
     #endif
+    @available(iOS 26.0, *)
+    private var modernHome: some View {
+        TabView(selection: $destination) {
+            Tab(L("toolbar.library"), systemImage: "books.vertical", value: Optional(0)) {
+                nativeLibrary(visible: destination == 0)
+            }
+            Tab(L("sync.multiplatform"), systemImage: "arrow.triangle.2.circlepath", value: Optional(1)) {
+                NavigationStack { SyncDesignView(account: account, nearby: nearby) }
+            }
+            Tab(L("toolbar.search"), systemImage: "magnifyingglass", value: Optional(2), role: .search) {
+                nativeLibrary(visible: destination == 2)
+                    .searchable(text: $libraryQuery, isPresented: $librarySearching, prompt: L("ui.search_books"))
+            }
+        }
+         .tabViewSearchActivation(.searchTabSelection)
+         .onChange(of: librarySearching) { was, active in
+             if was && !active && openingBook == nil && selectedBook == nil && !closing { libraryQuery = "" }
+         }
+    }
+    private func nativeLibrary(visible: Bool) -> some View {
+        NavigationStack {
+            LibraryDesignView(library: library, account: account, releases: releases,
+                shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode,
+                shelfOrder: sharedShelfOrder, bottomSearch: true,
+                open: openBook, openSync: { destination = 1 })
+        }.transformPreference(BookCoverFrames.self) { frames in
+            // Only the visible native tab contributes cover coordinates. Both
+            // presentations share books, filtering, sort and stable shelf order.
+            if !visible { frames.removeAll() }
+        }
+    }
     private func openBook(_ entry: LibraryEntry, _ key: String) {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         guard openingBook == nil && selectedBook == nil && !closing && !library.busy else { return }
         sourceKey = key; sourceCover = coverFrames[key]
         paper = UIColor(hex: ReadingAppearance.decode(UserDefaults.standard.string(forKey: ReadingAppearance.storageKey) ?? "").style[dark: appearanceLink.readingDark].paper)
@@ -339,12 +388,19 @@ struct AppHome: View {
 struct BookCover: View {
     @ObservedObject private var readerI18n = ReaderI18n.shared
     let book: LibraryEntry
+    let covers: ShelfCoverStore
+    @State private var image: UIImage?
     var compact = false
+    var iconPlaceholder = false
     var body: some View {
         GeometryReader { geometry in
         ZStack(alignment: .topLeading) {
-            if let path = book.coverPath, let image = UIImage(contentsOfFile: path) {
+            if let image {
                 Image(uiImage: image).resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
+            } else if iconPlaceholder {
+                book.color
+                Image(systemName: "book.closed").font(.system(size: 22, weight: .regular)).foregroundStyle(.white.opacity(0.85))
+                    .frame(width: geometry.size.width, height: geometry.size.height)
             } else {
             book.color
             Rectangle().fill(.white.opacity(0.12)).frame(width: 6)
@@ -356,6 +412,9 @@ struct BookCover: View {
             }.padding(compact ? 8 : 16).foregroundStyle(.white)
             }
         }.frame(width: geometry.size.width, height: geometry.size.height).clipShape(RoundedRectangle(cornerRadius: 6))
+        }.task(id: book.path) {
+            let loaded = await covers.image(id: book.id, path: book.path)
+            if !Task.isCancelled { image = loaded }
         }
     }
 }
@@ -369,12 +428,13 @@ struct LibraryDesignView: View {
     var shelfRevision: Int = 0
     @Environment(\.accessibilityReduceMotion) private var reduceShelfMotion
     @Namespace private var shelfNamespace
+    @Binding var search: String
+    @Binding var sortByTitle: Bool
+    @Binding var listMode: Bool
+    var shelfOrder: StableShelfOrder
+    var bottomSearch: Bool = false
     let open: (LibraryEntry, String) -> Void
     var openSync: () -> Void = {}
-    @State private var search = ""
-    @State private var titleCollapsed = false
-    @State private var sortByTitle = false
-    @State private var shelfOrder=StableShelfOrder()
     @State private var about = false
     @State private var statistics = false
     @State private var choosingLanguage = false
@@ -386,10 +446,11 @@ struct LibraryDesignView: View {
     @State private var renaming: LibraryEntry?
     @State private var renameTitle = ""
     private var books: [LibraryEntry] {
+        let searchTerm = search.trimmingCharacters(in: .whitespacesAndNewlines)
         let ranked=sortByTitle ? library.recentBooks.sorted {$0.title.localizedCompare($1.title) == .orderedAscending} : library.recentBooks
         let ranks=Dictionary(uniqueKeysWithValues:shelfOrder.resolve(ranked.map(\.id),byTitle:sortByTitle,revision:shelfRevision).enumerated().map {($1,$0)})
         return ranked.sorted {(ranks[$0.id] ?? Int.max) < (ranks[$1.id] ?? Int.max)}
-            .filter {search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)}
+            .filter {searchTerm.isEmpty || $0.title.localizedCaseInsensitiveContains(searchTerm)}
     }
     var body: some View {
         ScrollView {
@@ -397,7 +458,7 @@ struct LibraryDesignView: View {
                 if !managing && search.isEmpty, let book = library.books.first(where: { $0.id == library.recent }) {
                     Button { open(book, "recent:" + book.id) } label: {
                         HStack(spacing: 16) {
-                            BookCover(book: book, compact: true).frame(width: 62, height: 88).bookCoverFrame("recent:" + book.id)
+                            BookCover(book: book, covers: library.covers, compact: true).frame(width: 62, height: 88).bookCoverFrame("recent:" + book.id)
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(L("library.continue_reading")).font(.caption).foregroundStyle(.secondary)
                                 Text(book.title).font(.headline).foregroundStyle(.primary)
@@ -422,19 +483,31 @@ struct LibraryDesignView: View {
                             }.disabled(selected.isEmpty || library.busy).buttonStyle(.bordered)
                         }
                     } else { Text(L("ui.all_books")).font(.headline) }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 145, maximum: 220), spacing: 20)], alignment: .leading, spacing: 24) {
+                    LazyVGrid(columns: listMode ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 145, maximum: 220), spacing: 20)], alignment: .leading, spacing: listMode ? 8 : 24) {
                         ForEach(books) { book in
                             Button { if managing { if !selected.insert(book.id).inserted { selected.remove(book.id) } } else { open(book, "shelf:" + book.id) } } label: {
+                                if listMode {
+                                    HStack(spacing: 12) {
+                                        BookCover(book: book, covers: library.covers, compact: true, iconPlaceholder: true).frame(width: 52, height: 78).bookCoverFrame("shelf:" + book.id)
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(book.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
+                                            Text(L("annotations.chapter", (library.anchors[book.id]?.chapter ?? 0)+1)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                        }.frame(maxWidth: .infinity, alignment: .leading)
+                                        if managing { Image(systemName: selected.contains(book.id) ? "checkmark.circle.fill" : "circle").font(.title2).foregroundStyle(selected.contains(book.id) ? Color.accentColor : Color.secondary).frame(width: 44, height: 44) }
+                                    }.padding(.vertical, 8).padding(.trailing, managing ? 0 : 44).frame(maxWidth: .infinity).contentShape(Rectangle())
+                                } else {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    BookCover(book: book).aspectRatio(2/3, contentMode: .fit).bookCoverFrame("shelf:" + book.id)
+                                    BookCover(book: book, covers: library.covers).aspectRatio(2/3, contentMode: .fit).bookCoverFrame("shelf:" + book.id)
                                         .overlay(alignment: .topTrailing) { if managing { Image(systemName: selected.contains(book.id) ? "checkmark.circle.fill" : "circle").font(.title2).symbolRenderingMode(.palette).foregroundStyle(.white, .blue).padding(8).background(.regularMaterial, in: Circle()).padding(6) } }
                                     Text(book.title).font(.subheadline).fontWeight(.medium).foregroundStyle(.primary).lineLimit(2).padding(.trailing, managing ? 0 : 44)
                                     Text(L("annotations.chapter", (library.anchors[book.id]?.chapter ?? 0)+1)).font(.caption).foregroundStyle(.secondary).padding(.trailing, managing ? 0 : 44)
                                 }
+                                }
                             }.buttonStyle(.plain)
+                            .overlay(alignment: .bottom) { if listMode { Divider().padding(.leading, 64) } }
                             .matchedGeometryEffect(id: book.id, in: shelfNamespace)
                             .zIndex(book.id == library.recent ? 1 : 0)
-                            .overlay(alignment: .bottomTrailing) {
+                            .overlay(alignment: listMode ? .trailing : .bottomTrailing) {
                                 if !managing {
                                     Menu {
                                         Button(L("book.share"), systemImage: "square.and.arrow.up") { bookShareSelection = BookShareSelection(ids: [book.id]) }
@@ -448,55 +521,34 @@ struct LibraryDesignView: View {
                         }
                     }.animation(reduceShelfMotion ? nil : .easeInOut(duration: 0.38), value: shelfRevision)
                 }
-                if library.books.isEmpty && !library.busy {
+                if library.books.isEmpty && search.isEmpty && !library.busy {
                     ContentUnavailableView {
                         Label(L("library.empty_state_title"), systemImage: "books.vertical")
                     } description: { Text(L("library.empty_state_hint")) } actions: {
                         Button(L("library.import_epub")) { importing = true }.buttonStyle(.borderedProminent)
                     }
                 }
+                if !search.isEmpty && books.isEmpty && !library.busy {
+                    ContentUnavailableView { Label(L("ui.no_results"), systemImage: "magnifyingglass") }
+                    Button { search = "" } label: { Text(L("ui.clear_search")).frame(minHeight: 44) }.frame(maxWidth: .infinity)
+                }
                 if library.busy { ProgressView().frame(maxWidth: .infinity).accessibilityLabel(L("common.processing_book")) }
             }.padding(20)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(key: LibraryTitleCollapsedPreference.self,
-                            value: geometry.frame(in: .named("library-scroll")).minY < -UIFont.preferredFont(forTextStyle: .largeTitle).lineHeight)
-                    }
-                }
         }
-        .coordinateSpace(name: "library-scroll")
-        .onPreferenceChange(LibraryTitleCollapsedPreference.self) { titleCollapsed = $0 }
+        .scrollDismissesKeyboard(.interactively)
         .background(Color(uiColor: .systemGroupedBackground))
-        .contentMargins(.bottom, 80, for: .scrollContent)
-        .navigationTitle(L("toolbar.library"))
+        .contentMargins(.bottom, 12, for: .scrollContent)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .bottom) { if !managing, let version = releases.newest { Link(L("common.new_version_release_notes", version), destination: URL(string: "https://github.com/zhongbai2333/RustEpubReader/releases/latest")!).font(.footnote).padding(12).frame(maxWidth: .infinity).background(.regularMaterial) } }
-        .searchable(text: $search, prompt: L("ui.search_books"))
+        .modifier(LibrarySearchPlacement(query: $search, bottom: bottomSearch))
         .toolbar {
             if #available(iOS 26.0, *) {
-                ToolbarItem(placement: .largeTitle) {
-                    HStack(spacing: 12) {
-                        Text(L("toolbar.library")).font(.largeTitle.bold())
-                        if account.syncing { syncIndicator }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if titleCollapsed {
-                    ToolbarItem(placement: .title) {
-                        HStack(spacing: 8) {
-                            Text(L("toolbar.library")).font(.headline)
-                            if account.syncing { syncIndicator }
-                        }
-                    }
-                }
-            } else if account.syncing {
-                ToolbarItem(placement: .principal) {
-                    HStack(spacing: 8) {
-                        Text(L("toolbar.library")).font(.headline)
-                        syncIndicator
-                    }
-                }
-            }
-            ToolbarItem(placement: .topBarLeading) {
-                Button(managing ? L("manage.done") : L("manage.books")) { managing.toggle(); if !managing { selected.removeAll() } }.disabled(library.books.isEmpty || library.busy)
+                ToolbarItem(placement: .topBarLeading) { libraryHeading }
+                    .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .topBarLeading) { libraryHeading }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button(L("library.import_epub"), systemImage: "plus") { importing = true }
@@ -504,13 +556,21 @@ struct LibraryDesignView: View {
                     .buttonBorderShape(.circle)
                     .disabled(library.busy)
             }
-            if #available(iOS 26.0, *) {
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(managing ? L("manage.done") : L("manage.books")) { managing.toggle(); if !managing { selected.removeAll() } }
+                    .buttonBorderShape(.capsule)
+                    .disabled(library.books.isEmpty || library.busy)
             }
+            if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button(L("transfer.receive"), systemImage: "qrcode.viewfinder") { library.receivingSharedBooks = true }
+                    Button(L("transfer.receive"), systemImage: "qrcode.viewfinder") { library.bookSharing.resetReceiver(); library.receivingSharedBooks = true }
                     Button(L("appearance.link_title"), systemImage: "circle.lefthalf.filled") { appearanceSettings = true }
+                    Picker(L("library.display"), selection: $listMode) {
+                        Label(L("library.view_grid"), systemImage: "square.grid.2x2").tag(false)
+                        Label(L("library.view_list"), systemImage: "list.bullet").tag(true)
+                    }
                     Picker(L("common.sort"), selection: $sortByTitle) {
                         Text(L("library.sort_recently_read")).tag(false)
                         Text(L("txt.book_title")).tag(true)
@@ -526,7 +586,7 @@ struct LibraryDesignView: View {
         .sheet(isPresented: $statistics) { NavigationStack {
             ReadingStatsView(library: library, syncSettings: {statistics=false;openSync()})
                 .toolbar {ToolbarItem(placement: .confirmationAction) {Button(L("settings.close")) {statistics=false}}}
-        }.presentationDetents([.large]).presentationDragIndicator(.visible) }
+        }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "epub") ?? .data]) { result in
             switch result {
             case .success(let url): Task { await library.importBook(url) }
@@ -534,7 +594,7 @@ struct LibraryDesignView: View {
             }
         }
         .sheet(isPresented: $choosingLanguage) {ReaderLanguagePicker()}
-        .sheet(isPresented: $appearanceSettings) { AppearanceLinkageSheet() }
+        .sheet(isPresented: $appearanceSettings) { AppearanceLinkageSheet().presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
         .sheet(isPresented: $about) { AboutView(releases: releases, count: library.books.count) }
         .sheet(item: $bookShareSelection) { selection in BookShareView(library: library, account: account, ids: selection.ids) }
         .alert(L("book.rename"), isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
@@ -547,8 +607,15 @@ struct LibraryDesignView: View {
             Button(L("manage.delete"), role: .destructive) { let ids = selected; Task { if await library.remove(ids) { selected.removeAll() } } }
             Button(L("share.cancel"), role: .cancel) {}
         } message: { Text(L("manage.delete_note")) }
-        .onDisappear {shelfOrder.reset()}
+        .onDisappear {if !bottomSearch {shelfOrder.reset()}}
         .onChange(of: library.books.map(\.id)) { _, ids in selected.formIntersection(ids) }
+    }
+    private var libraryHeading: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(L("toolbar.library")).font(.system(size: 24, weight: .bold)).fixedSize()
+            Text(readerI18n.count("ui.library_count", library.books.count)).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
+            if account.syncing { syncIndicator }
+        }.accessibilityAddTraits(.isHeader)
     }
     private var syncIndicator: some View {
         HStack(spacing: 6) {
@@ -558,10 +625,4 @@ struct LibraryDesignView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L("cloud.syncing"))
     }
-}
-
-
-private struct LibraryTitleCollapsedPreference: PreferenceKey {
-    static var defaultValue = false
-    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = nextValue() }
 }
