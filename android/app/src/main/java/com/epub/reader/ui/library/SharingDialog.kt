@@ -429,7 +429,7 @@ fun SharingContent(
                                     ) {
                                         Icon(
                                             Icons.Default.Delete,
-                                            contentDescription = "Remove",
+                                            contentDescription = I18n.t("sync.unpair"),
                                             modifier = Modifier.size(16.dp),
                                             tint = MaterialTheme.colorScheme.error,
                                         )

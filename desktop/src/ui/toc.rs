@@ -7,11 +7,7 @@ impl ReaderApp {
         ui.spacing_mut().interact_size.y = 32.;
         ui.spacing_mut().button_padding = egui::vec2(10., 5.);
         ui.add_space(2.0);
-        ui.heading(
-            egui::RichText::new(self.i18n.t("toc.title"))
-                .size(18.0)
-                .strong(),
-        );
+        super::design::sidebar_title(ui, self.i18n.t("toc.title"));
         ui.add_space(4.0);
         ui.separator();
         ui.add_space(4.0);
@@ -148,9 +144,9 @@ impl ReaderApp {
                                     egui::WidgetType::Button,
                                     true,
                                     if ch_bookmarked {
-                                        "取消书签"
+                                        self.i18n.t("reader.remove_bookmark_label")
                                     } else {
-                                        "添加书签"
+                                        self.i18n.t("context.bookmark")
                                     },
                                 )
                             });
@@ -165,9 +161,9 @@ impl ReaderApp {
                             }
                             if bookmark
                                 .on_hover_text(if ch_bookmarked {
-                                    "取消书签"
+                                    self.i18n.t("reader.remove_bookmark_label")
                                 } else {
-                                    "添加书签"
+                                    self.i18n.t("context.bookmark")
                                 })
                                 .clicked()
                             {

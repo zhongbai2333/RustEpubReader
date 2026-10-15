@@ -320,10 +320,26 @@ fn generate_pin() -> String {
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 struct AppSettings {
+    #[serde(default = "default_scripts_enabled")]
+    scripts_enabled: bool,
+    #[serde(default)]
+    css_policy: reader_core::epub::native::CssPolicy,
     font_size: f32,
+    #[serde(default, deserialize_with = "optional_appearance_setting")]
+    reader_introduction_seen: Option<bool>,
     dark_mode: bool,
+    #[serde(default, deserialize_with = "optional_appearance_setting")]
+    appearance_linkage: Option<reader_core::appearance::AppearanceLinkage>,
+    #[serde(default, deserialize_with = "optional_appearance_setting")]
+    appearance_paints: Option<crate::ui::appearance_linkage::ReadingPaintPair>,
+    #[serde(default, deserialize_with = "optional_appearance_setting")]
+    reading_themes: Option<crate::ui::reading_themes::ReadingThemes>,
+    #[serde(default, deserialize_with = "optional_appearance_setting")]
+    appearance_current_dark: Option<bool>,
     reader_bg_color: [u8; 4],
     reader_font_color: Option<[u8; 4]>,
+    #[serde(default)]
+    reader_day_palette: Option<([u8; 4], Option<[u8; 4]>)>,
     reader_font_family: String,
     #[serde(default = "default_sans")]
     reader_cjk_font_family: String,
@@ -380,6 +396,16 @@ struct AppSettings {
     github_repo_authorized: bool,
 }
 
+// A malformed new appearance field must not discard unrelated legacy settings.
+fn optional_appearance_setting<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
 impl AppSettings {
     fn path(data_dir: &str) -> PathBuf {
         PathBuf::from(data_dir).join("settings.json")
@@ -414,10 +440,28 @@ impl AppSettings {
             (None, 0)
         };
 
+        let mut appearance_paints = app.appearance_paints.clone();
+        if app.appearance_current_dark {
+            appearance_paints.dark = app.capture_reading_paint();
+        } else {
+            appearance_paints.light = app.capture_reading_paint();
+        }
+        let mut reading_themes = app.reading_themes.clone();
+        reading_themes.capture(appearance_paints.clone());
         Self {
+            scripts_enabled: app.scripts_enabled,
+            css_policy: app.css_policy,
             font_size: app.font_size,
+            reader_introduction_seen: Some(app.reader_introduction_seen),
             dark_mode: app.dark_mode,
+            appearance_linkage: Some(app.appearance_linkage),
+            appearance_paints: Some(appearance_paints),
+            reading_themes: Some(reading_themes),
+            appearance_current_dark: Some(app.appearance_current_dark),
             reader_bg_color: Self::from_color(app.reader_bg_color),
+            reader_day_palette: app
+                .reader_day_palette
+                .map(|(bg, ink)| (Self::from_color(bg), ink.map(Self::from_color))),
             reader_font_color: app.reader_font_color.map(Self::from_color),
             reader_font_family: app.reader_font_family.clone(),
             reader_cjk_font_family: app.reader_cjk_font_family.clone(),
@@ -427,7 +471,7 @@ impl AppSettings {
             reader_bg_image_alpha: app.reader_bg_image_alpha,
             scroll_mode: app.scroll_mode,
             show_toc: app.show_toc,
-            language: app.i18n.language().code().to_string(),
+            language: app.i18n.preference().code().to_string(),
             last_book_path,
             last_chapter,
             auto_start_sharing: app.auto_start_sharing,
@@ -454,8 +498,14 @@ impl AppSettings {
 
     fn apply_to_app(&self, app: &mut ReaderApp) {
         app.font_size = self.font_size.clamp(12.0, 40.0);
+        app.reader_introduction_seen = self
+            .reader_introduction_seen
+            .unwrap_or(self.last_book_path.is_some());
         app.dark_mode = self.dark_mode;
         app.reader_bg_color = Self::to_color(self.reader_bg_color);
+        app.reader_day_palette = self
+            .reader_day_palette
+            .map(|(bg, ink)| (Self::to_color(bg), ink.map(Self::to_color)));
         app.reader_font_color = self.reader_font_color.map(Self::to_color);
         app.reader_font_family = self.reader_font_family.clone();
         app.reader_cjk_font_family = self.reader_cjk_font_family.clone();
@@ -463,6 +513,19 @@ impl AppSettings {
         app.reader_page_animation_speed = self.reader_page_animation_speed.clamp(0.04, 0.40);
         app.reader_bg_image_path = self.reader_bg_image_path.clone();
         app.reader_bg_image_alpha = self.reader_bg_image_alpha.clamp(0.0, 1.0);
+        app.migrate_appearance(
+            self.appearance_linkage,
+            self.appearance_paints.clone(),
+            self.appearance_current_dark,
+        );
+        app.reading_themes = self
+            .reading_themes
+            .clone()
+            .map(|themes| themes.normalized())
+            .unwrap_or_else(|| {
+                crate::ui::reading_themes::ReadingThemes::migrate(app.appearance_paints.clone())
+            });
+        app.apply_selected_reading_theme();
         app.scroll_mode = self.scroll_mode;
         app.show_toc = self.show_toc;
         app.auto_start_sharing = self.auto_start_sharing;
@@ -555,19 +618,38 @@ impl TextSelection {
 }
 
 pub struct ReaderApp {
+    pub(crate) scripts_enabled: bool,
+    pub(crate) native_events:
+        std::collections::HashMap<usize, Vec<reader_core::epub::native::NativeEvent>>,
+    pub(crate) native_applied:
+        std::collections::HashMap<usize, (reader_core::epub::native::CssPolicy, bool, usize)>,
+    pub(crate) native_book_path: Option<String>,
+    pub(crate) publication_note: Option<reader_core::epub::native::NativeNote>,
+    pub(crate) css_policy: reader_core::epub::native::CssPolicy,
     pub data_dir: String,
     pub book: Option<EpubBook>,
     pub book_path: Option<String>,
     pub current_book_hash: Option<String>,
     pub last_synced_chapter: Option<usize>,
     pub last_synced_block: Option<usize>,
+    pub(crate) last_synced_char_offset: Option<usize>,
     pub current_chapter: usize,
     pub current_block: usize,
+    pub(crate) current_char_offset: usize,
     pub pending_restore_block: Option<usize>,
     pub position_save_due: Option<std::time::Instant>,
     pub font_size: f32,
     pub dark_mode: bool,
+    pub appearance_linkage: reader_core::appearance::AppearanceLinkage,
+    pub appearance_paints: crate::ui::appearance_linkage::ReadingPaintPair,
+    pub reading_themes: crate::ui::reading_themes::ReadingThemes,
+    pub reading_theme_editor: Option<crate::ui::reading_themes::ReadingThemeDraft>,
+    pub appearance_current_dark: bool,
+    pub system_appearance_dark: bool,
+    pub show_appearance_linkage: bool,
+    pub appearance_selected_node: usize,
     pub reader_bg_color: Color32,
+    pub reader_day_palette: Option<(Color32, Option<Color32>)>,
     pub reader_font_color: Option<Color32>,
     pub reader_font_family: String,
     pub reader_cjk_font_family: String,
@@ -577,12 +659,18 @@ pub struct ReaderApp {
     pub reader_bg_image_alpha: f32,
     pub reader_bg_texture: Option<egui::TextureHandle>,
     pub show_settings: bool,
+    pub(crate) reader_introduction_seen: bool,
+    pub(crate) show_reader_introduction: bool,
+    pub confirm_display_reset: bool,
+    pub show_csc_settings: bool,
     pub show_toc: bool,
+    pub show_app_navigation: bool,
     pub scroll_to_top: bool,
     pub error_msg: Option<String>,
     pub view: AppView,
     pub pending_book_open: Option<PendingBookOpen>,
     pub opening_started: Option<std::time::Instant>,
+    pub(crate) book_presentation: crate::ui::book_presentation::BookPresentation,
     pub library_manage: bool,
     pub library_selected: std::collections::HashSet<String>,
     pub library_confirm_delete: bool,
@@ -594,7 +682,8 @@ pub struct ReaderApp {
     pub(crate) continuous_scroll: ContinuousScrollState,
     pub current_page: usize,
     pub total_pages: usize,
-    pub page_block_ranges: Vec<(usize, usize)>,
+    pub(crate) reader_render_blocks: Option<(usize, Arc<Vec<reader_core::epub::ContentBlock>>)>,
+    pub page_block_ranges: crate::ui::reader_pagination::PageRanges,
     pub pages_dirty: bool,
     pub cover_textures: HashMap<String, Option<egui::TextureHandle>>,
     pub last_avail_width: f32,
@@ -626,6 +715,7 @@ pub struct ReaderApp {
     pub font_search: String,
     pub cjk_font_search: String,
     pub i18n: I18n,
+    language_checked: std::time::Instant,
     pub previous_chapter: Option<usize>,
     pub scroll_toc_to_current: bool,
     // ── Sharing ──
@@ -653,6 +743,7 @@ pub struct ReaderApp {
     pub show_feedback_github_prompt: bool,
     pub last_exported_feedback_log: Option<String>,
     pub show_about: bool,
+    pub show_language: bool,
     pub about_icon_texture: Option<egui::TextureHandle>,
     // ── Self-update ──
     pub update_state: UpdateState,
@@ -678,11 +769,15 @@ pub struct ReaderApp {
     pub book_config: Option<reader_core::library::BookConfig>,
     // ── Export ──
     pub show_export_dialog: bool,
+    pub book_share: crate::ui::book_share::ShareUI,
+    pub share_paths: Vec<String>,
+    pub share_mode: reader_core::export::ExportMode,
+    pub rename_book: Option<(String, String)>,
     #[allow(dead_code)]
     pub export_book_id: Option<String>,
     // ── Stats ──
     pub show_stats: bool,
-    pub reading_session_start: Option<u64>,
+    pub activity: crate::ui::stats::DesktopActivity,
     // ── Auto-scroll ──
     #[allow(dead_code)]
     pub auto_scroll: bool,
@@ -811,7 +906,7 @@ pub enum UpdateState {
 pub struct CrossChapterSnapshot {
     pub chapter: usize,
     pub blocks: Arc<Vec<reader_core::epub::ContentBlock>>,
-    pub block_ranges: Vec<(usize, usize)>,
+    pub block_ranges: crate::ui::reader_pagination::PageRanges,
     pub total_pages: usize,
     pub from_page: usize,
     pub title: String,
@@ -886,32 +981,55 @@ impl ReaderApp {
         let mut app = Self {
             data_dir,
             book: None,
+            scripts_enabled: true,
+            native_events: Default::default(),
+            native_applied: Default::default(),
+            native_book_path: None,
+            publication_note: None,
+            css_policy: Default::default(),
             book_path: None,
             current_book_hash: None,
             last_synced_chapter: None,
             last_synced_block: None,
+            last_synced_char_offset: None,
             current_chapter: 0,
             current_block: 0,
+            current_char_offset: 0,
             pending_restore_block: None,
             position_save_due: None,
             font_size: 16.0,
             dark_mode: true,
+            appearance_linkage: Default::default(),
+            appearance_paints: Default::default(),
+            reading_themes: Default::default(),
+            reading_theme_editor: None,
+            appearance_current_dark: false,
+            system_appearance_dark: false,
+            show_appearance_linkage: false,
+            appearance_selected_node: 0,
             reader_bg_color: Color32::from_rgb(250, 246, 238),
+            reader_day_palette: None,
             reader_font_color: None,
             reader_font_family: "Sans".to_string(),
             reader_cjk_font_family: default_sans(),
-            reader_page_animation: "Slide".to_string(),
+            reader_page_animation: "Realistic".to_string(),
             reader_page_animation_speed: 0.14,
             reader_bg_image_path: None,
             reader_bg_image_alpha: 0.22,
             reader_bg_texture: None,
             show_settings: false,
+            reader_introduction_seen: false,
+            show_reader_introduction: false,
+            confirm_display_reset: false,
+            show_csc_settings: false,
             show_toc: true,
+            show_app_navigation: true,
             scroll_to_top: false,
             error_msg: None,
             view: AppView::Library,
             pending_book_open: None,
             opening_started: None,
+            book_presentation: Default::default(),
             library_manage: false,
             library_selected: Default::default(),
             library_confirm_delete: false,
@@ -923,7 +1041,8 @@ impl ReaderApp {
             continuous_scroll: ContinuousScrollState::default(),
             current_page: 0,
             total_pages: 0,
-            page_block_ranges: Vec::new(),
+            reader_render_blocks: None,
+            page_block_ranges: Default::default(),
             pages_dirty: true,
             cover_textures: HashMap::new(),
             last_avail_width: 0.0,
@@ -952,6 +1071,7 @@ impl ReaderApp {
             font_search: String::new(),
             cjk_font_search: String::new(),
             i18n: I18n::default(),
+            language_checked: std::time::Instant::now(),
             previous_chapter: None,
             scroll_toc_to_current: false,
             // Sharing
@@ -976,6 +1096,7 @@ impl ReaderApp {
             show_feedback_github_prompt: false,
             last_exported_feedback_log: None,
             show_about: false,
+            show_language: false,
             about_icon_texture: None,
             update_state: UpdateState::Idle,
             show_update_dialog: false,
@@ -999,10 +1120,14 @@ impl ReaderApp {
             book_config: None,
             // Export
             show_export_dialog: false,
+            book_share: Default::default(),
+            share_paths: Vec::new(),
+            share_mode: reader_core::export::ExportMode::Original,
+            rename_book: None,
             export_book_id: None,
             // Stats
             show_stats: false,
-            reading_session_start: None,
+            activity: Default::default(),
             // Auto-scroll
             auto_scroll: false,
             auto_scroll_speed: 30.0,
@@ -1092,6 +1217,8 @@ impl ReaderApp {
         };
 
         if let Some(settings) = AppSettings::load(&app.data_dir) {
+            app.scripts_enabled = settings.scripts_enabled;
+            app.css_policy = settings.css_policy;
             app.push_feedback_log(format!("[Init] settings loaded: lang={}, font={}, font_size={}, scroll_mode={}, last_book={:?}, ch={}",
                 settings.language, settings.reader_font_family, settings.font_size, settings.scroll_mode,
                 settings.last_book_path.as_deref().unwrap_or("none"), settings.last_chapter));
@@ -1193,21 +1320,6 @@ impl ReaderApp {
         self.tts_detach_view();
     }
 
-    pub fn pick_reader_background_image(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Image", &["png", "jpg", "jpeg", "webp", "bmp"])
-            .pick_file()
-        {
-            self.reader_bg_image_path = Some(path.to_string_lossy().to_string());
-            self.reader_bg_texture = None;
-        }
-    }
-
-    pub fn clear_reader_background_image(&mut self) {
-        self.reader_bg_image_path = None;
-        self.reader_bg_texture = None;
-    }
-
     pub fn ensure_reader_bg_texture(&mut self, ctx: &egui::Context) {
         if self.reader_bg_texture.is_some() {
             return;
@@ -1254,6 +1366,7 @@ impl ReaderApp {
         let (tx, rx) = std::sync::mpsc::channel();
         let source = path.to_owned();
         let ctx = self.last_egui_ctx.clone();
+        self.begin_book_presentation(path);
         self.opening_started = Some(std::time::Instant::now());
         self.pending_book_open = Some((path.to_owned(), chapter, rx));
         std::thread::spawn(move || {
@@ -1278,8 +1391,11 @@ impl ReaderApp {
             });
         if let Some(result) = result {
             let (path, chapter, _) = self.pending_book_open.take().unwrap();
-            self.opening_started = None;
+            let failed = result.is_err();
             self.finish_book_open(&path, chapter, result);
+            if failed {
+                self.close_book_presentation();
+            }
         }
     }
     fn finish_book_open(
@@ -1297,7 +1413,7 @@ impl ReaderApp {
             path, chapter
         ));
         match parsed {
-            Ok((book, hash)) => {
+            Ok((mut book, hash)) => {
                 self.push_feedback_log(format!(
                     "[Book] opened: title={}, chapters={}, fonts={}",
                     book.title,
@@ -1322,7 +1438,15 @@ impl ReaderApp {
                 let font_names: Vec<String> =
                     book.fonts.iter().map(|(name, _)| name.clone()).collect();
                 self.embedded_font_names = font_names;
-                self.embedded_fonts_registered = false;
+                // Keep the registered system font atlas when the publication's
+                // embedded fonts did not change. Rebuilding it on every open
+                // blocks the navigation animation even for books without fonts.
+                let fonts_changed = self
+                    .book
+                    .as_ref()
+                    .map_or(!book.fonts.is_empty(), |old| old.fonts != book.fonts);
+                self.embedded_fonts_registered &= !fonts_changed;
+                book.title = entry.title.clone();
                 self.book = Some(book);
                 self.current_book_hash = hash;
                 self.book_path = Some(entry.path.clone());
@@ -1330,6 +1454,7 @@ impl ReaderApp {
                 self.last_synced_chapter = None; // Reset so progress is pushed immediately on first update
                 self.last_synced_block = None;
                 self.current_block = entry.last_block;
+                self.current_char_offset = entry.last_char_offset;
                 self.pending_restore_block = Some(entry.last_block);
                 self.scroll_to_top = entry.last_block == 0;
                 self.pages_dirty = true;
@@ -1346,7 +1471,7 @@ impl ReaderApp {
                 // Load annotation config and start reading timer
                 self.book_config =
                     reader_core::library::Library::read_book_config(&self.data_dir, &entry.id);
-                self.reading_session_start = Some(reader_core::now_secs());
+
                 self.push_feedback_log(format!(
                     "[Book] ready: chapter={}/{}, embedded_fonts={}, path={}",
                     ch,
@@ -1384,6 +1509,7 @@ impl ReaderApp {
             self.pages_dirty = true;
             self.current_page = 0;
             self.current_block = 0;
+            self.current_char_offset = 0;
             self.pending_restore_block = None;
             if let Some(p) = &self.book_path {
                 let chap_title = self
@@ -1415,6 +1541,7 @@ impl ReaderApp {
             self.pages_dirty = true;
             self.current_page = 0;
             self.current_block = 0;
+            self.current_char_offset = 0;
             self.pending_restore_block = None;
             if let Some(p) = &self.book_path {
                 let chap_title = self
@@ -1570,35 +1697,6 @@ impl ReaderApp {
         }
     }
 
-    /// Record elapsed reading time into the book config.
-    pub fn flush_reading_stats(&mut self) {
-        let Some(start) = self.reading_session_start.take() else {
-            return;
-        };
-        let elapsed = reader_core::now_secs().saturating_sub(start);
-        if elapsed < 5 {
-            return;
-        }
-        if let Some(cfg) = &mut self.book_config {
-            let stats = cfg.reading_stats.get_or_insert_with(Default::default);
-            stats.total_seconds += elapsed;
-            let today = {
-                let secs = reader_core::now_secs();
-                let days = secs / 86400;
-                format!("{}", days) // simple day-key
-            };
-            if let Some(session) = stats.sessions.iter_mut().find(|s| s.date == today) {
-                session.seconds += elapsed;
-            } else {
-                stats.sessions.push(reader_core::library::ReadingSession {
-                    date: today,
-                    seconds: elapsed,
-                });
-            }
-            cfg.save(&self.data_dir);
-        }
-    }
-
     /// Save current book_config to disk.
     #[allow(dead_code)]
     pub fn save_book_config(&self) {
@@ -1653,9 +1751,21 @@ impl ReaderApp {
     }
 
     pub fn schedule_position_save(&mut self, chapter: usize, block: usize) {
-        if self.current_chapter != chapter || self.current_block != block {
+        self.schedule_position_save_at(chapter, block, 0);
+    }
+    pub(crate) fn schedule_position_save_at(
+        &mut self,
+        chapter: usize,
+        block: usize,
+        char_offset: usize,
+    ) {
+        if self.current_chapter != chapter
+            || self.current_block != block
+            || self.current_char_offset != char_offset
+        {
             self.current_chapter = chapter;
             self.current_block = block;
+            self.current_char_offset = char_offset;
             self.position_save_due =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
         }
@@ -1681,7 +1791,7 @@ impl ReaderApp {
                 self.current_chapter,
                 chapter_title,
                 self.current_block,
-                0,
+                self.current_char_offset,
             );
         }
     }
@@ -1896,12 +2006,31 @@ impl ReaderApp {
     }
 }
 
+impl Drop for ReaderApp {
+    fn drop(&mut self) {
+        self.flush_reading_stats();
+    }
+}
+
 impl eframe::App for ReaderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_appearance(ctx);
         self.last_egui_ctx = Some(ctx.clone());
+        self.tick_book_share(ctx);
+        self.advance_book_presentation();
         self.poll_book_open();
         // --- Poll TTS audio ---
+        if self.i18n.preference() == &Language::Auto {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            if self.language_checked.elapsed() >= std::time::Duration::from_secs(1) {
+                self.language_checked = std::time::Instant::now();
+                if self.i18n.refresh_system_language() {
+                    ctx.request_repaint();
+                }
+            }
+        }
         self.tts_poll_audio();
+        self.poll_reading_activity(ctx);
         self.flush_reading_position_if_due();
         // --- Poll CSC model download ---
         self.csc_poll_download();
@@ -2007,6 +2136,7 @@ impl eframe::App for ReaderApp {
                         }
                         if update.chapter != self.current_chapter
                             || update.block != self.current_block
+                            || update.char_offset != self.current_char_offset
                         {
                             if update.chapter != self.current_chapter {
                                 self.previous_chapter = Some(self.current_chapter);
@@ -2015,6 +2145,8 @@ impl eframe::App for ReaderApp {
                             self.last_synced_chapter = Some(update.chapter); // Don't bounce it back
                             self.last_synced_block = Some(update.block);
                             self.current_block = update.block;
+                            self.current_char_offset = update.char_offset;
+                            self.last_synced_char_offset = Some(update.char_offset);
                             self.pending_restore_block = Some(update.block);
                             self.pages_dirty = true;
                             self.current_page = 0;
@@ -2106,6 +2238,7 @@ impl eframe::App for ReaderApp {
         // --- Push outgoing local progress to PeerStore ---
         if Some(self.current_chapter) != self.last_synced_chapter
             || Some(self.current_block) != self.last_synced_block
+            || Some(self.current_char_offset) != self.last_synced_char_offset
         {
             if let Some(hash) = &self.current_book_hash {
                 let mut store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
@@ -2127,7 +2260,7 @@ impl eframe::App for ReaderApp {
                 if let Some(local) = store.progress.iter_mut().find(|p| p.book_hash == *hash) {
                     local.chapter = self.current_chapter;
                     local.block = self.current_block;
-                    local.char_offset = 0;
+                    local.char_offset = self.current_char_offset;
                     local.chapter_title = chapter_title.clone();
                     local.title = title.clone();
                     local.timestamp = now;
@@ -2137,7 +2270,7 @@ impl eframe::App for ReaderApp {
                         title,
                         chapter: self.current_chapter,
                         block: self.current_block,
-                        char_offset: 0,
+                        char_offset: self.current_char_offset,
                         chapter_title,
                         timestamp: now,
                     });
@@ -2154,6 +2287,7 @@ impl eframe::App for ReaderApp {
                 }
                 self.last_synced_chapter = Some(self.current_chapter);
                 self.last_synced_block = Some(self.current_block);
+                self.last_synced_char_offset = Some(self.current_char_offset);
             }
         }
 
@@ -2445,10 +2579,13 @@ impl eframe::App for ReaderApp {
         }
 
         if self.view == AppView::Reader
+            && !self.show_reader_introduction
             && !self.show_sharing_panel
             && !self.show_review_panel
+            && !self.show_csc_settings
             && !self.show_stats
             && !self.show_export_dialog
+            && !self.show_language
             && !ctx.wants_keyboard_input()
             && !ctx.memory(|m| m.any_popup_open())
         {
@@ -2491,14 +2628,18 @@ impl eframe::App for ReaderApp {
             // TTS bar (between toolbar and content, Edge-style)
             self.render_tts_bar(ctx);
 
-            crate::ui::design::animated_side_panel(
+            let collapse_label = self.i18n.t("common.collapse").to_owned();
+            if crate::ui::design::animated_side_panel(
                 ctx,
                 "toc_panel",
                 true,
                 280.,
                 self.show_toc && self.book.is_some(),
+                &collapse_label,
                 |ui| self.render_toc(ui),
-            );
+            ) {
+                self.show_toc = false;
+            }
         }
 
         let reader_fill = if self.view == AppView::Reader {
@@ -2534,6 +2675,7 @@ impl eframe::App for ReaderApp {
 
         // Chrome floats over the paper; it never reserves space in pagination.
         self.render_reader_chrome(ctx);
+        self.render_reader_correction_panel(ctx);
 
         if !panels_moving {
             self.panel_reflow_anchor = None;
@@ -2541,7 +2683,10 @@ impl eframe::App for ReaderApp {
 
         // ── Floating windows ──
         self.render_export_dialog(ctx);
+        self.render_receive_books(ctx);
+        self.render_rename_dialog(ctx);
         self.render_stats_window(ctx);
+        self.render_appearance_window(ctx);
 
         self.render_sharing_dialogs(ctx);
 
@@ -2551,6 +2696,8 @@ impl eframe::App for ReaderApp {
         }
 
         // ── CSC Contribute Dialog ──
+        self.render_display_reset_confirmation(ctx);
+        self.render_language_picker(ctx);
         if self.show_csc_contribute_dialog {
             self.render_csc_contribute_dialog(ctx);
         }
@@ -2561,10 +2708,147 @@ impl eframe::App for ReaderApp {
         }
 
         self.render_book_opening(ctx);
+        self.render_reader_introduction(ctx);
+        #[cfg(debug_assertions)]
+        self.capture_appearance_preview(ctx);
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
             settings.save(&self.data_dir);
             self.last_saved_settings = Some(settings);
+        }
+    }
+}
+
+fn default_scripts_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod first_reader_preferences_tests {
+    use super::*;
+    #[test]
+    fn first_run_defaults_and_previous_reader_migration() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_string_lossy().into_owned();
+        let fresh = ReaderApp::from_data_dir(path.clone());
+        assert!(!fresh.scroll_mode);
+        assert_eq!(fresh.reader_page_animation, "Realistic");
+        assert!(!fresh.reader_introduction_seen);
+        let mut saved = AppSettings::from_app(&fresh);
+        saved.scroll_mode = true;
+        saved.reader_page_animation = "Slide".into();
+        saved.reader_introduction_seen = Some(true);
+        saved.save(&path);
+        let restored = ReaderApp::from_data_dir(path.clone());
+        assert!(restored.scroll_mode && restored.reader_introduction_seen);
+        assert_eq!(restored.reader_page_animation, "Slide");
+        let mut legacy = serde_json::to_value(saved).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("reader_introduction_seen");
+        legacy["last_book_path"] = serde_json::json!("/missing/previous-reading.epub");
+        std::fs::write(
+            AppSettings::path(&path),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let upgraded = ReaderApp::from_data_dir(path);
+        assert!(upgraded.reader_introduction_seen && upgraded.scroll_mode);
+        assert_eq!(upgraded.reader_page_animation, "Slide");
+        legacy["reader_introduction_seen"] = serde_json::json!("malformed");
+        let decoded: AppSettings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.reader_introduction_seen, None);
+        assert!(decoded.scroll_mode);
+        assert_eq!(decoded.reader_page_animation, "Slide");
+    }
+}
+
+#[cfg(test)]
+mod reading_theme_settings_tests {
+    use super::*;
+    use crate::ui::reading_themes::{template, ReadingThemes};
+
+    #[test]
+    fn themes_persist_active_edits_without_touching_other_slots_or_reading_position() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        let mut app = ReaderApp::from_data_dir(path.clone());
+        let mut custom = template("custom").unwrap();
+        custom.dark.image = Some("/external/custom.png".into());
+        app.reading_themes.save("custom", custom.clone());
+        let mut warm = template("warm").unwrap();
+        warm.dark.ink = Some([210, 211, 212, 255]);
+        app.reading_themes.save("warm", warm.clone());
+        app.font_size = 23.;
+        app.line_spacing = 1.9;
+        app.current_chapter = 7;
+        app.current_block = 3;
+        app.current_char_offset = 5;
+        app.apply_selected_reading_theme();
+        assert_eq!(
+            (
+                app.current_chapter,
+                app.current_block,
+                app.current_char_offset
+            ),
+            (7, 3, 5)
+        );
+        assert_eq!((app.font_size, app.line_spacing), (23., 1.9));
+        app.reader_bg_color = Color32::from_rgb(11, 22, 33);
+        let settings = AppSettings::from_app(&app);
+        let themes = settings.reading_themes.as_ref().unwrap();
+        assert_eq!(themes.selected, "warm");
+        assert_eq!(themes.custom.as_ref(), Some(&custom));
+        assert_eq!(themes.pair("warm").dark, warm.dark);
+        assert_eq!(themes.pair("warm").light.paper, [11, 22, 33, 255]);
+        settings.save(&path);
+        let restored = ReaderApp::from_data_dir(path);
+        assert_eq!(&restored.reading_themes, themes);
+        assert_eq!(restored.reader_bg_color, Color32::from_rgb(11, 22, 33));
+        assert_eq!((restored.font_size, restored.line_spacing), (23., 1.9));
+    }
+
+    #[test]
+    fn missing_or_malformed_new_field_preserves_legacy_pair_and_unrelated_settings() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        let app = ReaderApp::from_data_dir(path.clone());
+        let mut settings = AppSettings::from_app(&app);
+        let mut pair = template("gray").unwrap();
+        pair.light.image = Some("/external/old-light.png".into());
+        pair.dark.image = Some("/external/old-dark.png".into());
+        pair.dark.strength = 0.61;
+        pair.light.ink = Some([41, 42, 43, 255]);
+        settings.appearance_paints = Some(pair.clone());
+        settings.reading_themes = None;
+        settings.appearance_current_dark = Some(false);
+        settings.font_size = 27.;
+        settings.scroll_mode = true;
+        for malformed in [false, true] {
+            let mut raw = serde_json::to_value(&settings).unwrap();
+            if malformed {
+                raw["reading_themes"] =
+                    serde_json::json!({"custom":"invalid", "selected":"custom"});
+            } else {
+                raw.as_object_mut().unwrap().remove("reading_themes");
+            }
+            std::fs::write(AppSettings::path(&path), serde_json::to_vec(&raw).unwrap()).unwrap();
+            let restored = ReaderApp::from_data_dir(path.clone());
+            assert_eq!(
+                restored.reading_themes,
+                ReadingThemes::migrate(pair.clone())
+            );
+            assert_eq!(restored.appearance_paints, pair);
+            assert_eq!(
+                restored.reader_bg_image_path.as_deref(),
+                Some("/external/old-light.png")
+            );
+            assert_eq!(restored.font_size, 27.);
+            assert!(restored.scroll_mode);
         }
     }
 }

@@ -1,0 +1,1 @@
+EdgeSpeechToken.swift adapts the public Edge speech protocol checksum in edge-tts/src/edge_tts/drm.py, by rany2 and contributors, under LGPLv3. The application source and Xcode project allow this module to be rebuilt and replaced. Upstream license text is preserved in edge-tts-LICENSE.txt. Other reader source files retain their existing license.

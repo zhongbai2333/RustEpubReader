@@ -47,9 +47,26 @@ data class TxtChapterPreview(val title: String, val lineStart: Int, val charCoun
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
 
+    val activityTracker by lazy { com.zhongbai233.epub.reader.util.ReadingActivityTracker(dataDir) }
+    var showStatistics by mutableStateOf(false)
+    var statisticsCurrentBook = false
+    fun openStatistics(current: Boolean) { activityTracker.flush(); statisticsCurrentBook=current; showStatistics=true }
+    suspend fun loadStatistics(current: Boolean): com.zhongbai233.epub.reader.ui.reader.ActivityReport = withContext(Dispatchers.IO) {
+        val request=JSONObject().put("op","activity_report").put("today",java.text.SimpleDateFormat("yyyy-MM-dd",java.util.Locale.ROOT).format(java.util.Date()))
+        if(current) currentBookId?.let {request.put("id",it)}
+        val envelope=JSONObject(RustBridge.readingActivity(dataDir,request.toString()) ?: error(I18n.t("common.error_activity_load")))
+        if(!envelope.optBoolean("ok")) error(envelope.optString("error"))
+        Json {ignoreUnknownKeys=true}.decodeFromString<com.zhongbai233.epub.reader.ui.reader.ActivityReport>(envelope.getJSONObject("result").toString())
+    }
+    init { viewModelScope.launch { delay(1000); while(isActive) {
+        activityTracker.sample(currentBookId,ttsManager.audible)
+        delay(1000)
+    } } }
+
     private val context get() = getApplication<Application>()
     private val library = Library(context)
     private var currentBookUri: String? = null
+    val originalBookPath: String get() = currentBookUri.orEmpty()
     val currentBookId: String?
         get() = currentBookUri?.let { uri -> library.books.firstOrNull { it.uri == uri }?.id }
     private val prefs by lazy {
@@ -76,7 +93,16 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     // ---- ���� ----
     var fontSize by mutableFloatStateOf(18f)
         private set
-    var isDarkMode by mutableStateOf(false)
+    var appearanceLinkage by mutableStateOf(com.zhongbai233.epub.reader.model.AppearanceLinkage.firstRun())
+        private set
+    var systemAppearanceDark by mutableStateOf((context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES)
+        private set
+    var ambientAppearanceDark by mutableStateOf<Boolean?>(null)
+        private set
+    var ambientSensorAvailable by mutableStateOf(false)
+        private set
+    val isDarkMode: Boolean get() = appearanceLinkage.appDark(systemAppearanceDark, ambientAppearanceDark)
+    val readingDark: Boolean get() = appearanceLinkage.readingDark(systemAppearanceDark, ambientAppearanceDark)
     var isScrollMode by mutableStateOf(false)
     var readerBgColorIndex by mutableIntStateOf(0)
         private set
@@ -88,15 +114,23 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var readerFontFamily by mutableStateOf("Sans")
         private set
-    var readerPageAnimation by mutableStateOf("Slide")
+    var readerPageAnimation by mutableStateOf("Realistic")
         private set
     var readerBgImageUri by mutableStateOf<String?>(null)
         private set
     var readerBgImageAlpha by mutableFloatStateOf(0.22f)
         private set
+    var readingAppearance by mutableStateOf(com.zhongbai233.epub.reader.model.ReadingAppearance())
+        private set
     var readerLanguage by mutableStateOf("auto")
         private set
-    var showImmersiveStatus by mutableStateOf(false)
+    var readerIntroductionSeen by mutableStateOf(false)
+        private set
+    fun markReaderIntroductionShown() {
+        readerIntroductionSeen=true
+        prefs.edit().putBoolean("reader.introduction.v1",true).apply()
+    }
+    var showImmersiveStatus by mutableStateOf(true)
         private set
     var systemFonts by mutableStateOf<List<FontItem>>(emptyList())
         private set
@@ -255,6 +289,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var contributeSampleCount by mutableStateOf(0)
         private set
     // GitHub OAuth
+    val bookSharing by lazy { com.zhongbai233.epub.reader.ui.library.BookShareModel(context.filesDir.absolutePath, beforeImport = { cancelGithubSyncWork() }) { refreshLibrary() } }
+    var receivingSharedBooks by mutableStateOf(false)
     var githubToken by mutableStateOf<String?>(null)
         private set
     var githubUsername by mutableStateOf<String?>(null)
@@ -401,8 +437,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun loadSettings() {
+        val guideKey="reader.introduction.v1"
+        if(!prefs.contains(guideKey)) prefs.edit().putBoolean(guideKey,prefs.getString(PrefKeys.LAST_BOOK_URI,null)!=null).apply()
+        readerIntroductionSeen=prefs.getBoolean(guideKey,false)
+        val hadAppearance = prefs.contains(PrefKeys.DARK_MODE) || prefs.contains(com.zhongbai233.epub.reader.model.ReadingAppearance.storageKey) || prefs.contains(PrefKeys.BG_COLOR_INDEX)
+        val legacyDark = prefs.getBoolean(PrefKeys.DARK_MODE, false)
         fontSize = prefs.getFloat(PrefKeys.FONT_SIZE, 18f).coerceIn(12f, 40f)
-        isDarkMode = prefs.getBoolean(PrefKeys.DARK_MODE, false)
         isScrollMode = prefs.getBoolean(PrefKeys.SCROLL_MODE, false)
 
         readerBgColorIndex = prefs.getInt(PrefKeys.BG_COLOR_INDEX, 0).coerceAtLeast(0)
@@ -412,11 +452,20 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         readerCustomFontColorArgb = prefs.getInt(PrefKeys.CUSTOM_FONT_COLOR, 0xFF1A1A1A.toInt())
 
         readerFontFamily = prefs.getString(PrefKeys.FONT_FAMILY, "Sans") ?: "Sans"
-        readerPageAnimation = prefs.getString(PrefKeys.PAGE_ANIMATION, "Slide") ?: "Slide"
+        readerPageAnimation = prefs.getString(PrefKeys.PAGE_ANIMATION, "Realistic") ?: "Realistic"
         readerBgImageUri = prefs.getString(PrefKeys.BG_IMAGE_URI, null)
         readerBgImageAlpha = prefs.getFloat(PrefKeys.BG_IMAGE_ALPHA, 0.22f).coerceIn(0f, 1f)
-        readerLanguage = prefs.getString(PrefKeys.LANGUAGE, "auto") ?: "auto"
-        showImmersiveStatus = prefs.getBoolean(PrefKeys.SHOW_IMMERSIVE_STATUS, false)
+        readingAppearance = com.zhongbai233.epub.reader.model.ReadingAppearance.decode(
+            prefs.getString(com.zhongbai233.epub.reader.model.ReadingAppearance.storageKey, null)
+        ) ?: com.zhongbai233.epub.reader.model.ReadingAppearance.migrate(
+            readerBgColorIndex, readerCustomBgColorArgb, readerFontColorIndex, readerCustomFontColorArgb,
+            readerBgImageUri, readerBgImageAlpha
+        ).also { prefs.edit().putString(com.zhongbai233.epub.reader.model.ReadingAppearance.storageKey, it.encoded()).apply() }
+        appearanceLinkage = com.zhongbai233.epub.reader.model.AppearanceLinkage.decode(prefs.getString(com.zhongbai233.epub.reader.model.AppearanceLinkage.storageKey, null))
+            ?: (if(hadAppearance) com.zhongbai233.epub.reader.model.AppearanceLinkage.migrate(legacyDark, readingAppearance.mode) else com.zhongbai233.epub.reader.model.AppearanceLinkage.firstRun())
+                .also { prefs.edit().putString(com.zhongbai233.epub.reader.model.AppearanceLinkage.storageKey,it.encoded()).apply() }
+        readerLanguage = I18n.normalize(prefs.getString(PrefKeys.LANGUAGE, "auto") ?: "auto")
+        showImmersiveStatus = prefs.getBoolean(PrefKeys.SHOW_IMMERSIVE_STATUS, true)
         I18n.setLanguage(readerLanguage)
         autoStartSharing = prefs.getBoolean(PrefKeys.AUTO_START_SHARING, false)
         githubToken = GitHubTokenStore.load(context)
@@ -569,7 +618,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun reportExportFailure() { errorMessage = I18n.t("feedback.export_failed_generic") }
+    fun reportExportFailure(detail: String = "") { errorMessage = I18n.tf1("book.export_failed", detail) }
+
+    fun renameBook(uri: String, title: String) {
+        try { library.rename(uri, title); loadLibrary() }
+        catch (error: Exception) { errorMessage = error.message ?: I18n.t("common.error_unknown") }
+    }
 
     fun removeBook(entry: BookEntry) {
         removeBookByUri(entry.uri)
@@ -640,7 +694,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch {
             isLoading = true
-            loadingMessage = if (uris.size == 1) "正在导入书本…" else "正在批量导入 ${uris.size} 本书…"
+            loadingMessage = if (uris.size == 1) I18n.t("common.importing_book") else I18n.tf("common.importing_batch_books", (uris.size).toString())
             errorMessage = null
 
             var imported = 0
@@ -651,7 +705,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 withContext(Dispatchers.IO) {
                     uris.forEachIndexed { index, uri ->
                         withContext(Dispatchers.Main) {
-                            loadingMessage = "正在导入 ${index + 1}/${uris.size}…"
+                            loadingMessage = I18n.tf("common.importing_progress", (index + 1).toString(), (uris.size).toString())
                         }
 
                         if (isTxtUri(uri)) {
@@ -669,24 +723,24 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         }.onSuccess {
                             imported++
                         }.onFailure { e ->
-                            failures.add(e.message ?: "未知错误")
+                            failures.add(e.message ?: I18n.t("common.error_unknown"))
                         }
                     }
                 }
 
                 loadLibrary()
                 val parts = mutableListOf<String>()
-                if (imported > 0) parts.add("已导入 $imported 本书")
-                if (txtCount > 0) parts.add("跳过 $txtCount 个 TXT（TXT 请单独导入）")
-                if (failures.isNotEmpty()) parts.add("失败 ${failures.size} 个")
+                if (imported > 0) parts.add(I18n.tf("common.imported_books_count", (imported).toString()))
+                if (txtCount > 0) parts.add(I18n.tf("common.skipped_txt_count", (txtCount).toString()))
+                if (failures.isNotEmpty()) parts.add(I18n.tf("common.failed_count", (failures.size).toString()))
                 if (parts.isNotEmpty()) {
                     Toast.makeText(context, parts.joinToString("，"), Toast.LENGTH_SHORT).show()
                 }
                 if (imported == 0 && failures.isNotEmpty()) {
-                    errorMessage = "导入失败: ${failures.first()}"
+                    errorMessage = I18n.tf("common.error_import_failed_detail", (failures.first()).toString())
                 }
             } catch (e: Exception) {
-                errorMessage = "导入失败: ${e.message}"
+                errorMessage = I18n.tf("common.error_import_failed_detail", (e.message).toString())
             } finally {
                 loadingMessage = null
                 isLoading = false
@@ -697,7 +751,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun openFromUri(uri: Uri) {
         viewModelScope.launch {
             isLoading = true
-            loadingMessage = "正在打开书本…"
+            loadingMessage = I18n.t("common.opening_book")
             errorMessage = null
             var tempFile: File? = null
             val isTxt = isTxtUri(uri)
@@ -713,7 +767,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     parseAndOpen(file)
                 }
             } catch (e: Exception) {
-                errorMessage = "打开失败: ${e.message}"
+                errorMessage = I18n.tf("common.error_open_failed_detail", (e.message).toString())
             } finally {
                 if (!isTxt) {
                     tempFile?.let { file ->
@@ -749,11 +803,20 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private var pendingBookOpenJob: Job? = null
+    private var bookOpenGeneration = 0
+    fun cancelPendingBookOpen() {
+        bookOpenGeneration++
+        pendingBookOpenJob?.cancel(); pendingBookOpenJob=null
+        isLoading=false; loadingMessage=null
+    }
     fun openFromPath(filePath: String, chapter: Int = 0) {
         android.util.Log.d("READER-RESUME", "openFromPath path=$filePath chapter=$chapter")
-        viewModelScope.launch {
+        cancelPendingBookOpen()
+        val generation=bookOpenGeneration
+        pendingBookOpenJob = viewModelScope.launch {
             isLoading = true
-            loadingMessage = "正在打开书本…"
+            loadingMessage = I18n.t("common.opening_book")
             errorMessage = null
             try {
                 val file = File(filePath)
@@ -763,11 +826,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 val (resolvedChapter, resolvedBlock) = resolveStartPosition(filePath, chapter)
                 parseAndOpen(file, resolvedChapter, resolvedBlock)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 errorMessage = "��ʧ��: ${e.message}"
             } finally {
-                loadingMessage = null
-                isLoading = false
+                if(generation==bookOpenGeneration) { loadingMessage = null; isLoading = false }
             }
         }
     }
@@ -819,13 +883,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             val reviewIndices = try {
                 metadata.reviewChapterIndices.toMutableSet()
             } catch (e: Exception) {
-                android.util.Log.e("ReaderViewModel", "解析段评数据失败", e)
+                android.util.Log.e("ReaderViewModel", I18n.t("common.error_parse_paragraph_reviews_failed"), e)
                 mutableSetOf<Int>()
             }
             val chapterReviewMap = try {
                 metadata.chapterReviews.associate { it.main to it.review }.toMutableMap()
             } catch (e: Exception) {
-                android.util.Log.e("ReaderViewModel", "解析段评数据失败", e)
+                android.util.Log.e("ReaderViewModel", I18n.t("common.error_parse_paragraph_reviews_failed"), e)
                 mutableMapOf<Int, Int>()
             }
             withContext(Dispatchers.Main) {
@@ -847,7 +911,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             val json = RustBridge.getChapter(managedPath, index)
                                 ?: return@getOrPut Chapter("Error", emptyList())
                             val dto = jsonParser.decodeFromString<ChapterDto>(json)
-                            Chapter(title = dto.title, blocks = dto.blocks, sourceHref = dto.sourceHref)
+                            Chapter(title = dto.title, blocks = dto.blocks, sourceHref = dto.sourceHref, images = dto.images)
                         } catch (e: Exception) {
                             e.printStackTrace()
                             Chapter("Error", emptyList())
@@ -856,6 +920,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
 
+            // The resume chapter must not trigger JSON parsing/bridge IO from Compose.
+            if(lazyChapters.isNotEmpty()) lazyChapters[startChapter.coerceIn(0,lazyChapters.lastIndex)]
             var coverBytes: ByteArray? = null
             if (metadata.hasCover) {
                 val coverB64 = RustBridge.getCover(managedPath)
@@ -921,7 +987,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             FileOutputStream(dest).use { output ->
                 input.copyTo(output, bufferSize = 1024 * 1024)
             }
-        } ?: throw Exception("无法读取文件")
+        } ?: throw Exception(I18n.t("common.error_read_file_failed"))
         dest
     }
 
@@ -1065,8 +1131,22 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         persistSettings()
     }
 
+    fun updateAppearanceSignals(system: Boolean, ambient: Boolean?, available: Boolean) {
+        systemAppearanceDark = system; ambientAppearanceDark = ambient; ambientSensorAvailable = available
+    }
+    fun updateAppearanceLinkage(value: com.zhongbai233.epub.reader.model.AppearanceLinkage) {
+        appearanceLinkage = value
+        prefs.edit().putString(com.zhongbai233.epub.reader.model.AppearanceLinkage.storageKey,value.encoded()).apply()
+    }
+    fun toggleReaderDayNight(@Suppress("UNUSED_PARAMETER") night: Boolean) {
+        updateAppearanceLinkage(appearanceLinkage.toggleReading(systemAppearanceDark,ambientAppearanceDark))
+    }
+    fun updateReadingAppearance(value: com.zhongbai233.epub.reader.model.ReadingAppearance) {
+        readingAppearance = value.normalized()
+        prefs.edit().putString(com.zhongbai233.epub.reader.model.ReadingAppearance.storageKey, readingAppearance.encoded()).apply()
+    }
     fun updateDarkMode(dark: Boolean) {
-        isDarkMode = dark
+        updateAppearanceLinkage(appearanceLinkage.setApp(dark))
         persistSettings()
     }
 
@@ -1116,8 +1196,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updateLanguage(code: String) {
-        readerLanguage = code
-        I18n.setLanguage(code)
+        readerLanguage = I18n.normalize(code)
+        I18n.setLanguage(readerLanguage)
         persistSettings()
     }
 
@@ -1473,7 +1553,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             sharingServerAddr = json.optString("addr", "")
                             sharingStatus = ""
                         } else {
-                            sharingStatus = json.optString("error", "Unknown error")
+                            sharingStatus = json.optString("error", I18n.t("common.error_unknown"))
                         }
                     } catch (_: Exception) {
                         sharingStatus = "Server start failed"
@@ -1704,7 +1784,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             withContext(Dispatchers.Main) {
                 txtImportConverting = false
                 if (result == null) {
-                    txtImportError = "转换失败"
+                    txtImportError = I18n.t("common.error_conversion_failed")
                     return@withContext
                 }
                 try {
@@ -1794,6 +1874,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         cancelGithubSyncWork()
                         githubSyncLastSuccess = null
                         githubRepoAuthorized = auth.repoAuthorized
+                        bookSharing.cancelAuthenticatedWork()
                         githubToken = auth.token
                         githubUsername = auth.username
                         prefs.edit().putString(PrefKeys.GITHUB_USERNAME, auth.username).putBoolean("github_repo_authorized", auth.repoAuthorized).apply()
@@ -1822,7 +1903,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
-                contributeStatus = error.message ?: "GitHub login failed"
+                contributeStatus = error.message ?: I18n.t("sync.error_github_login_failed")
                 githubSyncStatus = contributeStatus
             } finally {
                 githubAuthPolling = false
@@ -1871,6 +1952,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun logoutGitHub() {
+        bookSharing.cancelAuthenticatedWork()
         updateGithubSyncEnabled(false)
         cancelGitHubLogin()
         GitHubTokenStore.delete(context)
@@ -1940,7 +2022,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
-                val message = error.message ?: "GitHub sync failed"
+                val message = error.message ?: I18n.t("cloud.failed")
                 githubSyncThrottled = message.startsWith("RETRY_AFTER:")
                 githubSyncNeedsAuth = message.startsWith("REAUTHORIZE:") || message.contains("login expired")
                 if (githubSyncNeedsAuth) {
@@ -2114,6 +2196,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        bookSharing.close()
+        activityTracker.close()
         cancelGithubSyncWork()
         cancelGitHubLogin()
         super.onCleared()

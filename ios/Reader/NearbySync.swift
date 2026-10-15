@@ -20,7 +20,7 @@ struct NearbyState: Decodable { let address: String; let status: String; let pai
     func refresh() async {
         let client = library.client
         do { state = try await Task.detached { try client.call("peer_state", as: NearbyState.self) }.value; address = state?.address ?? ""; if let summary = state?.result { library.offer = summary.offer; await library.reload() } }
-        catch { self.error = "连接失败，请检查地址、PIN 和本地网络权限。" }
+        catch { self.error = L("sync.error_connection_failed") }
     }
     func start() {
         guard !busy else { return }; error = nil; busy = true
@@ -31,7 +31,7 @@ struct NearbyState: Decodable { let address: String; let status: String; let pai
                 guard intent == generation && !Task.isCancelled else { return }
                 busy = false; listening = true; await refresh()
                 polling = Task { while !Task.isCancelled { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { await refresh() } } }
-            } catch { if intent == generation { busy = false; self.error = "连接失败，请检查地址、PIN 和本地网络权限。" } }
+            } catch { if intent == generation { busy = false; self.error = L("sync.error_connection_failed") } }
         }
     }
     func connect(peer: String? = nil) {
@@ -43,26 +43,27 @@ struct NearbyState: Decodable { let address: String; let status: String; let pai
                 let summary: SyncSummary = try await Task.detached { try client.call("peer_connect", ["address":address,"pin":pin,"open_path":path,"peer_id":peer ?? ""]) }.value
                 guard intent == generation && !Task.isCancelled else { return }
                 library.offer = summary.offer; await library.reload(); await refresh(); busy = false
-            } catch { if intent == generation { busy = false; self.error = "连接失败，请检查地址、PIN 和本地网络权限。" } }
+            } catch { if intent == generation { busy = false; self.error = L("sync.error_connection_failed") } }
         }
     }
     func remove(_ id: String) { let client = library.client; Task { let _: [String:Bool]? = try? await Task.detached { try client.call("peer_remove",["peer_id":id]) }.value; await refresh() } }
 }
 struct NearbySyncView: View {
+    @ObservedObject private var readerI18n = ReaderI18n.shared
     @ObservedObject var nearby: NearbySync
     var body: some View {
         Section {
-            Toggle("允许设备连接", isOn: Binding(get: { nearby.listening }, set: { if $0 { nearby.start() } else { nearby.stop() } })).disabled(nearby.busy)
-            if nearby.listening { LabeledContent("本机地址", value: nearby.address).textSelection(.enabled); LabeledContent("本机 PIN", value: nearby.pin).monospacedDigit().textSelection(.enabled) }
-            TextField("对方设备地址", text: $nearby.remoteAddress, prompt: Text("192.168.1.2:14528")).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.numbersAndPunctuation)
-            TextField("对方 PIN", text: $nearby.remotePin).keyboardType(.numberPad).onChange(of: nearby.remotePin) { _, value in nearby.remotePin = String(value.filter(\.isNumber).prefix(4)) }
-            if nearby.busy { ProgressView(); Button("取消连接") { nearby.stop() } }
-            else { Button("连接并同步") { nearby.connect() }.disabled(nearby.remoteAddress.isEmpty || nearby.remotePin.count != 4) }
-            if let error = nearby.error { Text(error).font(.footnote).foregroundStyle(.red) }
-            if let state = nearby.state, state.status == "synced" { Text("已同步").foregroundStyle(.secondary) }
+            Toggle(L("sync.allow_device_connection"), isOn: Binding(get: { nearby.listening }, set: { if $0 { nearby.start() } else { nearby.stop() } })).disabled(nearby.busy)
+            if nearby.listening { LabeledContent(L("sync.local_address"), value: nearby.address).textSelection(.enabled); LabeledContent(L("sync.local_pin"), value: nearby.pin).monospacedDigit().textSelection(.enabled) }
+            TextField(L("sync.peer_address"), text: $nearby.remoteAddress, prompt: Text("192.168.1.2:14528")).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.numbersAndPunctuation)
+            TextField(L("sync.peer_pin"), text: $nearby.remotePin).keyboardType(.numberPad).onChange(of: nearby.remotePin) { _, value in nearby.remotePin = String(value.filter(\.isNumber).prefix(4)) }
+            if nearby.busy { ProgressView(); Button(L("sync.cancel_connection")) { nearby.stop() } }
+            else { Button(L("sync.connect_and_sync")) { nearby.connect() }.disabled(nearby.remoteAddress.isEmpty || nearby.remotePin.count != 4) }
+            if let error = nearby.error { Text(LM(error)).font(.footnote).foregroundStyle(.red) }
+            if let state = nearby.state, state.status == "synced" { Text(L("sync.synced")).foregroundStyle(.secondary) }
             ForEach(nearby.state?.paired ?? []) { peer in
-                HStack { Text(peer.device_name); Spacer(); Button("解除配对", role: .destructive) { nearby.remove(peer.id) } }
+                HStack { Text(peer.device_name); Spacer(); Button(L("sync.unpair"), role: .destructive) { nearby.remove(peer.id) } }
             }
-        } header: { Text("PIN 同步") } footer: { Text("仅在同一网络中使用。开启后，配对设备可读取本机书籍和阅读进度；离开前台时连接会停止。请在对方设备的同步页查看地址和四位 PIN。") }
+        } header: { Text(L("sync.pin_sync")) } footer: { Text(L("sync.pin_sync_desc")) }
     }
 }

@@ -53,6 +53,7 @@ impl ReaderApp {
     }
 
     pub fn github_logout(&mut self) {
+        self.book_share.cancel_authenticated_work(&self.data_dir);
         self.github_cancel_login();
         self.cloud_set_enabled(false);
         reader_core::sharing::keystore::delete_github_token();
@@ -167,8 +168,7 @@ impl ReaderApp {
                 Err(e) => {
                     self.push_feedback_log(format!("[GitHub] device_code error: {}", e));
                     self.github_oauth_polling = false;
-                    self.github_oauth_status =
-                        format!("{} {}", self.i18n.t("account.auth_failed"), e);
+                    self.github_oauth_status = self.i18n.t("account.auth_failed").to_owned();
                 }
             }
         }
@@ -328,6 +328,7 @@ impl ReaderApp {
                     self.cloud_sync.clear_account();
                     self.cloud_sync.needs_auth = self.github_sync_enabled && !repo_authorized;
                     self.github_repo_authorized = repo_authorized;
+                    self.book_share.cancel_authenticated_work(&self.data_dir);
                     self.github_token = Some(token);
                     self.github_username = Some(username);
                     self.github_oauth_polling = false;
@@ -367,14 +368,12 @@ impl ReaderApp {
                 Ok(PollResult::Error(e)) => {
                     self.push_feedback_log(format!("[GitHub] token poll error: {}", e));
                     self.github_oauth_polling = false;
-                    self.github_oauth_status =
-                        format!("{} {}", self.i18n.t("account.auth_failed"), e);
+                    self.github_oauth_status = self.i18n.t("account.auth_failed").to_owned();
                 }
                 Err(e) => {
                     self.push_feedback_log(format!("[GitHub] token poll channel error: {}", e));
                     self.github_oauth_polling = false;
-                    self.github_oauth_status =
-                        format!("{} {}", self.i18n.t("account.auth_failed"), e);
+                    self.github_oauth_status = self.i18n.t("account.auth_failed").to_owned();
                 }
             }
         }

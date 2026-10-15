@@ -73,6 +73,20 @@ impl Library {
 }
 
 impl Library {
+    /// Sharing reads a frozen catalog without running migration or rewriting configs.
+    pub fn read_snapshot(data_dir: &str) -> Result<Self, String> {
+        let data = match std::fs::read(library_path(data_dir)) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default())
+            }
+            Err(_) => return Err("Cannot read library catalog".into()),
+        };
+        let mut library: Self =
+            serde_json::from_slice(&data).map_err(|_| "Cannot read library catalog")?;
+        library.rebuild_index();
+        Ok(library)
+    }
     pub fn load_from(data_dir: &str) -> Self {
         let path = library_path(data_dir);
         let mut library = if let Ok(data) = std::fs::read_to_string(&path) {
@@ -174,7 +188,9 @@ impl Library {
                 entry.last_char_offset = 0;
             }
             entry.id = id.clone();
-            entry.title = title;
+            if entry.title.trim().is_empty() {
+                entry.title = title;
+            }
             entry.path = final_path;
             entry.last_chapter = chapter;
             if chapter_title.is_some() {
@@ -246,7 +262,9 @@ impl Library {
                 entry.last_char_offset = 0;
             }
             entry.id = id.clone();
-            entry.title = title;
+            if entry.title.trim().is_empty() {
+                entry.title = title;
+            }
             entry.path = managed_epub.to_string_lossy().to_string();
             entry.last_chapter = chapter;
             if chapter_title.is_some() {
@@ -282,6 +300,167 @@ impl Library {
             self.rebuild_index();
             self.save_to(data_dir);
         }
+    }
+
+    /// Change the display title while retaining storage identity and reading data.
+    pub fn rename_book(
+        &mut self,
+        data_dir: &str,
+        id: &str,
+        title: &str,
+    ) -> Result<BookEntry, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("Book name cannot be empty".into());
+        }
+        let idx = self
+            .books
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or("Book is no longer in the library")?;
+        let mut config =
+            Self::read_book_config(data_dir, id).ok_or("Cannot read book configuration")?;
+        let mut renamed = self.clone();
+        renamed.books[idx].title = title.to_owned();
+        config.title = title.to_owned();
+        config.updated_at = now_secs();
+        let library_data = serde_json::to_vec_pretty(&renamed).map_err(|e| e.to_string())?;
+        let config_data = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
+        let config_path = config_path_for(data_dir, id);
+        let old_config = std::fs::read(&config_path).map_err(|e| e.to_string())?;
+        let result = (|| {
+            write_rename_file(&config_path, &config_data)?;
+            if let Err(e) = write_rename_file(&library_path(data_dir), &library_data) {
+                let _ = write_rename_file(&config_path, &old_config);
+                return Err(e.to_string());
+            }
+            Ok(())
+        })();
+        result?;
+        *self = renamed;
+        Ok(self.books[idx].clone())
+    }
+
+    /// Import verified share files as new identities. Existing content stays untouched.
+    pub fn import_shared_books(
+        &mut self,
+        data_dir: &str,
+        incoming: &[(String, String, PathBuf)],
+    ) -> Result<(Vec<BookEntry>, usize), String> {
+        self.import_shared_books_checked(data_dir, incoming, || Ok(()), |_| {})
+    }
+    pub fn import_shared_books_checked(
+        &mut self,
+        data_dir: &str,
+        incoming: &[(String, String, PathBuf)],
+        check: impl Fn() -> Result<(), String>,
+        copied: impl Fn(u64),
+    ) -> Result<(Vec<BookEntry>, usize), String> {
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Write};
+        let checked_hash = |path: &Path| -> Result<String, String> {
+            let mut file =
+                std::fs::File::open(path).map_err(|_| "Cannot read book for verification")?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0; 65536];
+            loop {
+                check()?;
+                let n = file
+                    .read(&mut buffer)
+                    .map_err(|_| "Cannot read book for verification")?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..n]);
+            }
+            Ok(format!("{:x}", hasher.finalize()))
+        };
+        let mut known = HashSet::new();
+        for entry in &self.books {
+            check()?;
+            if let Ok(hash) = checked_hash(Path::new(&entry.path)) {
+                known.insert(hash);
+            }
+            check()?;
+        }
+        let mut next = self.clone();
+        let mut created = Vec::new();
+        let mut imported = Vec::new();
+        let mut skipped = 0;
+        std::fs::create_dir_all(books_dir(data_dir))
+            .map_err(|_| "Cannot create library storage")?;
+        let result = (|| -> Result<(), String> {
+            for (title, hash, source) in incoming {
+                check()?;
+                if !crate::cloud_sync::valid_hash(hash) || &checked_hash(source)? != hash {
+                    return Err("Received book checksum does not match".into());
+                }
+                if !known.insert(hash.clone()) {
+                    skipped += 1;
+                    continue;
+                }
+                let id = generate_book_id();
+                let path = epub_path_for(data_dir, &id);
+                let mut input =
+                    std::fs::File::open(source).map_err(|_| "Cannot read received book")?;
+                let mut output = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&path)
+                    .map_err(|_| "Cannot import received book")?;
+                created.push((path.clone(), config_path_for(data_dir, &id)));
+                let mut buffer = [0; 65536];
+                loop {
+                    check()?;
+                    let n = input
+                        .read(&mut buffer)
+                        .map_err(|_| "Cannot import received book")?;
+                    if n == 0 {
+                        break;
+                    }
+                    output
+                        .write_all(&buffer[..n])
+                        .map_err(|_| "Cannot import received book")?;
+                    copied(n as u64);
+                }
+                output
+                    .sync_all()
+                    .map_err(|_| "Cannot import received book")?;
+                check()?;
+                let entry = BookEntry {
+                    id,
+                    title: title.clone(),
+                    path: path.to_string_lossy().into_owned(),
+                    last_chapter: 0,
+                    last_block: 0,
+                    last_char_offset: 0,
+                    last_chapter_title: None,
+                    last_opened: 0,
+                };
+                next.books.push(entry.clone());
+                next.write_book_config(data_dir, &entry, None);
+                check()?;
+                let cfg = Self::read_book_config(data_dir, &entry.id)
+                    .ok_or("Cannot save received book configuration")?;
+                if cfg.file_hash.as_ref() != Some(hash) {
+                    return Err("Cannot verify imported book".into());
+                }
+                imported.push(entry);
+            }
+            check()?;
+            let bytes = serde_json::to_vec_pretty(&next).map_err(|_| "Cannot save library")?;
+            write_rename_file(&library_path(data_dir), &bytes)
+        })();
+        if let Err(error) = result {
+            for (epub, config) in created {
+                let _ = std::fs::remove_file(epub);
+                let _ = std::fs::remove_file(config);
+            }
+            return Err(error);
+        }
+        next.rebuild_index();
+        *self = next;
+        Ok((imported, skipped))
     }
 
     pub fn remove_by_path(&mut self, data_dir: &str, path: &str) {
@@ -350,6 +529,7 @@ impl Library {
         let mut migrated = Vec::new();
 
         for mut entry in std::mem::take(&mut self.books) {
+            let original = entry.clone();
             let mut id = if !entry.id.is_empty() && is_uuid_like(&entry.id) {
                 entry.id.clone()
             } else {
@@ -397,7 +577,13 @@ impl Library {
                 changed = true;
             }
 
-            self.write_book_config(data_dir, &entry, None);
+            if original.id != entry.id
+                || original.path != entry.path
+                || original.last_opened != entry.last_opened
+                || !config_path_for(data_dir, &entry.id).exists()
+            {
+                self.write_book_config(data_dir, &entry, None);
+            }
             migrated.push(entry);
         }
 
@@ -520,6 +706,28 @@ impl Library {
     }
 }
 
+fn write_rename_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +755,50 @@ mod tests {
         assert_eq!(library.books[0].last_chapter, 7);
         assert_eq!(library.books[0].last_block, 0);
         assert_eq!(library.books[0].last_char_offset, 0);
+    }
+
+    #[test]
+    fn rename_survives_reopen_and_retains_identity_and_reading_data() {
+        let dir = test_dir("rename_round_trip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.epub");
+        std::fs::write(&source, b"unchanged epub contents").unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let mut library = Library::default();
+        let entry = library.add_or_update(
+            &root,
+            "Original".into(),
+            source.to_string_lossy().into(),
+            2,
+            None,
+        );
+        library.update_position(&root, &entry.path, 2, Some("Chapter".into()), 9, 3);
+        let before =
+            serde_json::to_value(Library::read_book_config(&root, &entry.id).unwrap()).unwrap();
+        let renamed = library
+            .rename_book(&root, &entry.id, "  中文 Book 📚  ")
+            .unwrap();
+        assert_eq!(renamed.id, entry.id);
+        assert_eq!(renamed.path, entry.path);
+        assert_eq!(renamed.last_block, 9);
+        assert_eq!(renamed.last_char_offset, 3);
+        let mut after =
+            serde_json::to_value(Library::read_book_config(&root, &entry.id).unwrap()).unwrap();
+        assert_eq!(after["title"], "中文 Book 📚");
+        after["title"] = before["title"].clone();
+        after["updated_at"] = before["updated_at"].clone();
+        assert_eq!(after, before);
+        let mut reloaded = Library::load_from(&root);
+        let reopened =
+            reloaded.add_or_update(&root, "Original".into(), entry.path.clone(), 2, None);
+        assert_eq!(reopened.title, "中文 Book 📚");
+        assert_eq!(
+            std::fs::read(&entry.path).unwrap(),
+            b"unchanged epub contents"
+        );
+        assert!(reloaded.rename_book(&root, &entry.id, "  ").is_err());
+        assert_eq!(reloaded.books[0].title, "中文 Book 📚");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

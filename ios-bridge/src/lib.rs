@@ -143,6 +143,15 @@ fn dispatch(v: Value) -> Result<Value, String> {
     }
     std::fs::create_dir_all(root).map_err(|_| "Cannot create library storage")?;
     match field(&v, "op")? {
+        "book_share" => {
+            let request = v["request"].clone();
+            if request["op"].as_str() == Some("accept") {
+                let _guard = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                reader_core::book_share::dispatch(root, request)
+            } else {
+                reader_core::book_share::dispatch(root, request)
+            }
+        }
         "peer_state" | "peer_start" | "peer_connect" | "peer_remove" => {
             nearby::dispatch(root, device, &v)
         }
@@ -227,7 +236,32 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     Ok(json!({"ok":true}))
                 }
                 "annotations" => annotations::dispatch(root, &v),
+                "activity_checkpoint" | "activity_report" => {
+                    reader_core::reading_activity::dispatch(root, device, &v)
+                }
                 "remove" => annotations::remove(root, &v),
+                "rename" => {
+                    let mut library = Library::load_from(root);
+                    let renamed =
+                        library.rename_book(root, field(&v, "id")?, field(&v, "title")?)?;
+                    Ok(entry_value(root, &renamed))
+                }
+                "export_books" => {
+                    let ids = v["ids"]
+                        .as_array()
+                        .filter(|ids| !ids.is_empty())
+                        .ok_or("No books selected")?;
+                    let books = ids
+                        .iter()
+                        .map(|id| entry(root, id.as_str().ok_or("Invalid book identifier")?))
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let directory = PathBuf::from(field(&v, "directory")?);
+                    if !directory.is_absolute() {
+                        return Err("Invalid export directory".into());
+                    }
+                    let paths = reader_core::export::export_originals(&books, &directory)?;
+                    Ok(json!(paths))
+                }
                 "library" => {
                     let entries = Library::load_from(root).books;
                     let mut values = Vec::new();
@@ -316,6 +350,33 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     }
                     Ok(entry_value(root, &e))
                 }
+                "native_note" => {
+                    let e = entry(root, field(&v, "id")?)?;
+                    let parsed = book(root, &e)?;
+                    let href = field(&v, "href")?;
+                    if href.len() > 8192 {
+                        return Err("Invalid note reference".into());
+                    }
+                    serde_json::to_value(parsed.native_note(number(&v, "chapter")?, href))
+                        .map_err(|e| e.to_string())
+                }
+                "native_presentation" => {
+                    let e = entry(root, field(&v, "id")?)?;
+                    let parsed = book(root, &e)?;
+                    let index = number(&v, "chapter")?;
+                    let chapter = parsed.chapters.get(index).ok_or("Invalid chapter")?;
+                    let events: Vec<reader_core::epub::native::NativeEvent> =
+                        serde_json::from_value(v["events"].clone())
+                            .map_err(|_| "Invalid events")?;
+                    let policy = serde_json::from_value(v["policy"].clone())
+                        .map_err(|_| "Invalid style policy")?;
+                    serde_json::to_value(chapter.native_document.present(
+                        policy,
+                        v["scripts"].as_bool().unwrap_or(true),
+                        &events,
+                    ))
+                    .map_err(|e| e.to_string())
+                }
                 "open" => {
                     let e = entry(root, field(&v, "id")?)?;
                     let parsed = book(root, &e)?;
@@ -326,7 +387,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                         let mut blocks = Vec::new();
                         for (index, offset, block) in rendered {
                             let mut value = match block {
-                                ContentBlock::Image { data, alt } => {
+                                ContentBlock::Image { data, alt, .. } => {
                                     budget =
                                         budget.saturating_add(data.len().saturating_mul(4) / 3);
                                     json!({"type":"Image", "data":reader_core::base64_encode(&data), "alt":alt})
@@ -573,6 +634,43 @@ mod tests {
             }
             reader_ios_free(std::ptr::null_mut());
         }
+    }
+    #[test]
+    fn share_export_uses_renamed_title_and_rejects_missing_selection() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let source = fixture(root);
+        let imported = request(root, "import", json!({"path":source}))["result"].clone();
+        let id = imported["id"].as_str().unwrap();
+        let renamed = request(root, "rename", json!({"id":id,"title":"中文 分享测试"}));
+        assert_eq!(renamed["ok"], true, "{renamed}");
+        assert_eq!(renamed["result"]["path"], imported["path"]);
+        let directory = dir.path().join("exports");
+        let exported = request(
+            root,
+            "export_books",
+            json!({"ids":[id], "directory":directory}),
+        );
+        assert_eq!(exported["ok"], true, "{exported}");
+        let path = PathBuf::from(exported["result"][0].as_str().unwrap());
+        assert_eq!(path.file_name().unwrap(), "中文 分享测试.epub");
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            std::fs::read(imported["path"].as_str().unwrap()).unwrap()
+        );
+        let empty = request(
+            root,
+            "export_books",
+            json!({"ids":[], "directory":directory}),
+        );
+        assert_eq!(empty["ok"], false);
+        let missing = request(
+            root,
+            "export_books",
+            json!({"ids":["missing"], "directory":directory}),
+        );
+        assert_eq!(missing["ok"], false);
     }
     #[test]
     fn import_owned_epub_reopen_scalar_progress_and_deduplicate_without_reset() {

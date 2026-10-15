@@ -132,7 +132,16 @@ impl ReaderApp {
                 ModelStatus::Error(msg) => {
                     ui.horizontal(|ui| {
                         ui.label("✗");
-                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg.as_str());
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 100, 100),
+                            self.i18n.t(match msg.as_str() {
+                                "Model integrity check failed" | "Model verification failed" => {
+                                    "csc.integrity_failed"
+                                }
+                                "Download failed" => "csc.download_failed",
+                                _ => "common.error_model_load_failed",
+                            }),
+                        );
                     });
                     if ui.button(self.i18n.t("csc.retry")).clicked() {
                         self.csc_model_status = ModelStatus::NotDownloaded;
@@ -147,7 +156,11 @@ impl ReaderApp {
         ui.add_space(8.0);
         ui.strong(self.i18n.t("account.contribution"));
         ui.small(self.i18n.t("account.contribution_hint"));
-        self.render_github_account_summary(ui);
+        if ui.button(self.i18n.t("csc.contribute_title")).clicked() {
+            self.csc_contribute_status.clear();
+            self.csc_contribute_pr_url = None;
+            self.show_csc_contribute_dialog = true;
+        }
     }
 
     /// Check model status on startup.

@@ -1,0 +1,982 @@
+[
+  {
+    "path": "ios/Reader/ReadingTools.swift",
+    "text": "中文",
+    "reason": "Language self-name remains native in both languages."
+  },
+  {
+    "path": "ios/Reader/ReadingTools.swift",
+    "text": "春江潮水连海平，海上明月共潮生。",
+    "reason": "Font glyph/sample text intentionally demonstrates Chinese support."
+  },
+  {
+    "path": "ios/Reader/ReadingTools.swift",
+    "text": "汉语阅读书籍",
+    "reason": "Font glyph/sample text intentionally demonstrates Chinese support."
+  },
+  {
+    "path": "ios/Reader/ReaderErrors.swift",
+    "text": "无法打开 EPUB 文件:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "ios/Reader/ReaderErrors.swift",
+    "text": "无法读取资源:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "他",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "她",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "它",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "牠",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "祂",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "的",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "得",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "地",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "做",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "作",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "哪",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "那",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "在",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "再",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ChineseCorrection.swift",
+    "text": "吗吧呢啊呀哇哦嗯喔噢啦嘛咯喽嘞罢咧的得地了过着么个们这那就都也又才把被让给向往从到为而且或与及我你他她它谁啥哪几多些别是其悉有没有不会能要去来说看想知道",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "ios/Reader/ReaderI18n.swift",
+    "text": "暂时不可用",
+    "reason": "Emergency text used only if bundled catalogs cannot be loaded."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "小米 MiSans",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "小米 MiSans Medium",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "小米 MiSans Light",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "小米 MiSans Thin",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "小米 MiSans SC",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "思源黑体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "思源黑体 CN",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "思源宋体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "思源宋体 CN",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "方正兰亭黑",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/util/FontDiscovery.kt",
+    "text": "方正兰亭黑 Pro",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "他",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "她",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "它",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "牠",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "祂",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "的",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "得",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "地",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "做",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "作",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "哪",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "那",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "在",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "再",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "吗",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "吧",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "呢",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "啊",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "呀",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "哇",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "哦",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "嗯",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "喔",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "噢",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "啦",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "嘛",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "咯",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "喽",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "嘞",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "罢",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "咧",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "了",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "过",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "着",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "么",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "个",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "们",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "这",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "就",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "都",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "也",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "又",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "才",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "把",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "被",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "让",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "给",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "向",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "往",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "从",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "到",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "为",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "而",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "且",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "或",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "与",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "及",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "我",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "你",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "谁",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "啥",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "几",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "多",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "些",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "别",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "是",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "其",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "悉",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "有",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "没",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "不",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "会",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "能",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "要",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "去",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "来",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "说",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "看",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "想",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "知",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/csc/CscEngine.kt",
+    "text": "道",
+    "reason": "Chinese correction linguistic data, not application labels."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/i18n/I18n.kt",
+    "text": "中文",
+    "reason": "Language self-name remains native in both languages."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/i18n/I18n.kt",
+    "text": "暂时不可用",
+    "reason": "Emergency text used only if bundled catalogs cannot be loaded."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " | 赞：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " | 赞:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " ｜ 赞：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " ｜ 赞:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "|赞：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "|赞:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "｜赞：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "｜赞:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " | 时间：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " | 时间:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " ｜ 时间：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": " ｜ 时间:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "|时间：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "|时间:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "｜时间：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "｜时间:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "作者：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReviewPanel.kt",
+    "text": "作者:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReaderSettingsSheet.kt",
+    "text": "Aa 01 中文",
+    "reason": "Font glyph/sample text intentionally demonstrates Chinese support."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReaderSettingsSheet.kt",
+    "text": "衬线示例 Aa",
+    "reason": "Font glyph/sample text intentionally demonstrates Chinese support."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/ReaderSettingsSheet.kt",
+    "text": "中文预览 Aa",
+    "reason": "Font glyph/sample text intentionally demonstrates Chinese support."
+  },
+  {
+    "path": "android/app/src/main/java/com/epub/reader/ui/reader/PaginationUtils.kt",
+    "text": "^第\\s*\\d+\\s*章$",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "苹方-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "苹方-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "苹方-港",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "宋体-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "宋体-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "楷体-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "楷体-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "黑体-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "黑体-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "冬青黑体-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "苹方",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/system_fonts.rs",
+    "text": "苹方-简 Semibold",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "苹方-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "微软雅黑",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "微软雅黑 粗体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "微软雅黑 细体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "宋体 (SimSun)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "宋体-ExtB",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "黑体 (SimHei)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "楷体 (SimKai)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "仿宋 (FangSong)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "隶书 (SimLi)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "幼圆 (YouYuan)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文细黑",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文楷体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文仿宋",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文宋体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文隶书",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文新魏",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文中宋",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文琥珀",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文彩云",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "方正舒体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "方正姚体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "方正兰亭黑",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "方正兰亭中黑",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "細明體 (MingLiU)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "標楷體 (KaiU)",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "苹方-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "苹方",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "宋体-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "宋体-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "黑体-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "黑体-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "楷体-简",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "楷体-繁",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "华文黑体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "思源黑体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "思源宋体",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "思源黑体 CN",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/app.rs",
+    "text": "思源宋体 CN",
+    "reason": "Font family identifiers and proper names; must preserve stored font selection identity."
+  },
+  {
+    "path": "desktop/src/ui/review_panel.rs",
+    "text": "赞：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "desktop/src/ui/review_panel.rs",
+    "text": "赞:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "desktop/src/ui/review_panel.rs",
+    "text": "时间：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "desktop/src/ui/review_panel.rs",
+    "text": "时间:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "desktop/src/ui/review_panel.rs",
+    "text": "作者：",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "desktop/src/ui/review_panel.rs",
+    "text": "作者:",
+    "reason": "Incoming content or protocol classifier; display copy uses catalog keys."
+  },
+  {
+    "path": "ios/Reader/ReaderI18n.swift",
+    "text": "取消",
+    "reason": "DEBUG runtime assertion expected translation, never displayed."
+  },
+  {
+    "path": "ios/Reader/ReaderI18n.swift",
+    "text": "中文",
+    "reason": "Native language self-name is retained in both interface languages."
+  }
+]

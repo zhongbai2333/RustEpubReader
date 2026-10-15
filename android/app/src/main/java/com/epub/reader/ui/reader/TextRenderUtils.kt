@@ -20,6 +20,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.model.InlineStyle
 import com.zhongbai233.epub.reader.model.TextSpan
+import com.zhongbai233.epub.reader.model.NativeStyle
 import java.net.URI
 
 /**
@@ -32,7 +33,9 @@ internal fun buildSpanAnnotatedString(
     linkColor: Color,
     fontFamily: FontFamily,
     overrideWeight: FontWeight?,
-    onLinkClick: ((String) -> Unit)? = null
+    onLinkClick: ((String) -> Unit)? = null,
+    native: NativeStyle = NativeStyle(),
+    sourceCharOffset: Int = 0
 ): AnnotatedString {
     return buildAnnotatedString {
         for (span in spans) {
@@ -79,6 +82,14 @@ internal fun buildSpanAnnotatedString(
                 )
             }
         }
+        for(item in native.inline) {
+            val start=(item.start-sourceCharOffset).coerceIn(0,length);val end=(item.end-sourceCharOffset).coerceIn(0,length);if(end<=start)continue
+            val family=when(item.family){"serif"->FontFamily.Serif;"sans-serif"->FontFamily.SansSerif;"monospace"->FontFamily.Monospace;else->null}
+            val ink=if(item.hidden)Color.Transparent else item.color?.let {runCatching {Color(android.graphics.Color.parseColor(it))}.getOrNull()}?:Color.Unspecified
+            addStyle(SpanStyle(fontFeatureSettings=if(item.smallCaps)"'smcp' 1" else "'smcp' 0",fontSize=if(item.hidden)0.01.sp else ((item.size?:1f)*fontSize).sp,color=ink,fontFamily=family,fontWeight=item.bold?.let {if(it)FontWeight.Bold else FontWeight.Normal},fontStyle=item.italic?.let {if(it)FontStyle.Italic else FontStyle.Normal},baselineShift=if(item.baseline!=0f)androidx.compose.ui.text.style.BaselineShift(item.baseline)else null,textDecoration=when{item.underline&&item.strike->androidx.compose.ui.text.style.TextDecoration.combine(listOf(androidx.compose.ui.text.style.TextDecoration.Underline,androidx.compose.ui.text.style.TextDecoration.LineThrough));item.underline->androidx.compose.ui.text.style.TextDecoration.Underline;item.strike->androidx.compose.ui.text.style.TextDecoration.LineThrough;else->null}),start,end)
+            item.note?.let {href->val url="reader-note:$href";addLink(LinkAnnotation.Clickable(url,linkInteractionListener=onLinkClick?.let {callback->LinkInteractionListener {callback(url)}}),start,end);addStringAnnotation("URL",url,start,end)}
+        }
+
     }
 }
 

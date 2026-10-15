@@ -14,6 +14,11 @@ case "${PLATFORM_NAME:-iphonesimulator}" in
     esac ;;
     *) exit 1 ;;
 esac
+# Rust's simulator triple is not a valid Clang deployment triple. QuickJS
+# bindgen passes TARGET verbatim, so provide the public Clang equivalent last.
+if [ "$TARGET" = aarch64-apple-ios-sim ]; then
+    export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} --target=arm64-apple-ios${IPHONEOS_DEPLOYMENT_TARGET:-17.0}-simulator"
+fi
 CARGO_PROFILE_ARGS=(--profile dev)
 CARGO_PROFILE_DIR=debug
 if [ "${CONFIGURATION:-Debug}" = Release ]; then

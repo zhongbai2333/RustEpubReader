@@ -1,0 +1,468 @@
+[
+  {
+    "name": "system wins initial conflict",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "ambient wins conflict",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "source:ambient"
+    ],
+    "expected": {
+      "app": false,
+      "reading": false,
+      "appLinked": true,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "missing ambient falls back to system",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": null,
+    "actions": [
+      "source:ambient"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "disconnect app freezes current",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "source:ambient",
+      "appLink",
+      "ambient:dark"
+    ],
+    "expected": {
+      "app": false,
+      "reading": false,
+      "appLinked": false,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "manual app propagates",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "appLink",
+      "app:light"
+    ],
+    "expected": {
+      "app": false,
+      "reading": false,
+      "appLinked": false,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "disconnect reading freezes current",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "system:light"
+    ],
+    "expected": {
+      "app": false,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "independent ambient reading",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "reading:automatic",
+      "readingSource:ambient"
+    ],
+    "expected": {
+      "app": true,
+      "reading": false,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "independent manual light",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "reading:light"
+    ],
+    "expected": {
+      "app": true,
+      "reading": false,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "independent manual dark",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "source:ambient",
+      "readingLink",
+      "reading:dark"
+    ],
+    "expected": {
+      "app": false,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "independent automatic system",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "source:ambient",
+      "readingLink",
+      "reading:automatic",
+      "readingSource:system"
+    ],
+    "expected": {
+      "app": false,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "reading shortcut changes linked group",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "shortcut"
+    ],
+    "expected": {
+      "app": false,
+      "reading": false,
+      "appLinked": false,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "independent shortcut only reading",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "reading:light",
+      "shortcut"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "shortcut stops independent automatic",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "reading:automatic",
+      "readingSource:ambient",
+      "shortcut",
+      "ambient:dark"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "relink reading immediately inherits",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "reading:light",
+      "readingLink"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "relink app uses live signal",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "appLink",
+      "app:light",
+      "appLink"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "manual app does not override independent reading",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "reading:dark",
+      "app:light"
+    ],
+    "expected": {
+      "app": false,
+      "reading": true,
+      "appLinked": false,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "second unlink freezes inherited value",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "readingLink",
+      "reading:light",
+      "readingLink",
+      "readingLink"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  },
+  {
+    "name": "unused system does not override ambient",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": false,
+    "actions": [
+      "source:ambient",
+      "system:light",
+      "ambient:dark"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": true
+    }
+  },
+  {
+    "name": "missing independent ambient fallback",
+    "initial": {
+      "version": 1,
+      "source": "system",
+      "appLinked": true,
+      "readingLinked": true,
+      "appManual": false,
+      "readingMode": "automatic",
+      "readingSource": "system"
+    },
+    "system": true,
+    "ambient": null,
+    "actions": [
+      "readingLink",
+      "reading:automatic",
+      "readingSource:ambient"
+    ],
+    "expected": {
+      "app": true,
+      "reading": true,
+      "appLinked": true,
+      "readingLinked": false
+    }
+  }
+]

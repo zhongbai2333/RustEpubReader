@@ -16,14 +16,16 @@ fn hl_color_info(color: &HighlightColor) -> (egui::Color32, &'static str) {
 impl ReaderApp {
     /// Render the bookmarks / highlights / notes side-panel.
     pub fn render_annotations_panel(&mut self, ctx: &egui::Context) {
-        super::design::animated_side_panel(
+        let collapse_label = self.i18n.t("common.collapse").to_owned();
+        if super::design::animated_side_panel(
             ctx,
             "annotations_panel",
             false,
             320.,
             self.show_annotations && self.view == crate::app::AppView::Reader,
+            &collapse_label,
             |ui| {
-                ui.heading(self.i18n.t("annotations.title"));
+                super::design::sidebar_title(ui, self.i18n.t("annotations.title"));
                 ui.add_space(4.0);
                 ui.separator();
 
@@ -223,9 +225,11 @@ impl ReaderApp {
                                         } else {
                                             let resp = ui.add(
                                                 egui::Label::new(
-                                                    egui::RichText::new("+ 添加备注")
-                                                        .small()
-                                                        .color(egui::Color32::DARK_GRAY),
+                                                    egui::RichText::new(
+                                                        self.i18n.t("reader.add_note"),
+                                                    )
+                                                    .small()
+                                                    .color(egui::Color32::DARK_GRAY),
                                                 )
                                                 .sense(egui::Sense::click()),
                                             );
@@ -338,6 +342,8 @@ impl ReaderApp {
                     });
                 });
             },
-        );
+        ) {
+            self.show_annotations = false;
+        }
     }
 }

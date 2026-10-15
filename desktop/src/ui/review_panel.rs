@@ -242,7 +242,7 @@ impl ReaderApp {
         let close = Cell::new(false);
 
         // ── Compute anchor scroll offset (only on the frame the panel opens) ──
-        let content_width = panel_width - 32.0; // margin * 2
+        let content_width = panel_width - 48.0; // outer margin and inner collapse gutter
         let scroll_offset = if was_just_opened && self.review_panel_show_all {
             self.review_panel_scroll_offset.take().or_else(|| {
                 self.review_panel_anchor.as_ref().and_then(|anchor| {
@@ -259,7 +259,7 @@ impl ReaderApp {
         };
 
         // ── Backdrop (semi-transparent black overlay, visual only) ──
-        // Backdrop does NOT register click interaction — close only via ✕ button or ESC.
+        // Backdrop does not register clicks; use the edge button or Escape.
         // This avoids egui focus/state issues that caused permanent input lock.
         egui::Area::new(egui::Id::new("review_backdrop"))
             .fixed_pos(screen_rect.min)
@@ -304,19 +304,23 @@ impl ReaderApp {
                 }
 
                 let margin = 16.0;
-                let content_rect = panel_rect.shrink2(egui::vec2(margin, margin));
+                let mut content_rect = panel_rect.shrink2(egui::vec2(margin, margin));
+                content_rect.min.x += 16.;
                 ui.set_clip_rect(panel_rect);
+                if super::design::sidebar_collapse_button(
+                    ui,
+                    panel_rect,
+                    false,
+                    self.i18n.t("common.collapse"),
+                )
+                .clicked()
+                {
+                    close.set(true);
+                }
 
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
                     // Header
-                    ui.horizontal(|ui| {
-                        ui.heading(self.i18n.t("review.panel_title"));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("✕").clicked() {
-                                close.set(true);
-                            }
-                        });
-                    });
+                    super::design::sidebar_title(ui, self.i18n.t("review.panel_title"));
 
                     // Filter toggle (only when opened from an anchor)
                     if self.review_panel_anchor.is_some() {

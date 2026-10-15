@@ -83,9 +83,17 @@ pub enum Message {
     BookNotFound { hash: String },
 
     /// Sync reading progress
-    SyncProgress { entries: Vec<ProgressEntry> },
+    SyncProgress {
+        entries: Vec<ProgressEntry>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        activity: Vec<crate::cloud_sync::DeviceSnapshot>,
+    },
     /// Response with merged progress
-    ProgressResponse { entries: Vec<ProgressEntry> },
+    ProgressResponse {
+        entries: Vec<ProgressEntry>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        activity: Vec<crate::cloud_sync::DeviceSnapshot>,
+    },
 
     /// Client signals it is done; server should close gracefully
     Goodbye,

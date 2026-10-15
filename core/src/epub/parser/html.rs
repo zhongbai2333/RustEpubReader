@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use scraper::{ElementRef, Html, Selector};
 
-use super::image::resolve_image_data;
+use super::image::{image_src, native_image_bytes, resolve_image_data};
 use crate::epub::{ContentBlock, InlineStyle, TextSpan};
 
 pub(super) fn parse_html_blocks(
@@ -26,6 +26,35 @@ pub(super) fn parse_render_blocks(
     image_resources: &HashMap<String, Vec<u8>>,
 ) -> Vec<(usize, usize, ContentBlock)> {
     parse_blocks(html, chapter_path, image_resources, true)
+}
+
+pub(super) fn supplemental_images(
+    html: &str,
+    chapter_path: &str,
+    resources: &HashMap<String, Vec<u8>>,
+) -> Vec<super::SupplementalImage> {
+    let canonical = parse_html_blocks(html, chapter_path, resources);
+    let mut next_block = 0;
+    parse_render_blocks(html, chapter_path, resources)
+        .into_iter()
+        .filter_map(|(block, _, rendered)| {
+            // Canonical images occur once in both streams. All other images
+            // are supplemental and must not shift text/highlight coordinates.
+            if let ContentBlock::Image { data, alt, .. } = rendered {
+                if block == next_block
+                    && matches!(canonical.get(block), Some(ContentBlock::Image { data: original, alt: original_alt, .. }) if original == &data && original_alt == &alt)
+                {
+                    next_block += 1;
+                    None
+                } else {
+                    Some(super::SupplementalImage { block, after: next_block >= canonical.len(), data, alt })
+                }
+            } else {
+                next_block += 1;
+                None
+            }
+        })
+        .collect()
 }
 fn parse_blocks(
     html: &str,
@@ -116,18 +145,33 @@ fn supplement_images(
     resources: &HashMap<String, Vec<u8>>,
     media: &mut Vec<usize>,
 ) {
-    let selector = Selector::parse("img, image").expect("valid selector");
+    let selector = Selector::parse("img, image, svg").expect("valid selector");
     for image in parent.select(&selector) {
         let node = image.value();
-        let src = node
-            .attr("src")
-            .or_else(|| node.attr("data-src"))
-            .or_else(|| node.attr("href"))
-            .or_else(|| node.attr("xlink:href"))
-            .unwrap_or("");
+        if node.name() == "svg" {
+            if image
+                .select(&Selector::parse("image").expect("valid selector"))
+                .next()
+                .is_none()
+                && !image
+                    .ancestors()
+                    .filter_map(ElementRef::wrap)
+                    .any(|ancestor| ancestor.value().name() == "svg")
+            {
+                media.push(blocks.len());
+                blocks.push(ContentBlock::Image {
+                    native_style: Default::default(),
+                    data: std::sync::Arc::new(native_image_bytes(image.html().into_bytes())),
+                    alt: None,
+                });
+            }
+            continue;
+        }
+        let src = image_src(node);
         if let Some(data) = resolve_image_data(src, chapter_path, resources) {
             media.push(blocks.len());
             blocks.push(ContentBlock::Image {
+                native_style: Default::default(),
                 data,
                 alt: node.attr("alt").map(str::to_owned),
             });
@@ -162,18 +206,36 @@ fn collect_blocks(
                             let spans = collect_spans(elem_ref, InlineStyle::Normal, None);
                             let anchor_id = elem.attr("id").map(|s| s.to_string());
                             if has_visible_text(&spans) {
-                                blocks.push(ContentBlock::Paragraph { spans, anchor_id });
+                                blocks.push(ContentBlock::Paragraph {
+                                    spans,
+                                    anchor_id,
+                                    native_style: Default::default(),
+                                });
                             } else if anchor_id.is_some() {
                                 // Keep empty paragraph if it has an anchor id (e.g. review placeholder)
-                                blocks.push(ContentBlock::Paragraph { spans, anchor_id });
+                                blocks.push(ContentBlock::Paragraph {
+                                    spans,
+                                    anchor_id,
+                                    native_style: Default::default(),
+                                });
                             }
                         }
                         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                            if render {
+                                supplement_images(
+                                    elem_ref,
+                                    blocks,
+                                    chapter_path,
+                                    image_resources,
+                                    media,
+                                );
+                            }
                             let level = (tag.as_bytes()[1] - b'0').clamp(1, 6);
                             let spans = collect_spans(elem_ref, InlineStyle::Bold, None);
                             let anchor_id = elem.attr("id").map(|s| s.to_string());
                             if has_visible_text(&spans) || anchor_id.is_some() {
                                 blocks.push(ContentBlock::Heading {
+                                    native_style: Default::default(),
                                     level,
                                     spans,
                                     anchor_id,
@@ -194,6 +256,15 @@ fn collect_blocks(
                             );
                         }
                         "ul" | "ol" => {
+                            if render {
+                                supplement_images(
+                                    elem_ref,
+                                    blocks,
+                                    chapter_path,
+                                    image_resources,
+                                    media,
+                                );
+                            }
                             collect_list(elem_ref, blocks, tag == "ol");
                         }
                         "blockquote" => {
@@ -212,6 +283,7 @@ fn collect_blocks(
                                 if let ContentBlock::Paragraph {
                                     mut spans,
                                     anchor_id,
+                                    native_style,
                                 } = block
                                 {
                                     spans.insert(
@@ -223,7 +295,11 @@ fn collect_blocks(
                                             correction: None,
                                         },
                                     );
-                                    blocks.push(ContentBlock::Paragraph { spans, anchor_id });
+                                    blocks.push(ContentBlock::Paragraph {
+                                        spans,
+                                        anchor_id,
+                                        native_style,
+                                    });
                                 } else {
                                     blocks.push(block);
                                 }
@@ -233,6 +309,7 @@ fn collect_blocks(
                             let text = elem_ref.text().collect::<String>();
                             if !text.trim().is_empty() {
                                 blocks.push(ContentBlock::Paragraph {
+                                    native_style: Default::default(),
                                     spans: vec![TextSpan {
                                         text,
                                         style: InlineStyle::Normal,
@@ -244,35 +321,54 @@ fn collect_blocks(
                             }
                         }
                         "table" => {
+                            if render {
+                                supplement_images(
+                                    elem_ref,
+                                    blocks,
+                                    chapter_path,
+                                    image_resources,
+                                    media,
+                                );
+                            }
                             collect_table(elem_ref, blocks);
                         }
                         "script" | "style" | "meta" | "link" | "title" | "head" => {}
                         "img" | "image" => {
-                            let src = elem
-                                .attr("src")
-                                .or_else(|| elem.attr("data-src"))
-                                .or_else(|| elem.attr("xlink:href"))
-                                .unwrap_or("");
+                            let src = image_src(elem);
                             if let Some(data) =
                                 resolve_image_data(src, chapter_path, image_resources)
                             {
                                 let alt = elem.attr("alt").map(|s| s.to_string());
-                                blocks.push(ContentBlock::Image { data, alt });
+                                blocks.push(ContentBlock::Image {
+                                    data,
+                                    alt,
+                                    native_style: Default::default(),
+                                });
                             }
                         }
                         "svg" => {
                             let image_sel = Selector::parse("image").expect("valid selector");
+                            if render && elem_ref.select(&image_sel).next().is_none() {
+                                media.push(blocks.len());
+                                blocks.push(ContentBlock::Image {
+                                    native_style: Default::default(),
+                                    data: std::sync::Arc::new(native_image_bytes(
+                                        elem_ref.html().into_bytes(),
+                                    )),
+                                    alt: None,
+                                });
+                            }
                             for img_node in elem_ref.select(&image_sel) {
-                                let src = img_node
-                                    .value()
-                                    .attr("href")
-                                    .or_else(|| img_node.value().attr("xlink:href"))
-                                    .unwrap_or("");
+                                let src = image_src(img_node.value());
                                 if let Some(data) =
                                     resolve_image_data(src, chapter_path, image_resources)
                                 {
                                     let alt = img_node.value().attr("alt").map(|s| s.to_string());
-                                    blocks.push(ContentBlock::Image { data, alt });
+                                    blocks.push(ContentBlock::Image {
+                                        data,
+                                        alt,
+                                        native_style: Default::default(),
+                                    });
                                 }
                             }
                         }
@@ -322,6 +418,7 @@ fn collect_blocks(
                                 let spans = collect_spans(elem_ref, InlineStyle::Normal, None);
                                 if has_visible_text(&spans) {
                                     blocks.push(ContentBlock::Paragraph {
+                                        native_style: Default::default(),
                                         spans,
                                         anchor_id: None,
                                     });
@@ -335,6 +432,7 @@ fn collect_blocks(
                 let s = text.trim();
                 if !s.is_empty() {
                     blocks.push(ContentBlock::Paragraph {
+                        native_style: Default::default(),
                         spans: vec![TextSpan {
                             text: s.to_string(),
                             style: InlineStyle::Normal,
@@ -398,7 +496,13 @@ fn collect_spans(
                         _ => inherited_style.clone(),
                     };
                     let new_link = if tag == "a" {
-                        elem.attr("href").or(link_url)
+                        elem.attr("href").or(link_url).filter(|href| {
+                            let value = href.trim().to_ascii_lowercase();
+                            !value.contains(':')
+                                || ["http:", "https:", "mailto:", "tel:"]
+                                    .iter()
+                                    .any(|scheme| value.starts_with(scheme))
+                        })
                     } else {
                         link_url
                     };
@@ -432,6 +536,7 @@ fn collect_list(parent: ElementRef, blocks: &mut Vec<ContentBlock>, ordered: boo
                     spans.extend(collect_spans(li_ref, InlineStyle::Normal, None));
                     if spans.len() > 1 {
                         blocks.push(ContentBlock::Paragraph {
+                            native_style: Default::default(),
                             spans,
                             anchor_id: None,
                         });
@@ -472,6 +577,7 @@ fn collect_table(parent: ElementRef, blocks: &mut Vec<ContentBlock>) {
         }
         if has_visible_text(&row_spans) {
             blocks.push(ContentBlock::Paragraph {
+                native_style: Default::default(),
                 spans: row_spans,
                 anchor_id: None,
             });

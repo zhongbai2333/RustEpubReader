@@ -39,6 +39,7 @@ struct PageImage {
     shapes: Vec<ClippedShape>,
     meshes: Vec<(Rect, Mesh)>,
     atlas_size: [usize; 2],
+    _textures: Vec<egui::TextureHandle>,
 }
 impl PageImage {
     fn refresh(&mut self, ctx: &egui::Context) {
@@ -67,7 +68,9 @@ impl PageImage {
 struct CurlTurn {
     source: PagePosition,
     target: PagePosition,
-    target_ranges: Vec<(usize, usize)>,
+    target_ranges: super::reader_pagination::PageRanges,
+    source_ranges: super::reader_pagination::PageRanges,
+    image_revision: u64,
     forward: bool,
     dual: bool,
     images: Vec<PageImage>, // source left/right, target left/right (or source/target)
@@ -140,37 +143,31 @@ impl ReaderApp {
         dual.hash(&mut h);
         h.finish()
     }
-    fn curl_ranges(&self, chapter: usize, height: f32, width: f32) -> Vec<(usize, usize)> {
-        self.book
-            .as_ref()
-            .and_then(|b| b.chapters.get(chapter))
-            .map(|ch| {
-                super::reader::paginate_blocks(
-                    &ch.blocks,
-                    self.font_size,
-                    self.title_font_scale,
-                    self.line_spacing,
-                    height,
-                    width,
-                )
-            })
-            .unwrap_or_default()
+    fn curl_ranges(
+        &self,
+        ui: &mut egui::Ui,
+        chapter: usize,
+        height: f32,
+        width: f32,
+    ) -> super::reader_pagination::PageRanges {
+        self.measured_chapter_pages(ui, chapter, height, width)
     }
     fn curl_target(
         &self,
+        ui: &mut egui::Ui,
         forward: bool,
         dual: bool,
         height: f32,
         width: f32,
-    ) -> Option<(PagePosition, Vec<(usize, usize)>)> {
+    ) -> Option<(PagePosition, super::reader_pagination::PageRanges)> {
         let from = PagePosition {
             chapter: self.current_chapter,
             page: self.current_page,
         };
         let previous = if !forward && from.page < if dual { 2 } else { 1 } && from.chapter > 0 {
-            self.curl_ranges(from.chapter - 1, height, width)
+            self.curl_ranges(ui, from.chapter - 1, height, width)
         } else {
-            Vec::new()
+            Default::default()
         };
         let target = page_curl::destination(
             from,
@@ -185,7 +182,7 @@ impl ReaderApp {
         } else if !forward {
             previous
         } else {
-            self.curl_ranges(target.chapter, height, width)
+            self.curl_ranges(ui, target.chapter, height, width)
         };
         Some((target, ranges))
     }
@@ -197,13 +194,10 @@ impl ReaderApp {
         content: Rect,
         chapter: usize,
         page: usize,
-        ranges: &[(usize, usize)],
+        ranges: &super::reader_pagination::PageRanges,
         text_width: f32,
         h_margin: f32,
         font: &str,
-        prev: &mut bool,
-        next: &mut bool,
-        back: &mut bool,
         link: &mut Option<String>,
     ) {
         let Some(ch) = self.book.as_ref().and_then(|b| b.chapters.get(chapter)) else {
@@ -266,16 +260,11 @@ impl ReaderApp {
             start.min(ch.blocks.len()),
             end.min(ch.blocks.len()),
             page == 0,
+            ranges.fragment(page),
             self.font_size,
             self.title_font_scale,
             self.reader_bg_color,
             chapter,
-            self.total_chapters(),
-            prev,
-            next,
-            back,
-            page + 1 >= ranges.len().max(1),
-            self.previous_chapter.is_some(),
             self.reader_font_color,
             font,
             &self.i18n,
@@ -291,7 +280,7 @@ impl ReaderApp {
         content: Rect,
         chapter: usize,
         page: usize,
-        ranges: &[(usize, usize)],
+        ranges: &super::reader_pagination::PageRanges,
         text_width: f32,
         h_margin: f32,
         font: &str,
@@ -322,7 +311,7 @@ impl ReaderApp {
         });
         self.draw_curl_page(
             &mut child, physical, content, chapter, page, ranges, text_width, h_margin, font,
-            &mut false, &mut false, &mut false, &mut None,
+            &mut None,
         );
         // The gutter is ink on each physical sheet, not a screen-space overlay.
         // Capturing it here lets the turned sheet carry/occlude its own half.
@@ -334,12 +323,14 @@ impl ReaderApp {
         BLOCK_GALLEYS.with(|g| *g.borrow_mut() = old_galleys);
         CSC_RECTS.with(|g| *g.borrow_mut() = old_csc);
         CSC_CORRECTIONS.with(|g| *g.borrow_mut() = old_corrections);
-        let shapes = ctx
+        let shapes: Vec<ClippedShape> = ctx
             .graphics_mut(|g| std::mem::take(g.entry(layer)))
             .all_entries()
             .cloned()
             .collect();
+        let textures = super::reader_images::retain_textures(&ctx, &shapes);
         PageImage {
+            _textures: textures,
             rect: physical,
             shapes,
             meshes: Vec::new(),
@@ -355,9 +346,6 @@ impl ReaderApp {
         text_width: f32,
         h_margin: f32,
         font: &str,
-        prev: &mut bool,
-        next: &mut bool,
-        back: &mut bool,
         link: &mut Option<String>,
     ) -> bool {
         let ctx = ui.ctx().clone();
@@ -534,7 +522,11 @@ impl ReaderApp {
                         .page_block_ranges
                         .get(self.current_page)
                         .map_or(0, |r| r.0);
-                    self.schedule_position_save(self.current_chapter, block);
+                    let offset = self
+                        .page_block_ranges
+                        .fragment(self.current_page)
+                        .map_or(0, |f| f.char_offset);
+                    self.schedule_position_save_at(self.current_chapter, block, offset);
                 }
             } else {
                 self.page_curl.active = Some(turn);
@@ -565,6 +557,42 @@ impl ReaderApp {
                 }
             })
             .collect();
+        // A decoder completion refreshes captured paper without resetting the
+        // user's drag/settle progress. Source/target ranges survive chapter commit.
+        if self
+            .page_curl
+            .active
+            .as_ref()
+            .is_some_and(|turn| turn.image_revision != super::reader_images::revision())
+        {
+            let captured_revision = super::reader_images::revision();
+            let mut turn = self.page_curl.active.take().unwrap();
+            let mut images = Vec::new();
+            for (pos, ranges) in [
+                (turn.source, &turn.source_ranges),
+                (turn.target, &turn.target_ranges),
+            ] {
+                for (i, physical) in physical.iter().enumerate() {
+                    images.push(self.capture_curl_page(
+                        ui,
+                        *physical,
+                        contents[i],
+                        pos.chapter,
+                        pos.page + i,
+                        ranges,
+                        text_width,
+                        h_margin,
+                        font,
+                    ));
+                }
+            }
+            for image in &mut images {
+                image.refresh(&ctx);
+            }
+            turn.images = images;
+            turn.image_revision = captured_revision;
+            self.page_curl.active = Some(turn);
+        }
         if self.page_curl.active.is_none() {
             for (i, r) in physical.iter().enumerate() {
                 ui.painter().rect_filled(*r, 0., self.reader_bg_color);
@@ -578,9 +606,6 @@ impl ReaderApp {
                     text_width,
                     h_margin,
                     font,
-                    prev,
-                    next,
-                    back,
                     link,
                 );
             }
@@ -655,7 +680,7 @@ impl ReaderApp {
                     })
                     .or_else(|| {
                         if page_override.is_none() {
-                            self.curl_target(forward, dual, rect.height(), text_width)
+                            self.curl_target(ui, forward, dual, rect.height(), text_width)
                         } else {
                             None
                         }
@@ -665,6 +690,7 @@ impl ReaderApp {
                         chapter: self.current_chapter,
                         page: self.current_page,
                     };
+                    let captured_revision = super::reader_images::revision();
                     let mut images = Vec::new();
                     for (pos, ranges) in
                         [(source, &self.page_block_ranges), (target, &target_ranges)]
@@ -729,6 +755,8 @@ impl ReaderApp {
                     self.page_curl.active = Some(CurlTurn {
                         source,
                         target,
+                        source_ranges: self.page_block_ranges.clone(),
+                        image_revision: captured_revision,
                         target_ranges,
                         forward,
                         dual,
@@ -1008,7 +1036,9 @@ mod tests {
                                         chapter: 0,
                                         page: 2,
                                     },
-                                    target_ranges: vec![],
+                                    target_ranges: Default::default(),
+                                    source_ranges: Default::default(),
+                                    image_revision: 0,
                                     forward,
                                     dual: true,
                                     images: [left, right, left, right]
@@ -1028,6 +1058,7 @@ mod tests {
                                                 vec![]
                                             },
                                             atlas_size: [0, 0],
+                                            _textures: vec![],
                                         })
                                         .collect(),
                                     signature: 0,
@@ -1188,9 +1219,11 @@ mod integration_tests {
             title: "Turn regression".into(),
             chapters: (0..3)
                 .map(|i| Chapter {
+                    native_document: Default::default(),
                     title: format!("Chapter {i}"),
                     blocks: (0..11 + i)
                         .map(|n| ContentBlock::Paragraph {
+                            native_style: Default::default(),
                             spans: vec![reader_core::epub::TextSpan {
                                 text: format!(
                                     "{i}.{n} {}",
@@ -1210,6 +1243,7 @@ mod integration_tests {
             toc: vec![],
             cover_data: None,
             fonts: vec![],
+            supplemental_images: Default::default(),
             chapter_reviews: Default::default(),
             review_chapter_indices: Default::default(),
         });
@@ -1574,6 +1608,7 @@ mod integration_tests {
                         true,
                         280.,
                         expanded,
+                        "Collapse",
                         |ui| {
                             ui.label("Contents");
                         },

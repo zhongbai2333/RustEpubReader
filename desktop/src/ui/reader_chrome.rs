@@ -61,7 +61,13 @@ impl ReaderApp {
                 i.pointer.any_down(),
             )
         });
-        if self.view != AppView::Reader {
+        if self.view != AppView::Reader
+            || self.show_csc_settings
+            || self.show_stats
+            || self.show_export_dialog
+            || self.show_language
+            || self.show_about
+        {
             self.reader_chrome.update(now, false, false, false);
             return;
         }
@@ -88,21 +94,26 @@ impl ReaderApp {
             .is_some_and(|t| now - t >= 0.12);
         let over_bar =
             focused && self.reader_chrome.visible && pointer.is_some_and(|p| slot.contains(p));
-        let tools_busy = ctx.memory(|m| m.any_popup_open())
+        let tools_busy = self.show_reader_introduction
+            || ctx.memory(|m| m.any_popup_open())
             || ctx.wants_keyboard_input()
+            || self.show_csc_settings
             || self.show_settings
             || self.show_search
             || self.show_annotations
             || self.show_review_panel
             || self.show_stats
             || self.show_export_dialog
+            || self.show_language
             || self.show_about
             || self.text_selection.is_some()
             || self.csc_popup.is_some();
         self.reader_chrome.update(
             now,
             true,
-            hover_reveal || reveal_key,
+            hover_reveal
+                || reveal_key
+                || ctx.memory(|m| m.is_popup_open(egui::Id::new("reader_quick_menu"))),
             over_bar || tools_busy || (focused && pointer_down),
         );
         if !tools_busy && (self.page_curl.busy() || self.page_anim_progress < 1.) {
@@ -124,7 +135,7 @@ impl ReaderApp {
         }
         egui::Area::new(egui::Id::new("reader_chrome_overlay"))
             .order(egui::Order::Foreground)
-            .fixed_pos(slot.min - egui::vec2(0., (1. - progress) * BAR_HEIGHT))
+            .fixed_pos(slot.min)
             .constrain(false)
             .fade_in(false)
             .show(ctx, |ui| {
@@ -134,7 +145,6 @@ impl ReaderApp {
                     ui.disable();
                 }
                 egui::Frame::NONE
-                    .fill(ctx.style().visuals.panel_fill)
                     .inner_margin(egui::Margin {
                         left: 16,
                         right: 16,
@@ -147,6 +157,21 @@ impl ReaderApp {
                         self.render_toolbar(ui);
                     });
             });
+        if self.view == AppView::Reader {
+            let anchor = egui::pos2(paper.right() - 60., paper.bottom() - 60.);
+            egui::Area::new(egui::Id::new("reader_menu_anchor"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(anchor)
+                .constrain(false)
+                .fade_in(false)
+                .show(ctx, |ui| {
+                    ui.set_opacity(progress);
+                    if !self.reader_chrome.visible {
+                        ui.disable();
+                    }
+                    self.render_reader_menu_button(ui);
+                });
+        }
     }
 }
 
@@ -228,6 +253,42 @@ mod tests {
                 },
             );
             assert_eq!(app.reader_chrome.visible, visible);
+        }
+    }
+    #[test]
+    fn open_menu_revives_fading_controls_and_keeps_them_visible() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
+        app.view = AppView::Reader;
+        let ctx = egui::Context::default();
+        let popup = egui::Id::new("reader_quick_menu");
+        for (time, menu, visible) in [
+            (0., false, true),
+            (4., false, false),
+            (4.1, true, true),
+            (20., true, true),
+        ] {
+            if menu {
+                ctx.memory_mut(|m| m.open_popup(popup));
+            }
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 800.),
+                    )),
+                    events: vec![egui::Event::PointerMoved(egui::pos2(600., 400.))],
+                    ..Default::default()
+                },
+                |ctx| app.render_reader_chrome(ctx),
+            );
+            assert_eq!(app.reader_chrome.visible, visible);
+            if menu {
+                assert!(ctx.memory(|m| m.is_popup_open(popup)));
+            }
         }
     }
 }

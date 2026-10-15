@@ -222,7 +222,17 @@ impl ReaderApp {
             } else {
                 egui::Color32::from_rgb(60, 140, 220)
             };
-            ui.label(egui::RichText::new(&status).size(12.0).color(color));
+            ui.label(
+                egui::RichText::new(
+                    if status.starts_with("Client error:") || status.starts_with("Server error:") {
+                        self.i18n.t("sync.error_connection_failed").to_owned()
+                    } else {
+                        self.i18n.message(&status)
+                    },
+                )
+                .size(12.0)
+                .color(color),
+            );
         }
 
         ui.add_space(8.0);
@@ -279,7 +289,7 @@ impl ReaderApp {
                 ui.add(super::design::text_edit(&mut self.connect_addr_input));
             });
             ui.horizontal(|ui| {
-                ui.label("PIN:");
+                ui.label(self.i18n.t("share.pin_label_inline"));
                 ui.add(
                     super::design::text_edit(&mut self.connect_pin_input)
                         .hint_text("PIN")
@@ -316,7 +326,7 @@ impl ReaderApp {
                         ui.label(self.i18n.tf1("share.device_name", dev_name));
                         if ui
                             .small_button("🗑")
-                            .on_hover_text("Remove pairing")
+                            .on_hover_text(self.i18n.t("sync.unpair"))
                             .clicked()
                         {
                             to_remove = Some(dev_id.clone());
@@ -637,7 +647,7 @@ impl ReaderApp {
                             );
                             *store_arc.lock().unwrap_or_else(|e| e.into_inner()) = store_snapshot;
                             *status.lock().unwrap_or_else(|e| e.into_inner()) =
-                                sync_fail_tpl.replacen("{}", &e, 1);
+                                reader_core::i18n::format_template(&sync_fail_tpl, &[&e], &[]);
                         }
                     }
                 }
@@ -646,7 +656,7 @@ impl ReaderApp {
                     // Store might have been updated during pairing
                     *store_arc.lock().unwrap_or_else(|e| e.into_inner()) = store_snapshot;
                     *status.lock().unwrap_or_else(|e| e.into_inner()) =
-                        connect_fail_tpl.replacen("{}", &e, 1);
+                        reader_core::i18n::format_template(&connect_fail_tpl, &[&e], &[]);
                 }
             }
             std::thread::sleep(std::time::Duration::from_secs(4));

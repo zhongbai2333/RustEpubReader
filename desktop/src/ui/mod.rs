@@ -1,6 +1,8 @@
 //! Defines the UI components and modular structure for the desktop application.
 pub mod about;
 pub mod annotations;
+pub(crate) mod appearance_linkage;
+pub mod book_share;
 pub mod csc_contribute;
 pub mod csc_settings;
 pub mod export_dialog;
@@ -9,6 +11,8 @@ pub mod github_sync;
 pub mod library;
 pub mod reader;
 pub mod reader_block;
+pub(crate) mod reader_images;
+pub(crate) mod reader_pagination;
 pub mod reader_state;
 pub mod review_panel;
 pub mod search;
@@ -26,3 +30,9 @@ pub mod github_account;
 pub(crate) mod page_curl;
 pub(crate) mod reader_chrome;
 pub mod shell;
+
+pub(crate) mod book_presentation;
+
+pub(crate) mod reader_introduction;
+
+pub(crate) mod reading_themes;

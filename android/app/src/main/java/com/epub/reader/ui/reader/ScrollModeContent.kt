@@ -8,6 +8,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -22,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.model.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 
 // ─── 滚动模式 ───
 
@@ -53,8 +56,16 @@ internal fun ScrollModeContent(
     onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
     initialBlock: Int = 0,
     onPositionChange: (Int) -> Unit = {},
+    onContentPrepared: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
+    val visibleImages=remember(publicationKey(allChapters)) { VisibleReaderImages() }
+    val preparedCallback by rememberUpdatedState(onContentPrepared)
+    LaunchedEffect(publicationKey(allChapters),initialChapter) {
+        withFrameNanos { }; withFrameNanos { }
+        snapshotFlow { visibleImages.ready }.first { it }
+        withFrameNanos { }; preparedCallback()
+    }
     var suppressChapterCallback by remember { mutableStateOf(false) }
     var lastVisibleChapter by remember { mutableIntStateOf(initialChapter) }
     val configuration = LocalConfiguration.current
@@ -71,7 +82,7 @@ internal fun ScrollModeContent(
     var pullTriggered by remember { mutableStateOf(false) }
     val pullThreshold = with(scrollDensity) { 120.dp.toPx() }
 
-    LaunchedEffect(allChapters) {
+    LaunchedEffect(publicationKey(allChapters)) {
         suppressChapterCallback = true
         listState.scrollToItem(initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
         // Let the programmatic positioning settle before user-driven chapter
@@ -102,7 +113,7 @@ internal fun ScrollModeContent(
             }
     }
 
-    LaunchedEffect(allChapters, initialChapter) {
+    LaunchedEffect(publicationKey(allChapters), initialChapter) {
         snapshotFlow { listState.firstVisibleItemIndex }
             .distinctUntilChanged()
             .collect { chapterIndex ->
@@ -155,9 +166,10 @@ internal fun ScrollModeContent(
         }
     }
 
+    CompositionLocalProvider(LocalVisibleReaderImages provides visibleImages) {
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize().background(bgColor).nestedScroll(nestedScrollConnection),
+        modifier = Modifier.fillMaxSize().background(bgColor).nestedScroll(nestedScrollConnection).onGloballyPositioned { visibleImages.viewport=it.boundsInRoot() },
         contentPadding =
             PaddingValues(
                 start = hPaddingDp,
@@ -201,6 +213,9 @@ internal fun ScrollModeContent(
                     )
                 }
                 chapterItem.blocks.forEachIndexed { blockIndex, block ->
+                    chapterItem.images.filter { it.block == blockIndex && !it.after }.forEach { image ->
+                        ContentBlockView(blockIndex = null, block = image.content(), fontSize = fontSize, textColor = textColor, linkColor = linkColor, bgColor = bgColor, fontFamily = fontFamily, onLinkClick = onLinkClick, onTextTapped = onTextTapped)
+                    }
                     ContentBlockView(
                         blockIndex = blockIndex,
                         block = block,
@@ -230,9 +245,13 @@ internal fun ScrollModeContent(
                             if (chapterIndex == initialChapter) ttsCurrentBlock else -1,
                         onCscCorrectionClick = onCscCorrectionClick,
                     )
+                    chapterItem.images.filter { it.block == blockIndex && it.after }.forEach { image ->
+                        ContentBlockView(blockIndex = null, block = image.content(), fontSize = fontSize, textColor = textColor, linkColor = linkColor, bgColor = bgColor, fontFamily = fontFamily, onLinkClick = onLinkClick, onTextTapped = onTextTapped)
+                    }
                 }
                 Spacer(Modifier.height(64.dp))
             }
         }
+    }
     }
 }

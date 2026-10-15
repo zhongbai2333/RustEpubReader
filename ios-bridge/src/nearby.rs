@@ -73,7 +73,22 @@ impl Drop for Snapshot {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
-fn snapshot(root: &str) -> Result<Snapshot, String> {
+fn stage_activity(root: &str, device: &str, stage: &str) -> Result<(), String> {
+    let activity = reader_core::reading_activity::snapshots(root, device)?;
+    // The staged store has no local writer: retain every logical activity source.
+    reader_core::reading_activity::import(stage, "", &activity)
+}
+fn merge_activity(
+    root: &str,
+    device: &str,
+    stage: &str,
+    peer_identity: &str,
+) -> Result<(), String> {
+    let activity = reader_core::reading_activity::snapshots(stage, peer_identity)?;
+    // Logical activity identity is independent of the pairing/keychain identity.
+    reader_core::reading_activity::import(root, device, &activity)
+}
+fn snapshot(root: &str, device: &str) -> Result<Snapshot, String> {
     let _guard = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut store = identity(root)?;
     let library = Library::load_from(root);
@@ -86,6 +101,11 @@ fn snapshot(root: &str) -> Result<Snapshot, String> {
         store: store.clone(),
     };
     std::fs::create_dir_all(stage.join("books")).map_err(|_| "Cannot prepare nearby sync")?;
+    stage_activity(
+        root,
+        device,
+        stage.to_str().ok_or("Invalid nearby storage")?,
+    )?;
     for entry in &library.books {
         let hash = EpubBook::file_hash(&entry.path)?;
         result.known.insert(hash.clone());
@@ -160,6 +180,12 @@ fn apply(
         downloaded += 1;
     }
     let mut live = identity(root)?;
+    merge_activity(
+        root,
+        device,
+        snapshot.root.to_str().unwrap(),
+        &store.device_id,
+    )?;
     // Pairing updates are written only by a current generation.
     for paired in &store.paired {
         live.add_paired(
@@ -256,7 +282,7 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
             validate_pin(&pin)?;
             stop();
             let epoch = SESSION.lock().unwrap_or_else(|e| e.into_inner()).epoch;
-            let snapshot = snapshot(root)?;
+            let snapshot = snapshot(root, device)?;
             let (listener, addr) = start_server(
                 "0.0.0.0:0",
                 root,
@@ -354,7 +380,7 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
             validate_pin(pin)?;
             stop();
             let epoch = SESSION.lock().unwrap_or_else(|e| e.into_inner()).epoch;
-            let mut snapshot = snapshot(root)?;
+            let mut snapshot = snapshot(root, device)?;
             let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
                 .map_err(|_| "Nearby connection failed")?;
             register(epoch, &stream)?;
@@ -397,5 +423,72 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
             result
         }
         _ => Err("Unknown nearby operation".into()),
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    #[test]
+    fn staged_nearby_activity_uses_logical_identity_and_preserves_live_writes() {
+        let live = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        let root = live.path().to_str().unwrap();
+        let staging = stage.path().to_str().unwrap();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../core/tests/fixtures/illustrations.epub");
+        let mut library = Library::load_from(root);
+        let entry = library.add_or_update(
+            root,
+            "Book".into(),
+            fixture.to_string_lossy().into_owned(),
+            0,
+            None,
+        );
+        let now = 1_700_000_120u64;
+        let today = reader_core::reading_activity::date_from_days((now / 86400) as i64);
+        reader_core::reading_activity::checkpoint(
+            root,
+            "ios-logical",
+            &entry.id,
+            "session",
+            10,
+            now,
+            0,
+            false,
+        )
+        .unwrap();
+        stage_activity(root, "ios-logical", staging).unwrap();
+        let wire = reader_core::reading_activity::snapshots(staging, "ios-pairing").unwrap();
+        let logical = wire.iter().find(|s| s.device_id == "ios-logical").unwrap();
+        let mut remote = logical.clone();
+        remote.device_id = "android-pairing".into();
+        remote
+            .activity
+            .values_mut()
+            .next()
+            .unwrap()
+            .days
+            .get_mut(&today)
+            .unwrap()
+            .reading = 20;
+        reader_core::reading_activity::import(staging, "ios-pairing", &[remote]).unwrap();
+        reader_core::reading_activity::checkpoint(
+            root,
+            "ios-logical",
+            &entry.id,
+            "session",
+            15,
+            now + 5,
+            0,
+            false,
+        )
+        .unwrap();
+        merge_activity(root, "ios-logical", staging, "ios-pairing").unwrap();
+        merge_activity(root, "ios-logical", staging, "ios-pairing").unwrap();
+        let result =
+            reader_core::reading_activity::report(root, "ios-logical", &today, None).unwrap();
+        assert_eq!(result.total, 35);
+        assert_eq!(result.devices, 2);
     }
 }

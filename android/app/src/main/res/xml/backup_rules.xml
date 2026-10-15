@@ -5,4 +5,5 @@
     <exclude domain="file" path="github-sync-local.json" />
     <exclude domain="file" path="github-sync-staging/" />
     <exclude domain="file" path="peers.json" />
+        <exclude domain="file" path=".book-share-tmp/" />
 </full-backup-content>

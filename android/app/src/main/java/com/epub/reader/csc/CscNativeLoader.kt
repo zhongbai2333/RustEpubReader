@@ -1,5 +1,6 @@
 package com.epub.reader.csc
 
+import com.zhongbai233.epub.reader.i18n.I18n
 import android.content.Context
 import android.os.Build
 import android.util.Log
@@ -153,6 +154,6 @@ object CscNativeLoader {
                 md.update(buf, 0, n)
             }
         }
-        return md.digest().joinToString("") { "%02x".format(it) }
+        return md.digest().joinToString("") { "%02x".format(I18n.locale, it) }
     }
 }

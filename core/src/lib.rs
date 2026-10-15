@@ -1,4 +1,6 @@
 //! The core reader library exposing API for the desktop app and the Android bridge.
+pub mod appearance;
+pub mod book_share;
 pub mod cloud_sync;
 pub mod csc;
 pub mod epub;
@@ -88,3 +90,4 @@ pub fn bytes_hash(data: &[u8]) -> String {
     hasher.update(data);
     format!("{:x}", hasher.finalize())
 }
+pub mod reading_activity;

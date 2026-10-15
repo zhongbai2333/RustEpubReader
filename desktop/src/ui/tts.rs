@@ -8,19 +8,19 @@ use std::sync::Arc;
 
 /// Predefined Chinese TTS voices.
 const VOICE_PRESETS: &[(&str, &str)] = &[
-    ("zh-CN-XiaoxiaoNeural", "晓晓 (女)"),
-    ("zh-CN-YunyangNeural", "云扬 (男)"),
-    ("zh-CN-XiaoyiNeural", "晓依 (女)"),
-    ("zh-CN-YunjianNeural", "云健 (男)"),
-    ("zh-CN-YunxiNeural", "云希 (男)"),
-    ("zh-CN-XiaochenNeural", "晓辰 (女)"),
-    ("zh-CN-XiaohanNeural", "晓涵 (女)"),
-    ("zh-CN-XiaomoNeural", "晓墨 (女)"),
-    ("zh-CN-XiaoruiNeural", "晓睿 (女)"),
-    ("zh-CN-XiaoshuangNeural", "晓双 (女)"),
-    ("en-US-AriaNeural", "Aria (EN Female)"),
-    ("en-US-GuyNeural", "Guy (EN Male)"),
-    ("ja-JP-NanamiNeural", "Nanami (JP Female)"),
+    ("zh-CN-XiaoxiaoNeural", "tts.voice_xiaoxiao_female"),
+    ("zh-CN-YunyangNeural", "tts.voice_yunyang_male"),
+    ("zh-CN-XiaoyiNeural", "tts.voice_xiaoyi_female"),
+    ("zh-CN-YunjianNeural", "tts.voice_yunjian_male"),
+    ("zh-CN-YunxiNeural", "tts.voice_yunxi_male"),
+    ("zh-CN-XiaochenNeural", "tts.voice_xiaochen_female"),
+    ("zh-CN-XiaohanNeural", "tts.voice_xiaohan_female"),
+    ("zh-CN-XiaomoNeural", "tts.voice_xiaomo_female"),
+    ("zh-CN-XiaoruiNeural", "tts.voice_xiaorui_female"),
+    ("zh-CN-XiaoshuangNeural", "tts.voice_xiaoshuang_female"),
+    ("en-US-AriaNeural", "Aria · en-US"),
+    ("en-US-GuyNeural", "Guy · en-US"),
+    ("ja-JP-NanamiNeural", "Nanami · ja-JP"),
 ];
 
 const RATE_OPTIONS: &[(i32, &str)] = &[
@@ -36,7 +36,7 @@ const RATE_OPTIONS: &[(i32, &str)] = &[
 const VOLUME_OPTIONS: &[(i32, &str)] = &[
     (-50, "-50%"),
     (-25, "-25%"),
-    (0, "正常"),
+    (0, "tts.rate_normal"),
     (25, "+25%"),
     (50, "+50%"),
 ];
@@ -155,13 +155,23 @@ impl ReaderApp {
                         VOICE_PRESETS
                             .iter()
                             .find(|(name, _)| *name == self.tts_voice_name)
-                            .map(|(_, label)| *label)
+                            .map(|(_, label)| {
+                                if label.starts_with("tts.") {
+                                    self.i18n.t(label)
+                                } else {
+                                    label
+                                }
+                            })
                             .unwrap_or(&self.tts_voice_name),
                     )
                     .show_ui(ui, |ui| {
                         super::design::menu_style(ui);
                         for (name, label) in VOICE_PRESETS {
-                            ui.selectable_value(&mut self.tts_voice_name, name.to_string(), *label);
+                            ui.selectable_value(
+                                &mut self.tts_voice_name,
+                                name.to_string(),
+                                self.i18n.t(label),
+                            );
                         }
                     });
 
@@ -178,7 +188,7 @@ impl ReaderApp {
                             .iter()
                             .find(|(v, _)| *v == self.tts_rate)
                             .map(|(_, l)| *l)
-                            .unwrap_or("正常"),
+                            .unwrap_or(self.i18n.t("tts.rate_normal")),
                     )
                     .show_ui(ui, |ui| {
                         super::design::menu_style(ui);
@@ -199,20 +209,42 @@ impl ReaderApp {
                         VOLUME_OPTIONS
                             .iter()
                             .find(|(v, _)| *v == self.tts_volume)
-                            .map(|(_, l)| *l)
-                            .unwrap_or("正常"),
+                            .map(|(_, label)| {
+                                if label.starts_with("tts.") {
+                                    self.i18n.t(label)
+                                } else {
+                                    label
+                                }
+                            })
+                            .unwrap_or(self.i18n.t("tts.rate_normal")),
                     )
                     .show_ui(ui, |ui| {
                         super::design::menu_style(ui);
                         for (val, label) in VOLUME_OPTIONS {
-                            ui.selectable_value(&mut self.tts_volume, *val, *label);
+                            ui.selectable_value(
+                                &mut self.tts_volume,
+                                *val,
+                                if *label == "tts.rate_normal" {
+                                    self.i18n.t(label)
+                                } else {
+                                    label
+                                },
+                            );
                         }
                     });
 
                 // ── Status text ──
                 let status = self.tts_status.lock().unwrap().clone();
                 if !status.is_empty() {
-                    ui.label(egui::RichText::new(&status).size(12.0).color(subtle_color));
+                    ui.label(
+                        egui::RichText::new(if status.starts_with("tts.") {
+                            self.i18n.t(&status).to_owned()
+                        } else {
+                            self.i18n.message(&status)
+                        })
+                        .size(12.0)
+                        .color(subtle_color),
+                    );
                 }
 
                 // ── Close button (right-aligned) ──
@@ -424,15 +456,15 @@ impl ReaderApp {
                         if let Some(sink) = self.tts_audio_sink.take() {
                             sink.stop();
                         }
-                        if let Err(e) = self.tts_play_bytes(&bytes) {
-                            *self.tts_status.lock().unwrap() = format!("Play error: {}", e);
+                        if let Err(_e) = self.tts_play_bytes(&bytes) {
+                            *self.tts_status.lock().unwrap() = "tts.error_playback".to_string();
                             self.tts_playing = false;
                         }
                         self.tts_start_prefetch();
                         return;
                     }
-                    Some(Err(error)) => {
-                        *self.tts_status.lock().unwrap() = format!("TTS Error: {error}");
+                    Some(Err(_error)) => {
+                        *self.tts_status.lock().unwrap() = "tts.error_synthesis_failed".to_string();
                         self.tts_playing = false;
                         return;
                     }
@@ -573,7 +605,7 @@ impl ReaderApp {
                 }
                 Err(e) => {
                     crate::app::dbg_log(&logs, format!("[TTS] ERROR synthesis: {}", e));
-                    *status.lock().unwrap() = format!("TTS Error: {}", e);
+                    *status.lock().unwrap() = "tts.error_synthesis_failed".to_string();
                     *audio_ready2.lock().unwrap() = Some(Err(e.to_string()));
                 }
             }
@@ -593,13 +625,13 @@ impl ReaderApp {
                 self.tts_pending_audio = None;
                 match result {
                     Ok(bytes) => {
-                        if let Err(e) = self.tts_play_bytes(&bytes) {
-                            *self.tts_status.lock().unwrap() = format!("Play error: {}", e);
+                        if let Err(_e) = self.tts_play_bytes(&bytes) {
+                            *self.tts_status.lock().unwrap() = "tts.error_playback".to_string();
                             self.tts_playing = false;
                         }
                     }
-                    Err(error) => {
-                        *self.tts_status.lock().unwrap() = format!("TTS Error: {error}");
+                    Err(_error) => {
+                        *self.tts_status.lock().unwrap() = "tts.error_synthesis_failed".to_string();
                         self.tts_playing = false;
                     }
                 }
@@ -663,6 +695,7 @@ mod tests {
             ContentBlock::BlankLine,
             ContentBlock::Separator,
             ContentBlock::Paragraph {
+                native_style: Default::default(),
                 spans: Vec::new(),
                 anchor_id: None,
             },

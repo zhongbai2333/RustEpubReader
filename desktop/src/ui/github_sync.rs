@@ -110,6 +110,9 @@ impl ReaderApp {
         }
     }
     pub fn cloud_start_sync(&mut self) {
+        if self.book_share.receive && self.book_share.busy {
+            return;
+        }
         self.cloud_start_phase(SyncPhase::Progress, false);
     }
     fn cloud_start_phase(&mut self, phase: SyncPhase, retry_failed: bool) {
@@ -130,6 +133,13 @@ impl ReaderApp {
         };
         self.cloud_journal_init();
         let journal = self.cloud_sync.journal.as_mut().unwrap();
+        if let Ok(activity) =
+            reader_core::reading_activity::export(&self.data_dir, &journal.own.device_id)
+        {
+            for (hash, value) in activity {
+                journal.own.activity.entry(hash).or_default().merge(&value);
+            }
+        }
         let own = journal.own.clone();
         let seen = journal.seen.clone();
         let entries = self.library.books.clone();
@@ -282,6 +292,13 @@ impl ReaderApp {
                     let journal = self.cloud_sync.journal.as_mut().unwrap();
                     // Reading may have continued while network work was in flight.
                     let _ = journal.own.merge_own(&result.own);
+                    if let Err(error) = reader_core::reading_activity::import(
+                        &self.data_dir,
+                        &journal.own.device_id,
+                        &result.snapshots,
+                    ) {
+                        self.error_msg = Some(error);
+                    }
                     journal.seen.extend(result.own.progress.keys().cloned());
                     let latest = latest_progress(&result.snapshots, &journal.own);
                     self.cloud_sync.offered = None;
@@ -463,13 +480,6 @@ impl ReaderApp {
             ctx.request_repaint_after(Duration::from_secs(30));
         }
     }
-    pub fn render_cloud_sync_settings(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.add_space(8.0);
-        ui.strong(self.i18n.t("sync.multiplatform"));
-        self.render_github_account_summary(ui);
-    }
-
     pub fn render_github_sync_controls(&mut self, ui: &mut egui::Ui) {
         let enabled_before = self.github_sync_enabled;
         let authorized = self.github_token.is_some()
@@ -552,7 +562,7 @@ impl ReaderApp {
         }
         if self.github_sync_enabled {
             if !self.cloud_sync.status.is_empty() {
-                ui.label(&self.cloud_sync.status);
+                ui.label(self.i18n.message(&self.cloud_sync.status));
             }
             if !self.cloud_sync.failed.is_empty() {
                 ui.collapsing(

@@ -120,7 +120,7 @@ fun SelectionFloatingMenu(
                             IconButton(onClick = { showColorPicker = false }) {
                                 Icon(
                                     Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back",
+                                    contentDescription = I18n.t("about.back"),
                                     tint = iconClr,
                                 )
                             }

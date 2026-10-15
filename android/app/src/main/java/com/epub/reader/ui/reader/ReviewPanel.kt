@@ -31,7 +31,7 @@ private data class ReviewCard(
 private fun formatTimestamp(raw: String): String {
     val ts = raw.toLongOrNull() ?: return raw
     return try {
-        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", I18n.locale)
         sdf.format(java.util.Date(ts * 1000))
     } catch (_: Exception) {
         raw
@@ -110,6 +110,7 @@ fun ReviewPanel(
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val closeSheet = rememberReaderSheetDismiss(sheetState, onDismiss)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -130,7 +131,7 @@ fun ReviewPanel(
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                 )
-                IconButton(onClick = onDismiss) {
+                IconButton(onClick = closeSheet) {
                     Icon(
                         Icons.Default.Close,
                         contentDescription = I18n.t("dialog.close"),
@@ -290,7 +291,7 @@ private fun ReviewCardItem(card: ReviewCard, fontSize: Float) {
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "${card.timestamp} · 赞 ${card.likes}",
+                    text = I18n.tf("common.review_likes", (card.timestamp).toString(), (card.likes).toString()),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 )

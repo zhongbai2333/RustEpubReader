@@ -1,6 +1,9 @@
 package com.zhongbai233.epub.reader.ui.reader
 
-import android.graphics.BitmapFactory
+import androidx.compose.foundation.layout.fillMaxHeight
+
+import androidx.compose.foundation.border
+
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -11,6 +14,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -21,6 +26,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -33,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextIndent
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.csc.CorrectionInfo
@@ -110,6 +117,7 @@ internal fun ContentBlockView(
     blockIndex: Int?,
     block: ContentBlock,
     sourceCharOffset: Int = 0,
+    imageMaxHeight: Dp = Dp.Unspecified,
     fontSize: Float,
     textColor: Color,
     linkColor: Color,
@@ -130,11 +138,80 @@ internal fun ContentBlockView(
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, androidx.compose.ui.geometry.Offset) -> Unit = { _, _ -> }
 ) {
+    val native=block.nativeStyle()
+    if(native.hidden)return
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val font=native.font(fontSize);fun resolve(v:com.zhongbai233.epub.reader.model.NativeDimension?)=v?.resolve(font,maxWidth.value)?:0f
+        val left=(resolve(native.insetLeft)+resolve(native.paddingLeft)).coerceAtMost(maxWidth.value*0.4f)
+        val right=(resolve(native.insetRight)+resolve(native.paddingRight)).coerceAtMost(maxWidth.value*0.4f)
+        androidx.compose.foundation.layout.Box(Modifier.padding(start=left.dp,end=right.dp,top=(resolve(native.marginTop)+resolve(native.paddingTop)).dp,bottom=(resolve(native.marginBottom)+resolve(native.paddingBottom)).dp)) {
+            ContentBlockViewContent(blockIndex=blockIndex,block=block,sourceCharOffset=sourceCharOffset,imageMaxHeight=imageMaxHeight,fontSize=fontSize,textColor=textColor,linkColor=linkColor,bgColor=bgColor,fontFamily=fontFamily,onLinkClick=onLinkClick,onTextTapped=onTextTapped,lineSpacing=lineSpacing,paraSpacing=paraSpacing,textIndentChars=textIndentChars,titleFontScale=titleFontScale,textSelection=textSelection,onSelectionChange=onSelectionChange,blockLayoutRegistry=blockLayoutRegistry,highlights=highlights,cscBlockCorrections=cscBlockCorrections,cscMode=cscMode,ttsCurrentBlock=ttsCurrentBlock,onCscCorrectionClick=onCscCorrectionClick)
+        }
+    }
+}
+
+@Composable
+private fun ContentBlockViewContent(
+    blockIndex: Int?,
+    block: ContentBlock,
+    sourceCharOffset: Int = 0,
+    imageMaxHeight: Dp = Dp.Unspecified,
+    fontSize: Float,
+    textColor: Color,
+    linkColor: Color,
+    bgColor: Color = Color.White,
+    fontFamily: FontFamily,
+    onLinkClick: (String) -> Unit,
+    onTextTapped: () -> Unit,
+    lineSpacing: Float = 1.5f,
+    paraSpacing: Float = 0.5f,
+    textIndentChars: Int = 2,
+    titleFontScale: Float = 1.5f,
+    textSelection: TextSelectionState? = null,
+    onSelectionChange: (TextSelectionState?) -> Unit = {},
+    blockLayoutRegistry: MutableMap<Int, BlockLayoutInfo>? = null,
+    highlights: List<HighlightDto> = emptyList(),
+    cscBlockCorrections: List<CscBlockCorrection> = emptyList(),
+    cscMode: String = "none",
+    ttsCurrentBlock: Int = -1,
+    onCscCorrectionClick: (CscBlockCorrection, androidx.compose.ui.geometry.Offset) -> Unit = { _, _ -> }
+) {
+    val sourceNative=block.nativeStyle()
+    val native=if((bgColor.red+bgColor.green+bgColor.blue)>1.5f)sourceNative else sourceNative.copy(inline=sourceNative.inline.map {it.copy(color=null)})
+    val block=when(block){
+        is ContentBlock.Paragraph->block.copy(spans=block.spans.map {span->span.copy(style=when{native.bold&&native.italic->InlineStyle.BoldItalic;native.bold->InlineStyle.Bold;native.italic->InlineStyle.Italic;else->span.style})})
+        is ContentBlock.Heading->block.copy(spans=block.spans.map {span->span.copy(style=if(native.italic)InlineStyle.BoldItalic else span.style)})
+        else->block
+    }
+    val textColor=if(native.color!=null && (bgColor.red+bgColor.green+bgColor.blue)>1.5f)runCatching {Color(android.graphics.Color.parseColor(native.color))}.getOrDefault(textColor) else textColor
+    val fontFamily=when(native.family?.lowercase()){ "serif"->FontFamily.Serif;"sans-serif"->FontFamily.SansSerif;"monospace"->FontFamily.Monospace;else->fontFamily}
+    if(native.hidden)return
+    val fontSize=native.font(fontSize)
+    val lineSpacing=native.lineScale(lineSpacing)
+    val paraSpacing=native.after?:paraSpacing
+    val textIndentChars=(native.indent?:textIndentChars.toFloat()).toInt()
+    val nativeAlign=when(native.align){"center"->androidx.compose.ui.text.style.TextAlign.Center;"right"->androidx.compose.ui.text.style.TextAlign.Right;"justify"->androidx.compose.ui.text.style.TextAlign.Justify;else->androidx.compose.ui.text.style.TextAlign.Left}
+    val fallbackLabel=when(block){is ContentBlock.Paragraph->block.spans.joinToString(""){it.text};is ContentBlock.Heading->block.spans.joinToString(""){it.text};else->""}
+    if(native.action!=null){androidx.compose.material3.TextButton(onClick={onLinkClick("reader-event:${native.action}")}){Text(native.text?:fallbackLabel,fontSize=fontSize.sp)};return}
+    if(native.text!=null){Text(native.text,fontSize=fontSize.sp,color=textColor,lineHeight=(fontSize*lineSpacing).sp,modifier=Modifier.padding(vertical=(fontSize*paraSpacing).dp));return}
     val viewConfiguration = LocalViewConfiguration.current
     val textMeasurer = rememberTextMeasurer()
+    if(native.list.isNotEmpty()) {
+        androidx.compose.foundation.layout.Column {for(item in native.list){androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(start=(fontSize*1.2f*(item.depth-native.listDepth).coerceAtLeast(0)).dp,bottom=(fontSize*0.3f).dp)) {Text(item.marker,fontSize=fontSize.sp,color=textColor,modifier=Modifier.padding(end=8.dp));Text(item.text,fontSize=fontSize.sp,lineHeight=(fontSize*lineSpacing).sp,color=textColor,fontFamily=fontFamily)}}}
+        return
+    }
+    native.table?.let {table->
+        androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+            for(cell in table.cells) {
+                Text(cell.text,color=textColor,fontSize=fontSize.sp,fontFamily=fontFamily,fontWeight=if(cell.header)FontWeight.Bold else FontWeight.Normal,lineHeight=(fontSize*lineSpacing).sp,textAlign=when(cell.align){"right"->androidx.compose.ui.text.style.TextAlign.Right;"center"->androidx.compose.ui.text.style.TextAlign.Center;else->androidx.compose.ui.text.style.TextAlign.Left},modifier=Modifier.weight(cell.span.toFloat()).fillMaxHeight().border(0.5.dp,textColor.copy(alpha=0.25f)).run {if(cell.header)background(textColor.copy(alpha=0.06f))else this}.padding(6.dp))
+            }
+            val missing=table.columns-table.cells.sumOf {it.span};if(missing>0)Spacer(Modifier.weight(missing.toFloat()))
+        }
+        return
+    }
     when (block) {
         is ContentBlock.Heading -> {
-            val scale = when (block.level) {
+            val scale = if(native.size!=null||native.sizePx!=null)1f else when (block.level) {
                 1 -> titleFontScale * 1.3f
                 2 -> titleFontScale * 1.1f
                 3 -> titleFontScale * 0.9f
@@ -148,10 +225,13 @@ internal fun ContentBlockView(
                 linkColor = linkColor,
                 fontFamily = fontFamily,
                 overrideWeight = FontWeight.Bold,
-                onLinkClick = onLinkClick
+                onLinkClick = onLinkClick, native = native, sourceCharOffset = sourceCharOffset
             )
             val headingStyle = TextStyle(
+                letterSpacing = 0.sp,
+                fontSize = (fontSize * scale).sp,
                 fontFamily = fontFamily,
+                textAlign = nativeAlign,
                 lineHeight = (fontSize * scale * lineSpacing).sp,
                 platformStyle = PlatformTextStyle(includeFontPadding = false),
                 lineHeightStyle = LineHeightStyle(
@@ -174,8 +254,9 @@ internal fun ContentBlockView(
                 text = annotated,
                 style = headingStyle,
                 modifier = Modifier
+                    .fillMaxWidth()
                     .run { if (idx != null && idx == ttsCurrentBlock) background(androidx.compose.ui.graphics.Color(0x4DFFEB3B), androidx.compose.foundation.shape.RoundedCornerShape(8.dp)) else this }
-                    .padding(top = (fontSize * 1.2f).dp, bottom = (fontSize * 1.8f).dp)
+                    .padding(top = (fontSize * (native.before?:1.2f)).dp, bottom = (fontSize * (native.after?:1.8f)).dp)
                     .onGloballyPositioned { coordinates ->
                         val lr = layoutResult
                         if (idx != null && lr != null) {
@@ -185,6 +266,7 @@ internal fun ContentBlockView(
                     .drawWithContent {
                         drawContent()
                         val lr = layoutResult ?: return@drawWithContent
+                        drawPublicationRuby(lr,native,sourceCharOffset,fontSize,textColor)
                         // 渲染已保存的高亮
                         if (idx != null) {
                             for (hl in highlights) {
@@ -253,7 +335,7 @@ internal fun ContentBlockView(
                                     val endOffset = (offset + 2).coerceAtMost(annotated.length)
                                     val annotations = annotated.getStringAnnotations(tag = "URL", start = startOffset, end = endOffset)
                                     if (annotations.isNotEmpty()) {
-                                        onLinkClick(annotations.first().item)
+                                        onLinkClick(annotations.last().item)
                                         down.consume()
                                         up.consume()
                                     } else {
@@ -275,11 +357,14 @@ internal fun ContentBlockView(
                 linkColor = linkColor,
                 fontFamily = fontFamily,
                 overrideWeight = null,
-                onLinkClick = onLinkClick
+                onLinkClick = onLinkClick, native = native, sourceCharOffset = sourceCharOffset
             )
             val baseStyle = TextStyle(
+                letterSpacing = 0.sp,
+                fontSize = fontSize.sp,
                 fontFamily = fontFamily,
-                textIndent = TextIndent(firstLine = (fontSize * textIndentChars).sp),
+                textAlign = nativeAlign,
+                textIndent = TextIndent(firstLine = (native.indentLength?.resolve(fontSize,0f)?:fontSize * (native.indent?:textIndentChars.toFloat())).sp),
                 lineHeight = (fontSize * lineSpacing).sp,
                 platformStyle = PlatformTextStyle(includeFontPadding = false),
                 lineHeightStyle = LineHeightStyle(
@@ -302,8 +387,9 @@ internal fun ContentBlockView(
                 text = annotated,
                 style = baseStyle,
                 modifier = Modifier
+                    .fillMaxWidth()
                     .run { if (idx != null && idx == ttsCurrentBlock) background(androidx.compose.ui.graphics.Color(0x4DFFEB3B), androidx.compose.foundation.shape.RoundedCornerShape(8.dp)) else this }
-                    .padding(vertical = (fontSize * paraSpacing).dp)
+                    .padding(top=(fontSize*(native.before?:paraSpacing)).dp,bottom=(fontSize*paraSpacing).dp)
                     .onGloballyPositioned { coordinates ->
                         val lr = layoutResult
                         if (idx != null && lr != null) {
@@ -313,6 +399,7 @@ internal fun ContentBlockView(
                     .drawWithContent {
                         drawContent()
                         val lr = layoutResult ?: return@drawWithContent
+                        drawPublicationRuby(lr,native,sourceCharOffset,fontSize,textColor)
                         // 渲染已保存的高亮
                         if (idx != null) {
                             for (hl in highlights) {
@@ -382,7 +469,7 @@ internal fun ContentBlockView(
                                     val endOffset = (offset + 2).coerceAtMost(annotated.length)
                                     val annotations = annotated.getStringAnnotations(tag = "URL", start = startOffset, end = endOffset)
                                     if (annotations.isNotEmpty()) {
-                                        onLinkClick(annotations.first().item)
+                                        onLinkClick(annotations.last().item)
                                         down.consume()
                                         up.consume()
                                     } else {
@@ -397,31 +484,32 @@ internal fun ContentBlockView(
         }
 
         is ContentBlock.Image -> {
-            val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, block.data) {
+            var decodeFinished by remember(block.data) { mutableStateOf(false) }
+            val bitmap by produceState(initialValue = ReaderImageCache.peek(block.data), block.data) {
                 value = withContext(Dispatchers.IO) {
-                    val bytes = android.util.Base64.decode(block.data, android.util.Base64.DEFAULT)
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ReaderImageCache.load(block.data)
                 }
+                decodeFinished = true
             }
-            val bmp = bitmap
-            if (bmp != null && bmp.width > 0 && bmp.height > 0) {
-                val ratio = bmp.width.toFloat() / bmp.height.toFloat()
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = block.alt,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(ratio)
-                        .padding(vertical = (fontSize * 0.35f).dp),
-                    contentScale = ContentScale.Fit
-                )
+            val natural = remember(block.data) { ReaderImageCache.dimensions(block.data) }
+            val visibleImages=LocalVisibleReaderImages.current
+            val imageKey=remember(block.data) { Any() }
+            val imagePrepared=bitmap!=null || decodeFinished
+            SideEffect { visibleImages?.prepared(imageKey,imagePrepared) }
+            DisposableEffect(visibleImages,imageKey) { onDispose { visibleImages?.remove(imageKey) } }
+            if (natural != null) {
+                BoxWithConstraints(Modifier.fillMaxWidth().padding(vertical = (fontSize * 0.35f).dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    val boundHeight = if (imageMaxHeight == Dp.Unspecified) Float.POSITIVE_INFINITY else imageMaxHeight.value
+                    val (width,height)=native.imageSize(natural.first.toFloat(),natural.second.toFloat(),fontSize,maxWidth.value,boundHeight)
+                    val frame = Modifier.size(width.dp,height.dp).onGloballyPositioned { visibleImages?.position(imageKey,it.boundsInRoot()) }
+                    if(bitmap != null) Image(bitmap=bitmap!!.asImageBitmap(),contentDescription=block.alt,modifier=frame,contentScale=ContentScale.Fit)
+                    else Box(frame.background(textColor.copy(alpha=0.04f)),contentAlignment=androidx.compose.ui.Alignment.Center) {
+                        if(decodeFinished)Text(block.alt?:I18n.t("reader.image_load_failed"),color=textColor.copy(alpha=0.65f),fontSize=(fontSize*0.9f).sp)
+                    }
+                }
             } else {
-                Text(
-                    text = block.alt ?: I18n.t("reader.image_load_failed"),
-                    color = textColor.copy(alpha = 0.65f),
-                    fontSize = (fontSize * 0.9f).sp,
-                    modifier = Modifier.padding(vertical = (fontSize * 0.35f).dp)
-                )
+                Text(text=block.alt?:I18n.t("reader.image_load_failed"),color=textColor.copy(alpha=0.65f),fontSize=(fontSize*0.9f).sp,
+                    modifier=Modifier.padding(vertical=(fontSize*0.35f).dp))
             }
         }
 
@@ -519,4 +607,16 @@ private fun DrawScope.drawCscRubyAnnotation(
     val rubyX = fullRect.left + (fullRect.width - rubyMeasured.size.width) / 2f
     val rubyY = fullRect.top - rubyMeasured.size.height.toFloat() * 0.35f
     drawText(rubyMeasured, topLeft = Offset(rubyX, rubyY))
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPublicationRuby(layout:TextLayoutResult,native:com.zhongbai233.epub.reader.model.NativeStyle,base:Int,font:Float,color:Color) {
+    for(ruby in native.ruby) {
+        val start=ruby.start-base;val end=ruby.end-base
+        if(start<0||end>layout.layoutInput.text.length||end<=start)continue
+        val first=layout.getBoundingBox(start);val last=layout.getBoundingBox(end-1)
+        val width=if(first.top==last.top)last.right-first.left else first.width*(end-start)
+        val baseScale=native.inline.lastOrNull {it.start<=ruby.start&&it.end>=ruby.end}?.size?:1f
+        val basePx=font.sp.toPx()*baseScale
+        with(drawContext.canvas.nativeCanvas) {val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);paint.textSize=basePx*0.5f;paint.color=color.toArgb();val measured=paint.measureText(ruby.text);val extent=width+basePx;if(measured>extent&&extent>0)paint.textSize*=extent/measured;val baseline=layout.getLineBaseline(layout.getLineForOffset(start))-basePx-paint.fontMetrics.descent-1f;drawText(ruby.text,first.left+(width-paint.measureText(ruby.text))*0.5f,baseline,paint)}
+    }
 }

@@ -12,17 +12,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zhongbai233.epub.reader.i18n.I18n
 
-val TTS_VOICES = listOf(
-    "zh-CN-XiaoxiaoNeural" to "晓晓 (女)",
-    "zh-CN-YunyangNeural" to "云扬 (男)",
-    "zh-CN-XiaoyiNeural" to "晓伊 (女)",
-    "zh-CN-YunjianNeural" to "云健 (男)",
-    "zh-CN-YunxiNeural" to "云希 (男)",
-    "zh-CN-XiaochenNeural" to "晓辰 (女)",
-    "zh-CN-XiaohanNeural" to "晓涵 (女)",
-    "zh-CN-XiaomoNeural" to "晓墨 (女)",
-    "zh-CN-XiaoruiNeural" to "晓睿 (女)",
-    "zh-CN-XiaoshuangNeural" to "晓双 (女)"
+val TTS_VOICES get() = listOf(
+    "zh-CN-XiaoxiaoNeural" to I18n.t("tts.voice_xiaoxiao_female"),
+    "zh-CN-YunyangNeural" to I18n.t("tts.voice_yunyang_male"),
+    "zh-CN-XiaoyiNeural" to I18n.t("tts.voice_xiaoyi_female"),
+    "zh-CN-YunjianNeural" to I18n.t("tts.voice_yunjian_male"),
+    "zh-CN-YunxiNeural" to I18n.t("tts.voice_yunxi_male"),
+    "zh-CN-XiaochenNeural" to I18n.t("tts.voice_xiaochen_female"),
+    "zh-CN-XiaohanNeural" to I18n.t("tts.voice_xiaohan_female"),
+    "zh-CN-XiaomoNeural" to I18n.t("tts.voice_xiaomo_female"),
+    "zh-CN-XiaoruiNeural" to I18n.t("tts.voice_xiaorui_female"),
+    "zh-CN-XiaoshuangNeural" to I18n.t("tts.voice_xiaoshuang_female"),
+    "en-US-AriaNeural" to "Aria · en-US",
+    "en-US-GuyNeural" to "Guy · en-US",
+    "ja-JP-NanamiNeural" to "Nanami · ja-JP"
 )
 
 val TTS_RATES get() = listOf(
@@ -35,7 +38,7 @@ val TTS_RATES get() = listOf(
     100 to "+100%"
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TtsSettingsSheet(
     voiceName: String,
@@ -61,19 +64,9 @@ fun TtsSettingsSheet(
 
             // 发音人
             Text(text = I18n.t("settings.tts_voice"), style = MaterialTheme.typography.titleMedium)
-            // A simple grid or flow row for voices would be better, but we can do a Dropdown or chips
-            // Let's do a ScrollableRow of FilterChips
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TTS_VOICES.chunked(3).forEach { rowVoices ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        rowVoices.forEach { (id, name) ->
-                            FilterChip(
-                                selected = voiceName == id,
-                                onClick = { onVoiceChange(id) },
-                                label = { Text(name) }
-                            )
-                        }
-                    }
+            FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                TTS_VOICES.forEach { (id,name) ->
+                    FilterChip(selected=voiceName==id,onClick={onVoiceChange(id)},label={Text(name)})
                 }
             }
 

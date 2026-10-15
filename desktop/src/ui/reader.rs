@@ -15,6 +15,7 @@ use super::{reader_block::*, reader_state::*};
 type BlockHighlightRanges = HashMap<usize, Vec<(usize, usize, HighlightColor)>>;
 type ChapterHighlightRanges = HashMap<usize, BlockHighlightRanges>;
 
+#[cfg(test)]
 pub(crate) fn paginate_blocks(
     blocks: &[ContentBlock],
     font_size: f32,
@@ -22,6 +23,7 @@ pub(crate) fn paginate_blocks(
     line_spacing: f32,
     available_height: f32,
     max_width: f32,
+    media: &[reader_core::epub::parser::SupplementalImage],
 ) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut page_start = 0;
@@ -29,7 +31,7 @@ pub(crate) fn paginate_blocks(
     let mut first_page = true;
     let first_is_heading = matches!(blocks.first(), Some(ContentBlock::Heading { .. }));
     let title_height = if first_is_heading {
-        TITLE_SPACING
+        0.0
     } else {
         font_size * title_font_scale * 1.2 + TITLE_SPACING
     };
@@ -41,6 +43,25 @@ pub(crate) fn paginate_blocks(
             title_font_scale,
             font_size * line_spacing,
             max_width,
+        );
+        let images: Vec<_> = media
+            .iter()
+            .filter(|image| image.block == i)
+            .cloned()
+            .collect();
+        let bh = super::reader_images::block_media_height(
+            block,
+            &images,
+            bh,
+            max_width,
+            super::reader_images::page_limit_for(
+                blocks,
+                available_height,
+                max_width,
+                font_size,
+                title_font_scale,
+            ),
+            font_size,
         );
         let budget = if first_page {
             usable - title_height
@@ -62,33 +83,31 @@ pub(crate) fn paginate_blocks(
 }
 
 impl ReaderApp {
-    pub fn recalculate_pages(&mut self, available_height: f32, max_width: f32) {
+    pub fn recalculate_pages(&mut self, ui: &mut egui::Ui, available_height: f32, max_width: f32) {
         set_spacing(
             self.line_spacing,
             self.para_spacing,
             self.text_indent as f32,
         );
-        self.page_block_ranges = self
-            .book
-            .as_ref()
-            .and_then(|book| book.chapters.get(self.current_chapter))
-            .map(|chapter| {
-                paginate_blocks(
-                    &chapter.blocks,
-                    self.font_size,
-                    self.title_font_scale,
-                    self.line_spacing,
-                    available_height,
-                    max_width,
-                )
-            })
-            .unwrap_or_default();
+        self.page_block_ranges =
+            self.measured_chapter_pages(ui, self.current_chapter, available_height, max_width);
         self.total_pages = self.page_block_ranges.len().max(1);
         if let Some(block) = self.pending_restore_block.take() {
             self.current_page = self
                 .page_block_ranges
                 .iter()
-                .position(|(start, end)| *start <= block && block < *end)
+                .enumerate()
+                .filter(|(page, (start, end))| {
+                    *start <= block
+                        && block < *end
+                        && (*start != block
+                            || self
+                                .page_block_ranges
+                                .fragment(*page)
+                                .is_none_or(|f| f.char_offset <= self.current_char_offset))
+                })
+                .map(|(page, _)| page)
+                .next_back()
                 .unwrap_or_else(|| self.total_pages.saturating_sub(1));
         }
         if self.current_page >= self.total_pages {
@@ -107,6 +126,52 @@ impl ReaderApp {
     }
 
     pub fn render_reader(&mut self, ui: &mut egui::Ui) {
+        if self.native_book_path != self.book_path {
+            self.reader_render_blocks = None;
+            self.native_events.clear();
+            self.publication_note = None;
+            self.native_applied.clear();
+            self.native_book_path = self.book_path.clone();
+        }
+        if let Some(book) = self.book.as_mut() {
+            let start = self.current_chapter.saturating_sub(1);
+            let end = if self.scroll_mode {
+                (self.current_chapter + 4).min(book.chapters.len())
+            } else {
+                (self.current_chapter + 2).min(book.chapters.len())
+            };
+            for index in start..end {
+                let events = self.native_events.entry(index).or_default();
+                let signature = (self.css_policy, self.scripts_enabled, events.len());
+                if self.native_applied.get(&index) != Some(&signature) {
+                    let previous: Vec<_> = book.chapters[index]
+                        .blocks
+                        .iter()
+                        .map(ContentBlock::native_style)
+                        .collect();
+                    let errors = book.chapters[index].apply_presentation(
+                        self.css_policy,
+                        self.scripts_enabled,
+                        events,
+                    );
+                    if !errors.is_empty() {
+                        eprintln!(
+                            "Publication script disabled for chapter {index}: {}",
+                            errors.join("; ")
+                        );
+                    }
+                    self.reader_render_blocks = None;
+                    self.native_applied.insert(index, signature);
+                    let changed = book.chapters[index]
+                        .blocks
+                        .iter()
+                        .map(ContentBlock::native_style)
+                        .ne(previous);
+                    self.pages_dirty |=
+                        changed && (self.scroll_mode || index == self.current_chapter);
+                }
+            }
+        }
         // Push current typography settings into thread-locals
         set_spacing(
             self.line_spacing,
@@ -178,6 +243,13 @@ impl ReaderApp {
         };
 
         let full_rect = ui.available_rect_before_wrap();
+        super::reader_images::configure(
+            self.book.as_ref(),
+            full_rect.height(),
+            self.scroll_mode,
+            self.font_size,
+            self.title_font_scale,
+        );
         self.paging_page_rect = Some(full_rect);
         if let Some(tex) = &self.reader_bg_texture {
             ui.painter().image(
@@ -188,20 +260,27 @@ impl ReaderApp {
             );
         }
 
-        let mut action_prev_chapter = false;
-        let mut action_next_chapter = false;
-        let mut action_go_back = false;
         let mut action_prev_page = false;
         let mut action_next_page = false;
         let mut clicked_link: Option<String> = None;
-        let has_previous_chapter = self.previous_chapter.is_some();
         let mut curl_consumed_frame = false;
 
         let current_chapter_data = self.book.as_ref().and_then(|book| {
             book.chapters.get(self.current_chapter).map(|chapter| {
                 (
                     chapter.title.clone(),
-                    chapter.blocks.clone(),
+                    {
+                        if self.pages_dirty
+                            || self
+                                .reader_render_blocks
+                                .as_ref()
+                                .is_none_or(|(index, _)| *index != self.current_chapter)
+                        {
+                            self.reader_render_blocks =
+                                Some((self.current_chapter, Arc::new(chapter.blocks.clone())));
+                        }
+                        self.reader_render_blocks.as_ref().unwrap().1.clone()
+                    },
                     book.chapters.len(),
                 )
             })
@@ -252,13 +331,26 @@ impl ReaderApp {
                     self.pending_restore_block = Some(self.current_block);
                 }
                 self.page_curl.clear();
-                self.recalculate_pages(ui.available_height(), text_width);
+                self.recalculate_pages(ui, ui.available_height(), text_width);
             }
             if !self.scroll_mode && self.total_pages > 0 && self.current_page >= self.total_pages {
                 self.current_page = self.total_pages - 1;
             }
             if dual_column && !self.current_page.is_multiple_of(2) {
                 self.current_page = self.current_page.saturating_sub(1);
+            }
+            if !self.scroll_mode {
+                if let Some(book) = &self.book {
+                    super::reader_images::prefetch(
+                        ui.ctx(),
+                        book,
+                        self.current_chapter,
+                        &self.page_block_ranges,
+                        self.current_page,
+                        text_width,
+                        self.font_size,
+                    );
+                }
             }
             let (block_start, block_end) = if self.scroll_mode {
                 (0, blocks.len())
@@ -397,16 +489,11 @@ impl ReaderApp {
                             0,
                             chapter_blocks.len(),
                             true,
+                            None,
                             self.font_size,
                             self.title_font_scale,
                             self.reader_bg_color,
                             chapter_idx,
-                            total_ch,
-                            &mut action_prev_chapter,
-                            &mut action_next_chapter,
-                            &mut action_go_back,
-                            chapter_idx + 1 == total_ch,
-                            has_previous_chapter,
                             self.reader_font_color,
                             &effective_font_family,
                             &self.i18n,
@@ -471,9 +558,6 @@ impl ReaderApp {
                         text_width,
                         h_margin,
                         &effective_font_family,
-                        &mut action_prev_chapter,
-                        &mut action_next_chapter,
-                        &mut action_go_back,
                         &mut clicked_link,
                     );
                 } else if dual_column {
@@ -535,16 +619,11 @@ impl ReaderApp {
                                             fls,
                                             fle,
                                             from_left == 0,
+                                            snap_ranges.fragment(from_left),
                                             self.font_size,
                                             self.title_font_scale,
                                             self.reader_bg_color,
                                             self.current_chapter,
-                                            total_ch,
-                                            &mut action_prev_chapter,
-                                            &mut action_next_chapter,
-                                            &mut action_go_back,
-                                            false,
-                                            has_previous_chapter,
                                             self.reader_font_color,
                                             &effective_font_family,
                                             &self.i18n,
@@ -582,16 +661,11 @@ impl ReaderApp {
                                                 frs,
                                                 fre,
                                                 false,
+                                                snap_ranges.fragment(from_right),
                                                 self.font_size,
                                                 self.title_font_scale,
                                                 self.reader_bg_color,
                                                 snap_chapter,
-                                                total_ch,
-                                                &mut action_prev_chapter,
-                                                &mut action_next_chapter,
-                                                &mut action_go_back,
-                                                false,
-                                                has_previous_chapter,
                                                 self.reader_font_color,
                                                 &effective_font_family,
                                                 &self.i18n,
@@ -627,16 +701,11 @@ impl ReaderApp {
                                             fls,
                                             fle,
                                             from_left == 0,
+                                            self.page_block_ranges.fragment(from_left),
                                             self.font_size,
                                             self.title_font_scale,
                                             self.reader_bg_color,
                                             self.current_chapter,
-                                            total_ch,
-                                            &mut action_prev_chapter,
-                                            &mut action_next_chapter,
-                                            &mut action_go_back,
-                                            false,
-                                            has_previous_chapter,
                                             self.reader_font_color,
                                             &effective_font_family,
                                             &self.i18n,
@@ -673,16 +742,11 @@ impl ReaderApp {
                                                 frs,
                                                 fre,
                                                 false,
+                                                self.page_block_ranges.fragment(from_right),
                                                 self.font_size,
                                                 self.title_font_scale,
                                                 self.reader_bg_color,
                                                 self.current_chapter,
-                                                total_ch,
-                                                &mut action_prev_chapter,
-                                                &mut action_next_chapter,
-                                                &mut action_go_back,
-                                                false,
-                                                has_previous_chapter,
                                                 self.reader_font_color,
                                                 &effective_font_family,
                                                 &self.i18n,
@@ -747,16 +811,11 @@ impl ReaderApp {
                                 tls,
                                 tle,
                                 to_left == 0,
+                                self.page_block_ranges.fragment(to_left),
                                 self.font_size,
                                 self.title_font_scale,
                                 self.reader_bg_color,
                                 self.current_chapter,
-                                total_ch,
-                                &mut action_prev_chapter,
-                                &mut action_next_chapter,
-                                &mut action_go_back,
-                                false,
-                                has_previous_chapter,
                                 self.reader_font_color,
                                 &effective_font_family,
                                 &self.i18n,
@@ -786,16 +845,11 @@ impl ReaderApp {
                                     trs,
                                     tre,
                                     false,
+                                    self.page_block_ranges.fragment(to_right),
                                     self.font_size,
                                     self.title_font_scale,
                                     self.reader_bg_color,
                                     self.current_chapter,
-                                    total_ch,
-                                    &mut action_prev_chapter,
-                                    &mut action_next_chapter,
-                                    &mut action_go_back,
-                                    false,
-                                    has_previous_chapter,
                                     self.reader_font_color,
                                     &effective_font_family,
                                     &self.i18n,
@@ -815,16 +869,15 @@ impl ReaderApp {
                                 block_start,
                                 block_end,
                                 show_title,
+                                if self.scroll_mode {
+                                    None
+                                } else {
+                                    self.page_block_ranges.fragment(self.current_page)
+                                },
                                 self.font_size,
                                 self.title_font_scale,
                                 self.reader_bg_color,
                                 self.current_chapter,
-                                total_ch,
-                                &mut action_prev_chapter,
-                                &mut action_next_chapter,
-                                &mut action_go_back,
-                                false,
-                                has_previous_chapter,
                                 self.reader_font_color,
                                 &effective_font_family,
                                 &self.i18n,
@@ -849,16 +902,11 @@ impl ReaderApp {
                                     rs,
                                     re,
                                     right_page == 0,
+                                    self.page_block_ranges.fragment(right_page),
                                     self.font_size,
                                     self.title_font_scale,
                                     self.reader_bg_color,
                                     self.current_chapter,
-                                    total_ch,
-                                    &mut action_prev_chapter,
-                                    &mut action_next_chapter,
-                                    &mut action_go_back,
-                                    false,
-                                    has_previous_chapter,
                                     self.reader_font_color,
                                     &effective_font_family,
                                     &self.i18n,
@@ -946,16 +994,11 @@ impl ReaderApp {
                                         fs.min(snap_blocks.len()),
                                         fe.min(snap_blocks.len()),
                                         from_idx == 0,
+                                        snap_ranges.fragment(from_idx),
                                         self.font_size,
                                         self.title_font_scale,
                                         self.reader_bg_color,
                                         snap_chapter,
-                                        total_ch,
-                                        &mut action_prev_chapter,
-                                        &mut action_next_chapter,
-                                        &mut action_go_back,
-                                        false,
-                                        has_previous_chapter,
                                         self.reader_font_color,
                                         &effective_font_family,
                                         &self.i18n,
@@ -985,16 +1028,11 @@ impl ReaderApp {
                                         fs.min(blocks.len()),
                                         fe.min(blocks.len()),
                                         from_idx == 0,
+                                        self.page_block_ranges.fragment(from_idx),
                                         self.font_size,
                                         self.title_font_scale,
                                         self.reader_bg_color,
                                         self.current_chapter,
-                                        total_ch,
-                                        &mut action_prev_chapter,
-                                        &mut action_next_chapter,
-                                        &mut action_go_back,
-                                        false,
-                                        has_previous_chapter,
                                         self.reader_font_color,
                                         &effective_font_family,
                                         &self.i18n,
@@ -1048,16 +1086,11 @@ impl ReaderApp {
                                 ts.min(blocks.len()),
                                 te.min(blocks.len()),
                                 to_idx == 0,
+                                self.page_block_ranges.fragment(to_idx),
                                 self.font_size,
                                 self.title_font_scale,
                                 self.reader_bg_color,
                                 self.current_chapter,
-                                total_ch,
-                                &mut action_prev_chapter,
-                                &mut action_next_chapter,
-                                &mut action_go_back,
-                                false,
-                                has_previous_chapter,
                                 self.reader_font_color,
                                 &effective_font_family,
                                 &self.i18n,
@@ -1075,16 +1108,15 @@ impl ReaderApp {
                             block_start,
                             block_end,
                             show_title,
+                            if self.scroll_mode {
+                                None
+                            } else {
+                                self.page_block_ranges.fragment(self.current_page)
+                            },
                             self.font_size,
                             self.title_font_scale,
                             self.reader_bg_color,
                             self.current_chapter,
-                            total_ch,
-                            &mut action_prev_chapter,
-                            &mut action_next_chapter,
-                            &mut action_go_back,
-                            false,
-                            has_previous_chapter,
                             self.reader_font_color,
                             &effective_font_family,
                             &self.i18n,
@@ -1167,49 +1199,51 @@ impl ReaderApp {
             });
         }
 
-        if action_prev_chapter {
-            if self.reader_page_animation == "Realistic" && !self.scroll_mode {
-                self.request_curl_turn(false, None);
-            } else {
-                self.prev_chapter();
-            }
-        }
-        if action_next_chapter {
-            if self.reader_page_animation == "Realistic" && !self.scroll_mode {
-                self.request_curl_turn(true, None);
-            } else {
-                self.next_chapter();
-            }
-        }
-        if action_go_back {
-            if let Some(prev) = self.previous_chapter.take() {
-                let total = self.total_chapters();
-                if total > 0 {
-                    self.current_chapter = prev.min(total - 1);
-                    self.scroll_to_top = true;
-                    self.pages_dirty = true;
-                    self.current_page = 0;
-                    if let Some(p) = &self.book_path {
-                        let chap_title = self
-                            .book
-                            .as_ref()
-                            .and_then(|b| b.chapters.get(self.current_chapter))
-                            .map(|c| c.title.clone());
-                        self.library.update_chapter(
-                            &self.data_dir,
-                            p,
-                            self.current_chapter,
-                            chap_title,
-                        );
-                    }
-                }
+        if let Some(note) = &self.publication_note {
+            let mut open = true;
+            egui::Window::new(self.i18n.t("reader.publication_note"))
+                .id(egui::Id::new("publication_note"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(420.)
+                .show(ui.ctx(), |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(400.)
+                        .show(ui, |ui| {
+                            ui.label(&note.text);
+                        });
+                });
+            if !open {
+                self.publication_note = None;
             }
         }
         let had_clicked_link = clicked_link.is_some();
         if let Some(url) = clicked_link {
             let url = url.trim().to_string();
             let lowered = url.to_lowercase();
-            if lowered.starts_with("http://")
+            if let Some(href) = url.strip_prefix("reader-note:") {
+                self.publication_note = self
+                    .book
+                    .as_ref()
+                    .and_then(|book| book.native_note(self.current_chapter, href));
+            } else if let Some(event) = url.strip_prefix("reader-event:") {
+                if let Some((chapter, node)) = event
+                    .split_once(':')
+                    .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
+                {
+                    let events = self.native_events.entry(chapter).or_default();
+                    if self.scripts_enabled && events.len() < 128 {
+                        events.push(reader_core::epub::native::NativeEvent {
+                            node,
+                            kind: "click".into(),
+                        });
+                        self.pending_restore_block = Some(self.current_block);
+                        self.pages_dirty = true;
+                        self.page_curl.clear();
+                    }
+                }
+            } else if lowered.starts_with("http://")
                 || lowered.starts_with("https://")
                 || lowered.starts_with("mailto:")
                 || lowered.starts_with("tel:")
@@ -1269,7 +1303,15 @@ impl ReaderApp {
                 let anchor = self.reader_layout_anchor.filter(|&(chapter, anchor)| {
                     chapter == self.current_chapter && self.visible_page_contains_block(anchor)
                 });
-                self.schedule_position_save(self.current_chapter, anchor.map_or(block, |(_, b)| b));
+                let offset = self
+                    .page_block_ranges
+                    .fragment(self.current_page)
+                    .map_or(0, |f| f.char_offset);
+                self.schedule_position_save_at(
+                    self.current_chapter,
+                    anchor.map_or(block, |(_, b)| b),
+                    offset,
+                );
             }
         }
         if curl_consumed_frame {
@@ -1336,7 +1378,9 @@ impl ReaderApp {
         // Helper: find which block a screen position falls into and return (block_idx, char_offset)
         let hit_test = |pos: egui::Pos2| -> Option<(usize, usize)> {
             for entry in &block_galleys {
-                if entry.key.chapter == self.current_chapter && entry.rect.contains(pos) {
+                if entry.key.chapter == self.current_chapter
+                    && entry.rect.intersect(entry.clip).contains(pos)
+                {
                     let local = egui::vec2(pos.x - entry.rect.min.x, pos.y - entry.rect.min.y);
                     let cursor = entry.galley.cursor_from_pos(local);
                     return Some((entry.key.block, cursor.ccursor.index));
@@ -1570,7 +1614,9 @@ impl ReaderApp {
                             entry.rect.min.y + row.rect.max.y,
                         ),
                     );
-                    ui.painter().rect_filled(hl_rect, 0.0, SEL_BG);
+                    ui.painter()
+                        .with_clip_rect(entry.clip)
+                        .rect_filled(hl_rect, 0.0, SEL_BG);
                 }
             }
         }

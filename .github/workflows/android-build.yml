@@ -53,10 +53,17 @@ jobs:
                   targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
 
             - name: Install cargo-ndk
-              run: cargo install cargo-ndk
+              run: cargo install cargo-ndk --locked
+
+            - name: Install native script binding toolchain
+              run: sudo apt-get update && sudo apt-get install -y libclang-dev
 
             - name: Setup Android SDK
               uses: android-actions/setup-android@v3
+              with:
+                  # Override v3's obsolete default "tools" package.
+                  packages: "platform-tools platforms;android-35 build-tools;36.0.0"
+                  log-accepted-android-sdk-licenses: false
 
             - name: Install Android NDK
               shell: bash

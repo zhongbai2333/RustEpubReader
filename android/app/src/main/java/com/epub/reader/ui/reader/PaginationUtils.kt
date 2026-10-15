@@ -10,6 +10,16 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.zhongbai233.epub.reader.model.*
 import kotlin.math.ceil
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextIndent
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.graphics.Color
 
 // ─── CJK 标点禁则 ───
 
@@ -36,24 +46,45 @@ internal const val PAGINATION_CACHE_MAX_SIZE = 10
 internal data class PaginatedBlock(
     val block: ContentBlock,
     val sourceBlockIndex: Int,
-    val sourceCharOffset: Int = 0
+    val sourceCharOffset: Int = 0,
+    val imageMaxHeight: Dp = Dp.Unspecified
 )
 
 /**
  * 手动将标题按行宽拆成多行（插入 \n），避免 Compose 自动 wrap 导致 lineHeight 不生效。
  */
-internal fun breakTitleIntoLines(title: String, contentWidthPx: Float, titleFontSizeSp: Float, spToPx: Float): String {
+internal fun nativeTitleLineBreaks(title: String): List<Int> {
+    val iterator = android.icu.text.BreakIterator.getLineInstance(android.icu.util.ULocale("zh@lb=strict"))
+    iterator.setText(title)
+    val offsets = mutableListOf<Int>()
+    var offset = iterator.first()
+    while (offset != android.icu.text.BreakIterator.DONE) {
+        offsets.add(offset)
+        offset = iterator.next()
+    }
+    return offsets
+}
+
+internal fun breakTitleIntoLines(
+    title: String, contentWidthPx: Float, titleFontSizeSp: Float, spToPx: Float,
+    lineBreaks: (String) -> List<Int> = ::nativeTitleLineBreaks
+): String {
     // 使用 1.1f 倍宽作为字符估算，防止极端字体时一行的字被挤到下一行
     val charWidth = titleFontSizeSp * spToPx * 1.1f
     val charsPerLine = (contentWidthPx / charWidth).toInt().coerceAtLeast(4)
     if (title.length <= charsPerLine) return title
+    val boundaries = lineBreaks(title)
     val sb = StringBuilder()
-    var i = 0
-    while (i < title.length) {
-        if (i > 0) sb.append('\n')
-        val end = (i + charsPerLine).coerceAtMost(title.length)
-        sb.append(title, i, end)
-        i = end
+    var start = 0
+    while (start < title.length) {
+        val limit = (start + charsPerLine).coerceAtMost(title.length)
+        val end = if (limit == title.length) title.length else
+            boundaries.lastOrNull { it > start && it <= limit }
+                ?: boundaries.firstOrNull { it > start }
+                ?: title.length
+        if (sb.isNotEmpty() && sb.last() != '\n' && title[start] != '\n') sb.append('\n')
+        sb.append(title, start, end)
+        start = end
     }
     return sb.toString()
 }
@@ -69,7 +100,10 @@ internal fun paginateContent(
     lineSpacing: Float = 1.5f,
     paraSpacing: Float = 0.5f,
     textIndentChars: Int = 2,
-    titleFontScale: Float = 1.5f
+    titleFontScale: Float = 1.5f,
+    textMeasurer: TextMeasurer? = null,
+    fontFamily: FontFamily = FontFamily.Default,
+    titleLineBreaks: (String) -> List<Int> = ::nativeTitleLineBreaks
 ): List<List<PaginatedBlock>> {
     val contentWidthPx = with(density) { contentWidth.toPx() }
     // sp → px 需要乘 fontScale（处理系统字体缩放）
@@ -91,21 +125,61 @@ internal fun paginateContent(
         // 标题实际渲染 lineHeight = (fontSize * 2.2f).sp
         val titleLineHeightPx = fontSize * titleFontScale * 1.45f * spToPx
         // 使用 breakTitleIntoLines 保持分行逻辑一致
-        val brokenTitle = breakTitleIntoLines(chapter.title, contentWidthPx, fontSize * titleFontScale, spToPx)
+        val brokenTitle = breakTitleIntoLines(chapter.title, contentWidthPx, fontSize * titleFontScale, spToPx, titleLineBreaks)
         val titleLines = brokenTitle.count { it == '\n' } + 1
         // Match the actual title padding; retain the font-measurement safety buffer.
         val titlePaddingPx = with(density) { titleVPaddingDp.toPx() }
         currentHeight += (titleLines * titleLineHeightPx + titlePaddingPx) * 1.3f
     }
 
-    for ((blockIndex, block) in chapter.blocks.withIndex()) {
-        val blockHeight = estimateBlockHeight(block, fontSize, lineHeight, contentWidthPx, density, paraSpacing, textIndentChars, titleFontScale)
+    val imagesByBlock = chapter.images.groupBy { it.block }
+    val renderBlocks = chapter.blocks.flatMapIndexed { index, block ->
+        val images = imagesByBlock[index].orEmpty()
+        images.filter { !it.after }.map { PaginatedBlock(it.content(), index) } +
+            PaginatedBlock(block, index) + images.filter { it.after }.map { PaginatedBlock(it.content(), index,
+                when (block) { is ContentBlock.Paragraph -> block.spans.sumOf { it.text.length }; is ContentBlock.Heading -> block.spans.sumOf { it.text.length }; else -> 0 }) }
+    }
+    val imageLimitPx = (maxHeightPx - fontSize * 0.7f * density.density).coerceAtLeast(24f)
+    for (rendered in renderBlocks) {
+        val blockIndex = rendered.sourceBlockIndex
+        var block = rendered.block
+        var native=block.nativeStyle()
+        if(native.hidden)continue
+        var fontSize=native.font(fontSize)
+        var lineHeight=fontSize*native.lineScale(lineSpacing)*spToPx
+        var paraSpacing=native.after?:paraSpacing
+        var textIndentChars=(native.indent?:textIndentChars.toFloat()).toInt()
+        // Keep a leading illustration with its chapter heading, rather than
+        // spending a whole page on the heading before a full-height image.
+        val blockImageLimitPx = if (block is ContentBlock.Image && currentHeight > 0f &&
+            currentHeight < maxHeightPx * 0.35f && currentPage.all { it.block is ContentBlock.Heading }) {
+            (imageLimitPx - currentHeight).coerceAtLeast(24f)
+        } else imageLimitPx
+        var blockHeight = if (block is ContentBlock.Image) {
+            estimateImageBlockHeight(block.data, contentWidthPx, density, fontSize, blockImageLimitPx,native)
+        } else measuredBlockHeight(block, fontSize, lineHeight, contentWidthPx, density, paraSpacing, textIndentChars, titleFontScale, textMeasurer, fontFamily)
 
-        if (block is ContentBlock.Paragraph && currentHeight + blockHeight > maxHeightPx) {
+        if(block is ContentBlock.Heading && blockHeight>maxHeightPx) {
+            val scale=if(native.size!=null||native.sizePx!=null)1f else (titleFontScale*when(block.level){1->1.3f;2->1.1f;3->0.9f;else->0.8f}).coerceAtLeast(1f)
+            native=native.copy(size=null,sizePx=fontSize*scale,bold=true,indent=0f,indentLength=null,
+                before=(native.before?:1.2f)/scale,after=(native.after?:1.8f)/scale)
+            block=ContentBlock.Paragraph(block.spans.map {it.copy(style=when(it.style){InlineStyle.Italic,InlineStyle.BoldItalic->InlineStyle.BoldItalic;else->InlineStyle.Bold})},block.anchor_id,native)
+            fontSize=native.font(fontSize);lineHeight=fontSize*native.lineScale(lineSpacing)*spToPx
+            paraSpacing=native.after?:paraSpacing;textIndentChars=0
+            blockHeight=measuredBlockHeight(block,fontSize,lineHeight,contentWidthPx,density,paraSpacing,0,titleFontScale,textMeasurer,fontFamily)
+        }
+        if (block is ContentBlock.Paragraph && (native.table!=null||native.list.isNotEmpty()) && blockHeight>maxHeightPx) {
+            native=native.copy(table=null,list=emptyList());block=block.copy(nativeStyle=native)
+        }
+        if (block is ContentBlock.Paragraph && native.table==null && native.list.isEmpty() && currentHeight + blockHeight > maxHeightPx) {
             var remaining: ContentBlock.Paragraph = block
             var sourceOffset = 0
+            // Shape a long paragraph once, then reuse native line ends. Re-layout
+            // only each short visible fragment, avoiding quadratic full-tail work.
+            val paragraphLayout=if(textMeasurer!=null)paragraphGeometry(block,fontSize,lineHeight,contentWidthPx,density,paraSpacing,textIndentChars,textMeasurer,fontFamily,0).first else null
 
             while (remaining.spans.any { it.text.isNotEmpty() }) {
+                if (sourceOffset > 0) remaining=remaining.copy(nativeStyle=remaining.nativeStyle.copy(indent=0f,indentLength=null,before=0f,marginTop=null,paddingTop=null))
                 var remainingHeight = maxHeightPx - currentHeight
                 // 不在页尾硬塞不足两行的段落片段，避免产生孤行。
                 if (currentPage.isNotEmpty() && remainingHeight < lineHeight * 2f) {
@@ -117,20 +191,22 @@ internal fun paginateContent(
 
                 val splitOffset = findParagraphSplitOffset(
                     paragraph = remaining,
+                    sourceCharOffset = sourceOffset,
                     maxHeightPx = remainingHeight,
                     fontSize = fontSize,
                     lineHeight = lineHeight,
                     contentWidthPx = contentWidthPx,
                     density = density,
                     paraSpacing = paraSpacing,
-                    textIndentChars = textIndentChars
+                    textIndentChars = textIndentChars,
+                    textMeasurer = textMeasurer, fontFamily = fontFamily, paragraphLayout = paragraphLayout
                 )
                 val textLength = remaining.spans.sumOf { it.text.length }
                 val safeOffset = splitOffset.coerceIn(1, textLength)
                 val (head, tail) = splitParagraph(remaining, safeOffset)
 
                 currentPage.add(PaginatedBlock(head, blockIndex, sourceOffset))
-                currentHeight += estimateBlockHeight(head, fontSize, lineHeight, contentWidthPx, density, paraSpacing, textIndentChars, titleFontScale)
+                currentHeight += measuredBlockHeight(head, fontSize, lineHeight, contentWidthPx, density, paraSpacing, textIndentChars, titleFontScale,textMeasurer,fontFamily,sourceOffset)
                 sourceOffset += safeOffset
                 remaining = tail
 
@@ -150,7 +226,7 @@ internal fun paginateContent(
             isFirstPage = false
         }
 
-        currentPage.add(PaginatedBlock(block, blockIndex))
+        currentPage.add(rendered.copy(block=block,imageMaxHeight = if (block is ContentBlock.Image) with(density) { blockImageLimitPx.toDp() } else Dp.Unspecified))
         currentHeight += blockHeight
     }
 
@@ -164,17 +240,38 @@ internal fun paginateContent(
 /** 找出在给定高度内可容纳的最大字符边界。 */
 private fun findParagraphSplitOffset(
     paragraph: ContentBlock.Paragraph,
+    sourceCharOffset: Int,
     maxHeightPx: Float,
     fontSize: Float,
     lineHeight: Float,
     contentWidthPx: Float,
     density: androidx.compose.ui.unit.Density,
     paraSpacing: Float,
-    textIndentChars: Int
+    textIndentChars: Int,
+    textMeasurer: TextMeasurer? = null,
+    fontFamily: FontFamily = FontFamily.Default,
+    paragraphLayout: androidx.compose.ui.text.TextLayoutResult? = null
 ): Int {
     val length = paragraph.spans.sumOf { it.text.length }
     if (length <= 1) return length
 
+    if(textMeasurer != null) {
+        val native=paragraph.nativeStyle
+        val d=density.density
+        fun resolve(v:NativeDimension?)=(v?.resolve(fontSize,contentWidthPx/d)?:0f)*d
+        val vertical=resolve(native.marginTop)+resolve(native.paddingTop)+resolve(native.marginBottom)+resolve(native.paddingBottom)+fontSize*((native.before?:paraSpacing)+(native.after?:paraSpacing))*d
+        val available=(maxHeightPx-vertical).coerceAtLeast(1f)
+        val layout=paragraphLayout?:paragraphGeometry(paragraph,fontSize,lineHeight,contentWidthPx,density,paraSpacing,textIndentChars,textMeasurer,fontFamily,sourceCharOffset).first
+        val base=if(paragraphLayout!=null)sourceCharOffset else 0
+        val firstLine=layout.getLineForOffset(base.coerceAtMost(layout.layoutInput.text.length))
+        val top=layout.getLineTop(firstLine)
+        var end=base
+        for(line in firstLine until layout.lineCount) {
+            if(layout.getLineBottom(line)-top>available+0.1f)break
+            end=layout.getLineEnd(line,visibleEnd=false)
+        }
+        return (end-base).coerceIn(1,length)
+    }
     var low = 1
     var high = length
     var best = 1
@@ -193,8 +290,14 @@ private fun findParagraphSplitOffset(
         }
     }
 
-    return adjustSplitForCjk(paragraph.spans.joinToString("") { it.text }, best)
-        .coerceIn(1, length)
+    var boundary=adjustSplitForCjk(paragraph.spans.joinToString("") {it.text},best).coerceIn(1,length)
+    for(ruby in paragraph.nativeStyle.ruby) {
+        var end=ruby.end
+        for(hidden in paragraph.nativeStyle.inline.filter {it.hidden}.sortedBy {it.start}) {if(hidden.start<=end&&hidden.end>end)end=hidden.end}
+        val start=ruby.start-sourceCharOffset;val stop=end-sourceCharOffset
+        if(start>=0&&boundary>start&&boundary<stop)boundary=if(start>0)start else stop.coerceAtMost(length)
+    }
+    return boundary.coerceIn(1,length)
 }
 
 /** 在保留内联样式和链接的前提下拆分段落。 */
@@ -211,15 +314,69 @@ private fun splitParagraph(
         if (local < span.text.length) tail.add(span.copy(text = span.text.substring(local)))
         consumed += span.text.length
     }
-    return ContentBlock.Paragraph(head, paragraph.anchor_id) to
-        ContentBlock.Paragraph(tail, paragraph.anchor_id)
+    return paragraph.copy(spans=head) to
+        paragraph.copy(spans=tail)
 }
 
 private fun adjustSplitForCjk(text: String, proposed: Int): Int {
     var offset = proposed.coerceIn(1, text.length)
     while (offset > 1 && offset < text.length && NO_BREAK_BEFORE.contains(text[offset])) offset--
     while (offset > 1 && NO_BREAK_AFTER.contains(text[offset - 1])) offset--
-    return offset
+    if(offset<text.length&&offset>0&&Character.isLowSurrogate(text[offset])&&Character.isHighSurrogate(text[offset-1]))offset--
+    return offset.coerceAtLeast(1)
+}
+
+private fun paragraphGeometry(block:ContentBlock.Paragraph,font:Float,lineHeight:Float,width:Float,density:androidx.compose.ui.unit.Density,
+    para:Float,indent:Int,measurer:TextMeasurer,family:FontFamily,sourceOffset:Int):Pair<androidx.compose.ui.text.TextLayoutResult,Float> {
+    val native=block.nativeStyle
+    val d=density.density
+    fun resolve(v:NativeDimension?)=(v?.resolve(font,width/d)?:0f)*d
+    val left=(resolve(native.insetLeft)+resolve(native.paddingLeft)).coerceAtMost(width*0.4f)
+    val right=(resolve(native.insetRight)+resolve(native.paddingRight)).coerceAtMost(width*0.4f)
+    val vertical=resolve(native.marginTop)+resolve(native.paddingTop)+resolve(native.marginBottom)+resolve(native.paddingBottom)+
+        font*((native.before?:para)+(native.after?:para))*d
+    val annotated=buildSpanAnnotatedString(block.spans,font,Color.Black,Color.Blue,family,null,native=native,sourceCharOffset=sourceOffset)
+    val style=TextStyle(fontFamily=family,fontSize=font.sp,lineHeight=(lineHeight/d/density.fontScale).sp,
+        textIndent=TextIndent(firstLine=(native.indentLength?.resolve(font,0f)?:font*(native.indent?:indent.toFloat())).sp),
+        platformStyle=PlatformTextStyle(includeFontPadding=false),lineHeightStyle=LineHeightStyle(LineHeightStyle.Alignment.Center,LineHeightStyle.Trim.None))
+    val layout=measurer.measure(annotated,style=style,constraints=Constraints(maxWidth=(width-left-right).toInt().coerceAtLeast(1)),skipCache=annotated.length>4096)
+    return layout to vertical
+}
+
+private fun measuredBlockHeight(block:ContentBlock,font:Float,lineHeight:Float,width:Float,density:androidx.compose.ui.unit.Density,
+    para:Float,indent:Int,titleScale:Float,measurer:TextMeasurer?,family:FontFamily,sourceOffset:Int=0):Float {
+    if(measurer==null)return estimateBlockHeight(block,font,lineHeight,width,density,para,indent,titleScale)
+    if(block is ContentBlock.Paragraph&&block.nativeStyle.table==null&&block.nativeStyle.list.isEmpty()) {
+        val (layout,vertical)=paragraphGeometry(block,font,lineHeight,width,density,para,indent,measurer,family,sourceOffset)
+        return layout.size.height+ceil(vertical)
+    }
+    if(block is ContentBlock.Heading) {
+        val native=block.nativeStyle
+        val scale=if(native.size!=null||native.sizePx!=null)1f else (titleScale*when(block.level){1->1.3f;2->1.1f;3->0.9f;else->0.8f}).coerceAtLeast(1f)
+        val paragraph=ContentBlock.Paragraph(block.spans.map {it.copy(style=when(it.style){InlineStyle.Italic,InlineStyle.BoldItalic->InlineStyle.BoldItalic;else->InlineStyle.Bold})},block.anchor_id,
+            native.copy(indent=0f,indentLength=null,before=(native.before?:1.2f)/scale,after=(native.after?:1.8f)/scale))
+        val (layout,vertical)=paragraphGeometry(paragraph,font*scale,lineHeight*scale,width,density,para,0,measurer,family,sourceOffset)
+        return layout.size.height+ceil(vertical)
+    }
+    val native=block.nativeStyle()
+    val d=density.density
+    fun resolve(v:NativeDimension?)=(v?.resolve(font,width/d)?:0f)*d
+    val inner=(width-(resolve(native.insetLeft)+resolve(native.paddingLeft)).coerceAtMost(width*0.4f)-
+        (resolve(native.insetRight)+resolve(native.paddingRight)).coerceAtMost(width*0.4f)).coerceAtLeast(1f)
+    val vertical=resolve(native.marginTop)+resolve(native.marginBottom)+resolve(native.paddingTop)+resolve(native.paddingBottom)
+    fun textHeight(text:String,extent:Float,bold:Boolean=false)=measurer.measure(androidx.compose.ui.text.AnnotatedString(text),
+        style=TextStyle(fontFamily=family,fontSize=font.sp,fontWeight=if(bold)FontWeight.Bold else FontWeight.Normal,
+            letterSpacing=0.sp,lineHeight=(lineHeight/d/density.fontScale).sp,platformStyle=PlatformTextStyle(includeFontPadding=false),
+            lineHeightStyle=LineHeightStyle(LineHeightStyle.Alignment.Center,LineHeightStyle.Trim.None)),
+        constraints=Constraints(maxWidth=extent.toInt().coerceAtLeast(1))).size.height.toFloat()
+    native.table?.let {table->
+        return (table.cells.maxOfOrNull {cell->textHeight(cell.text,inner/table.columns.coerceAtLeast(1)*cell.span-12*d,cell.header)}?:lineHeight)+12*d+ceil(vertical)
+    }
+    if(native.list.isNotEmpty())return native.list.sumOf {item->
+        (textHeight(item.text,inner-font*1.2f*(item.depth-native.listDepth).coerceAtLeast(0)*d-32*d)+font*0.3f*d).toDouble()
+    }.toFloat()+ceil(vertical)
+    // Grid/list/heading estimates remain conservative; oversized grids use full source paragraphs.
+    return estimateBlockHeight(block,font,lineHeight,width,density,para,indent,titleScale)
 }
 
 internal fun estimateBlockHeight(
@@ -232,77 +389,36 @@ internal fun estimateBlockHeight(
     textIndentChars: Int = 2,
     titleFontScale: Float = 1.5f
 ): Float {
-    return when (block) {
-        is ContentBlock.Heading -> {
-            val scale = when (block.level) {
-                1 -> titleFontScale * 1.3f
-                2 -> titleFontScale * 1.1f
-                3 -> titleFontScale * 0.9f
-                else -> titleFontScale * 0.8f
-            }
-                .coerceAtLeast(1.0f)
-            val spToPx = density.fontScale * density.density
-            var cjkCount = 0
-            var asciiCount = 0
-            block.spans.forEach { span ->
-                span.text.forEach { ch ->
-                    if (ch.code > 255) cjkCount++ else asciiCount++
-                }
-            }
-            // 准确区分纯英文和中文估算不同字宽，不一拍脑门乘以全行缩减 1.1f 倍
-            val estimatedTextWidthPx = (cjkCount * 1.05f + asciiCount * 0.6f) * (fontSize * scale * spToPx)
-            val lines = ceil(estimatedTextWidthPx / contentWidthPx).toInt().coerceAtLeast(1)
-            // 顶部 1.2 + 底部 1.8 = 3.0 padding (增加标题与正文间距)
-            lines * lineHeight * scale + fontSize * 3.0f * density.density
-        }
-        is ContentBlock.Paragraph -> {
-            val spToPx = density.fontScale * density.density
-            var cjkCount = 0
-            var asciiCount = 0
-            block.spans.forEach { span ->
-                span.text.forEach { ch ->
-                    if (ch.code > 255) cjkCount++ else asciiCount++
-                }
-            }
-            // 中文字体平均严格占宽 1.05em (包括字距)，英文平均大约在 0.55em
-            val estimatedTextWidthPx = (cjkCount * 1.05f + asciiCount * 0.55f) * (fontSize * spToPx)
-            // 加上首行缩进的 em + 适当的尾行排版容错
-            val totalWidthPx = estimatedTextWidthPx + (fontSize * spToPx * (textIndentChars + 0.5f))
-            val lines = ceil(totalWidthPx / contentWidthPx).toInt().coerceAtLeast(1)
-            lines * lineHeight + fontSize * (paraSpacing * 2f) * density.density
-        }
-        is ContentBlock.Image -> {
-            estimateImageBlockHeight(
-                data = block.data,
-                contentWidthPx = contentWidthPx,
-                density = density,
-                fontSize = fontSize
-            )
-        }
-        is ContentBlock.Separator -> lineHeight + fontSize * density.density
-        is ContentBlock.BlankLine -> fontSize * 0.5f * density.density
+    val native=block.nativeStyle();if(native.hidden)return 0f
+    val spToPx=density.fontScale*density.density
+    fun resolve(v:NativeDimension?)=(v?.resolve(fontSize,contentWidthPx/density.density)?:0f)*density.density
+    val left=(resolve(native.insetLeft)+resolve(native.paddingLeft)).coerceAtMost(contentWidthPx*0.4f)
+    val right=(resolve(native.insetRight)+resolve(native.paddingRight)).coerceAtMost(contentWidthPx*0.4f)
+    val width=(contentWidthPx-left-right).coerceAtLeast(32f*density.density)
+    val vertical=resolve(native.marginTop)+resolve(native.marginBottom)+resolve(native.paddingTop)+resolve(native.paddingBottom)
+    val scale=native.inline.filter {!it.hidden}.mapNotNull {it.size}.fold(1f,::maxOf)
+    fun lines(text:String,font:Float,extent:Float,indent:Float=0f):Float=text.split('\n').mapIndexed {index,line->val total=line.sumOf {if(it.code>255)1.05 else 0.6}.toFloat()*font*spToPx+(if(index==0)indent else 0f);ceil(total/extent).coerceAtLeast(1f)}.sum()
+    val height=if(native.list.isNotEmpty())native.list.sumOf {item->(lines(item.text,fontSize,(width-fontSize*1.2f*(item.depth-native.listDepth).coerceAtLeast(0)*density.density-32f*density.density).coerceAtLeast(32f*density.density))*lineHeight+fontSize*0.3f*density.density).toDouble()}.toFloat() else native.table?.let {table->val column=width/table.columns.coerceAtLeast(1);table.cells.maxOfOrNull {cell->lines(cell.text,fontSize,(column*cell.span-12f*density.density).coerceAtLeast(16f*density.density))*lineHeight}?.plus(12f*density.density)?:lineHeight}?:when(block) {
+        is ContentBlock.Heading->{val headingScale=if(native.size!=null||native.sizePx!=null)1f else (titleFontScale*when(block.level){1->1.3f;2->1.1f;3->0.9f;else->0.8f}).coerceAtLeast(1f);lines(block.spans.joinToString(""){it.text},fontSize*headingScale*scale,width)*lineHeight*headingScale+fontSize*((native.before?:1.2f)+(native.after?:1.8f))*density.density}
+        is ContentBlock.Paragraph->{val indent=native.indentLength?.resolve(fontSize,width/density.density)?.times(density.density)?:fontSize*spToPx*textIndentChars;lines(block.spans.joinToString(""){it.text},fontSize*scale,width,indent)*lineHeight+fontSize*((native.before?:paraSpacing)+(native.after?:paraSpacing))*density.density}
+        is ContentBlock.Image->estimateImageBlockHeight(block.data,width,density,fontSize,native=native)
+        is ContentBlock.Separator->lineHeight+fontSize*density.density
+        is ContentBlock.BlankLine->fontSize*0.5f*density.density
     }
+    return height+vertical
 }
 
 internal fun estimateImageBlockHeight(
     data: String,
     contentWidthPx: Float,
     density: androidx.compose.ui.unit.Density,
-    fontSize: Float
+    fontSize: Float,
+    maxHeightPx: Float = Float.POSITIVE_INFINITY,
+    native: NativeStyle = NativeStyle()
 ): Float {
-    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-    val w = options.outWidth
-    val h = options.outHeight
-    if (w <= 0 || h <= 0) {
-        return (fontSize * 8f * density.density).coerceAtLeast(96f)
-    }
-
-    val ratio = h.toFloat() / w.toFloat()
-    val imageHeight = contentWidthPx * ratio
-    val verticalPadding = fontSize * 0.7f * density.density
-    return imageHeight + verticalPadding
+    val (width,naturalHeight)=ReaderImageCache.dimensions(data)?:return fontSize*1.8f*density.density
+    val (_,height)=native.imageSize(width.toFloat(),naturalHeight.toFloat(),fontSize,contentWidthPx/density.density,maxHeightPx/density.density)
+    return (height+fontSize*0.7f)*density.density
 }
 
 internal fun shouldRenderChapterTitle(chapter: Chapter): Boolean {

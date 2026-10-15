@@ -1,5 +1,6 @@
 package com.zhongbai233.epub.reader.util
 
+import com.zhongbai233.epub.reader.i18n.I18n
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -292,7 +293,7 @@ object GitHubContributor {
             }
         } catch (cancelled: CancellationException) { throw cancelled } catch (e: Exception) {
             Log.e(TAG, "submitContribution failed", e)
-            ContributeResult.Error(e.message ?: "Unknown error")
+            ContributeResult.Error(e.message ?: I18n.t("common.error_unknown"))
         }
     }
 

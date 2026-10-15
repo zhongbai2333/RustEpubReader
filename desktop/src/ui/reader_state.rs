@@ -2,14 +2,11 @@
 
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::{hash_map::DefaultHasher, HashMap};
-use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use eframe::egui;
 use egui::Color32;
-
-use reader_core::epub::TextSpan;
 
 // ── Thread-local spacing configuration ──
 thread_local! {
@@ -206,11 +203,10 @@ pub(crate) struct BlockGalleyEntry {
     pub(crate) key: BlockKey,
     pub(crate) galley: Arc<egui::Galley>,
     pub(crate) rect: egui::Rect,
+    pub(crate) clip: egui::Rect,
     pub(crate) text: String,
     pub(crate) response: egui::Response,
 }
-
-pub(crate) type CscCharMapCacheData = (u64, u32, u32, Vec<usize>);
 
 thread_local! {
     /// Collected during render_block, consumed by render_reader for selection state machine.
@@ -225,8 +221,6 @@ thread_local! {
     pub(crate) static CSC_READWRITE: Cell<bool> = const { Cell::new(false) };
     /// Correction rects collected during render_block, consumed in render_reader for click detection.
     pub(crate) static CSC_RECTS: RefCell<Vec<CscRect>> = const { RefCell::new(Vec::new()) };
-    /// Cache for `build_csc_char_mapping`: (content_hash, font_size_bits, max_width_bits) → mapping.
-    static CSC_CHAR_MAP_CACHE: RefCell<Option<CscCharMapCacheData>> = const { RefCell::new(None) };
 }
 
 /// A clickable correction rect collected during rendering.
@@ -259,61 +253,6 @@ pub(crate) fn paint_tts_highlight(ui: &egui::Ui, rect: egui::Rect) {
     );
     ui.painter()
         .rect_filled(bar, egui::CornerRadius::same(1), TTS_ACCENT);
-}
-
-/// Build mapping from block char_offset → galley char index.
-/// Accounts for `wrap_cjk_text` inserting extra '\n' characters.
-fn build_csc_char_mapping_inner(spans: &[TextSpan], font_size: f32, max_width: f32) -> Vec<usize> {
-    let mut mapping = Vec::new();
-    let mut galley_pos = 0usize;
-    for (si, span) in spans.iter().enumerate() {
-        let leading = if si == 0 {
-            font_size * text_indent()
-        } else {
-            0.0
-        };
-        let wrapped = wrap_cjk_text(&span.text, font_size, max_width, leading);
-        let orig_chars: Vec<char> = span.text.chars().collect();
-        let wrap_chars: Vec<char> = wrapped.chars().collect();
-        let mut oi = 0;
-        for (wi, &wc) in wrap_chars.iter().enumerate() {
-            if oi < orig_chars.len() && wc == orig_chars[oi] {
-                mapping.push(galley_pos + wi);
-                oi += 1;
-            }
-        }
-        galley_pos += wrap_chars.len();
-    }
-    mapping
-}
-
-/// Cached version of char mapping builder. Reuses previous result when
-/// spans content, font_size and max_width haven't changed.
-pub(crate) fn build_csc_char_mapping(
-    spans: &[TextSpan],
-    font_size: f32,
-    max_width: f32,
-) -> Vec<usize> {
-    let mut hasher = DefaultHasher::new();
-    for s in spans {
-        s.text.hash(&mut hasher);
-    }
-    let content_hash = hasher.finish();
-    let fs_bits = font_size.to_bits();
-    let mw_bits = max_width.to_bits();
-
-    CSC_CHAR_MAP_CACHE.with(|cache| {
-        let cached = cache.borrow();
-        if let Some((h, f, m, ref mapping)) = *cached {
-            if h == content_hash && f == fs_bits && m == mw_bits {
-                return mapping.clone();
-            }
-        }
-        drop(cached);
-        let mapping = build_csc_char_mapping_inner(spans, font_size, max_width);
-        *cache.borrow_mut() = Some((content_hash, fs_bits, mw_bits, mapping.clone()));
-        mapping
-    })
 }
 
 // Layout constants
@@ -414,89 +353,6 @@ pub(crate) fn estimate_text_width(text: &str, font_size: f32) -> f32 {
             }
         })
         .sum()
-}
-
-pub(crate) fn wrap_cjk_text(
-    text: &str,
-    font_size: f32,
-    max_width: f32,
-    first_line_indent: f32,
-) -> String {
-    const NO_BREAK_BEFORE: &[char] = &[
-        '\u{3002}', '\u{FF0C}', '\u{FF01}', '\u{FF1F}', '\u{FF1B}', '\u{FF1A}', '\u{3001}',
-        '\u{FF09}', '\u{300B}', '\u{300D}', '\u{300F}', '\u{3011}', '\u{3015}', '\u{3009}',
-        '\u{3017}', '\u{FF5E}', '\u{2026}', ',', '.', '!', '?', ';', ':', ')', ']', '}',
-        '\u{2014}', '\u{2013}', '\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}',
-    ];
-    const NO_BREAK_AFTER: &[char] = &[
-        '\u{FF08}', '\u{300A}', '\u{300C}', '\u{300E}', '\u{3010}', '\u{3014}', '\u{3008}',
-        '\u{3016}', '(', '[', '{', '\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}',
-    ];
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return String::new();
-    }
-    let effective_max = max_width - font_size * 0.5;
-    // Use a Vec<char> buffer to track the result, avoiding repeated String/Vec<char> conversions
-    let mut buf: Vec<char> = Vec::with_capacity(chars.len() + chars.len() / 8);
-    let mut line_width: f32 = first_line_indent;
-    let char_width = |c: char| -> f32 {
-        if c.is_ascii() {
-            font_size * 0.55
-        } else {
-            font_size
-        }
-    };
-    for (i, &ch) in chars.iter().enumerate() {
-        let cw = char_width(ch);
-        if line_width + cw > effective_max && i > 0 && ch != '\n' {
-            if NO_BREAK_BEFORE.contains(&ch) {
-                // Backtrack: find a good break point before the no-break-before char
-                let mut backtrack = 0;
-                let mut pos = buf.len();
-                while pos > 0 && NO_BREAK_BEFORE.contains(&buf[pos - 1]) {
-                    pos -= 1;
-                    backtrack += 1;
-                    if backtrack > 5 {
-                        break;
-                    }
-                }
-                if pos == buf.len() && pos > 0 {
-                    pos -= 1;
-                }
-                if pos > 0 && NO_BREAK_AFTER.contains(&buf[pos - 1]) && pos > 1 {
-                    pos -= 1;
-                }
-                if pos > 0 && pos < buf.len() {
-                    buf.insert(pos, '\n');
-                    line_width = buf[pos + 1..].iter().map(|&c| char_width(c)).sum();
-                } else {
-                    buf.push('\n');
-                    line_width = 0.0;
-                }
-            } else if i > 0 && NO_BREAK_AFTER.contains(&chars[i - 1]) {
-                let pos = buf.len().saturating_sub(1);
-                if pos > 0 {
-                    buf.insert(pos, '\n');
-                    line_width = buf[pos + 1..].iter().map(|&c| char_width(c)).sum();
-                } else {
-                    buf.push('\n');
-                    line_width = 0.0;
-                }
-            } else {
-                buf.push('\n');
-                line_width = 0.0;
-            }
-        }
-        if ch == '\n' {
-            buf.push(ch);
-            line_width = 0.0;
-        } else {
-            buf.push(ch);
-            line_width += cw;
-        }
-    }
-    buf.into_iter().collect()
 }
 
 pub(crate) fn normalize_epub_href(href: &str) -> String {

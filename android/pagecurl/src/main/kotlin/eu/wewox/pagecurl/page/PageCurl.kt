@@ -90,7 +90,9 @@ public fun PageCurl(
                 val mirrorMod = if (isMirrored) Modifier.graphicsLayer { scaleX = -1f } else Modifier
                 val contentMirrorMod = if (isMirrored) Modifier.graphicsLayer { scaleX = -1f } else Modifier
 
-                key(updatedCurrent, internalState.forward.value, internalState.backward.value) {
+                // Curl coordinates change every frame. They must not replace the
+                // content composition and restart its asynchronous image loads.
+                key(updatedCurrent) {
                     if (isForwardAnimating || isBackwardAnimating) {
                         val edge = if (isForwardAnimating) internalState.forward.value else internalState.backward.value
                         val bottomIndex = if (isForwardAnimating) updatedCurrent + 1 else updatedCurrent - 1
@@ -145,7 +147,7 @@ public fun PageCurl(
                 }
             } else {
                 // Original single-page rendering
-                key(updatedCurrent, internalState.forward.value, internalState.backward.value) {
+                key(updatedCurrent) {
                     if (updatedCurrent + 1 < state.max) {
                         content(updatedCurrent + 1)
                     }

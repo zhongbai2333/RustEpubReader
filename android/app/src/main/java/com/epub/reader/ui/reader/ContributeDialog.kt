@@ -52,7 +52,7 @@ fun ContributeDialog(
                         shape = ReaderGeometry.Shape,
                         contentPadding = ReaderGeometry.ButtonPadding,
                     ) {
-                        Text(I18n.t("csc.contribute_success").replace("{}", "PR"))
+                        Text(I18n.tf1("csc.contribute_success", "PR"))
                     }
                     Spacer(Modifier.width(8.dp))
                     Button(
@@ -110,7 +110,7 @@ fun ContributeDialog(
                 // Sample count
                 Text(
                     text =
-                        I18n.t("csc.contribute_sample_count").replace("{}", sampleCount.toString()),
+                        I18n.count("csc.contribute_sample_count", sampleCount),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -145,7 +145,7 @@ fun ContributeDialog(
                 // GitHub login section
                 if (githubUsername != null) {
                     Text(
-                        text = I18n.t("csc.contribute_logged_in").replace("{}", githubUsername),
+                        text = I18n.tf1("csc.contribute_logged_in", githubUsername),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -171,7 +171,7 @@ fun ContributeDialog(
                 // Status / Error
                 if (status.isNotBlank()) {
                     Text(
-                        text = status,
+                        text = I18n.message(status),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -180,7 +180,7 @@ fun ContributeDialog(
                 // Success PR URL
                 if (prUrl != null) {
                     Text(
-                        text = I18n.t("csc.contribute_success").replace("{}", prUrl),
+                        text = I18n.tf1("csc.contribute_success", prUrl),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )

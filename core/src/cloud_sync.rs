@@ -19,6 +19,8 @@ pub struct DeviceSnapshot {
     pub device_id: String,
     pub books: BTreeMap<String, CloudBook>,
     pub progress: BTreeMap<String, ProgressEntry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub activity: BTreeMap<String, crate::reading_activity::DeviceActivity>,
 }
 
 pub fn valid_hash(hash: &str) -> bool {
@@ -43,6 +45,7 @@ impl DeviceSnapshot {
             device_id,
             books: BTreeMap::new(),
             progress: BTreeMap::new(),
+            activity: BTreeMap::new(),
         }
     }
 
@@ -51,6 +54,7 @@ impl DeviceSnapshot {
             || !valid_device_id(&self.device_id)
             || self.books.len() > 5000
             || self.progress.len() > 5000
+            || self.activity.len() > 5000
         {
             return Err("Unsupported or invalid sync snapshot".into());
         }
@@ -75,6 +79,11 @@ impl DeviceSnapshot {
                 return Err("Invalid remote progress".into());
             }
         }
+        for (hash, activity) in &self.activity {
+            if !valid_hash(hash) || !activity.validate() {
+                return Err("Invalid remote reading activity".into());
+            }
+        }
         Ok(())
     }
 
@@ -97,6 +106,12 @@ impl DeviceSnapshot {
             {
                 self.progress.insert(hash.clone(), p.clone());
             }
+        }
+        for (hash, activity) in &other.activity {
+            self.activity
+                .entry(hash.clone())
+                .or_default()
+                .merge(activity);
         }
         Ok(())
     }
@@ -239,11 +254,17 @@ impl SyncJournal {
                 serde_json::from_slice::<Self>(&bytes).ok()
             })
             .filter(|j| j.own.device_id == device_id && j.own.validate().is_ok());
-        loaded.unwrap_or_else(|| Self {
+        let mut journal = loaded.unwrap_or_else(|| Self {
             own: DeviceSnapshot::new(device_id.into()),
             seen: Default::default(),
             applied: Default::default(),
-        })
+        });
+        if let Ok(activity) = crate::reading_activity::export(data_dir, device_id) {
+            for (hash, value) in activity {
+                journal.own.activity.entry(hash).or_default().merge(&value);
+            }
+        }
+        journal
     }
     pub fn save(&self, data_dir: &str) -> Result<(), String> {
         self.own.validate()?;

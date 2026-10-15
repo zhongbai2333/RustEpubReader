@@ -146,6 +146,8 @@ jobs:
                       '  <string>11.0</string>',
                       '  <key>NSHighResolutionCapable</key>',
                       '  <true/>',
+                      '  <key>NSLocalNetworkUsageDescription</key>',
+                      '  <string>Share selected books or sync reading data with devices on the same local network.</string>',
                       '</dict>',
                       '</plist>'
                     )

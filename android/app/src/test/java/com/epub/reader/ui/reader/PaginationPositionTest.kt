@@ -7,6 +7,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PaginationPositionTest {
+    // Unit tests exercise position conservation with JVM line boundaries.
+    // Production continues to use Android ICU's strict Chinese boundaries.
+    private fun titleLineBreaks(text: String): List<Int> {
+        val iterator = java.text.BreakIterator.getLineInstance(java.util.Locale.CHINA)
+        iterator.setText(text)
+        val offsets = mutableListOf<Int>()
+        var offset = iterator.first()
+        while (offset != java.text.BreakIterator.DONE) {
+            offsets.add(offset)
+            offset = iterator.next()
+        }
+        return offsets
+    }
+
     private val paragraphs =
         (0..5).map { index ->
             ContentBlock.Paragraph(
@@ -52,7 +66,7 @@ class PaginationPositionTest {
         for (height in listOf(420, 760)) for (width in listOf(280, 620)) for (scale in
             listOf(1f, 1.6f)) {
             verifySourcePositions(
-                paginateContent(chapter, 18f, height.dp, width.dp, Density(2f, scale), true),
+                paginateContent(chapter, 18f, height.dp, width.dp, Density(2f, scale), true, titleLineBreaks = ::titleLineBreaks),
                 chapter,
             )
         }
@@ -67,7 +81,7 @@ class PaginationPositionTest {
             )
         for (showTitle in listOf(true, false)) {
             verifySourcePositions(
-                paginateContent(chapter, 18f, 600.dp, 320.dp, Density(2f), showTitle),
+                paginateContent(chapter, 18f, 600.dp, 320.dp, Density(2f), showTitle, titleLineBreaks = ::titleLineBreaks),
                 chapter,
             )
         }

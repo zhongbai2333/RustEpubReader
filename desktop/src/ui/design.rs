@@ -162,6 +162,57 @@ pub fn close_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     r.on_hover_text(label)
 }
 
+pub fn sidebar_title(ui: &mut egui::Ui, title: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 28.),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(title).size(17.).strong()).truncate());
+        },
+    );
+}
+
+/// A short vertical control entirely inside the panel's edge facing the reader.
+/// Call only while the panel is present: collapsed sidebars leave no hit target.
+pub fn sidebar_collapse_button(
+    ui: &mut egui::Ui,
+    panel: egui::Rect,
+    left: bool,
+    label: &str,
+) -> egui::Response {
+    let x = if left {
+        panel.right() - 14.
+    } else {
+        panel.left() + 14.
+    };
+    let y = panel.center().y;
+    let rect = egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(24., 72.));
+    let response = ui.interact(rect, ui.id().with("collapse_sidebar"), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(panel));
+    painter.rect(
+        rect,
+        8,
+        visuals.weak_bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    let c = rect.center();
+    let direction = if left { -1. } else { 1. };
+    painter.add(egui::Shape::line(
+        vec![
+            c + egui::vec2(-direction * 3., -5.),
+            c + egui::vec2(direction * 3., 0.),
+            c + egui::vec2(-direction * 3., 5.),
+        ],
+        Stroke::new(1.6_f32, visuals.fg_stroke.color),
+    ));
+    response.on_hover_text(label)
+}
+
 pub fn settings_slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().interact_size.y = 20.;
@@ -193,8 +244,9 @@ pub fn animated_side_panel(
     left: bool,
     width: f32,
     expanded: bool,
+    collapse_label: &str,
     contents: impl FnOnce(&mut egui::Ui),
-) {
+) -> bool {
     let progress = ctx.animate_bool_with_time(egui::Id::new(id).with("slide"), expanded, 0.18);
     let moving = progress > 0. && progress < 1.;
     if moving {
@@ -202,7 +254,7 @@ pub fn animated_side_panel(
         ctx.request_repaint();
     }
     if progress <= 0. {
-        return;
+        return false;
     }
     let panel = if left {
         egui::SidePanel::left(id)
@@ -219,11 +271,11 @@ pub fn animated_side_panel(
             let x = if left {
                 r.right() - width + 16.
             } else {
-                r.left() + 16.
+                r.left() + 32.
             };
             let rect = egui::Rect::from_min_size(
                 egui::pos2(x, r.top() + 16.),
-                egui::vec2(width - 32., (r.height() - 32.).max(0.)),
+                egui::vec2(width - 48., (r.height() - 32.).max(0.)),
             );
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
@@ -236,7 +288,12 @@ pub fn animated_side_panel(
                 child.disable();
             }
             contents(&mut child);
-        });
+            if moving {
+                ui.disable();
+            }
+            sidebar_collapse_button(ui, r, left, collapse_label).clicked()
+        })
+        .inner
 }
 
 pub fn animated_top_panel(
@@ -480,6 +537,12 @@ pub enum Icon {
     Settings,
     Back,
     Audio,
+    Close,
+    Bookmark,
+    More,
+    Correction,
+    Sun,
+    Moon,
 }
 pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color32) {
     let c = rect.center();
@@ -507,6 +570,37 @@ pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color3
                 (-8., -8.),
             ]);
             line(&[(0., -6.), (0., 7.)]);
+        }
+        Icon::Sun => {
+            p.circle_stroke(c, 4., s);
+            for (x, y) in [
+                (1f32, 0f32),
+                (0., 1.),
+                (-1., 0.),
+                (0., -1.),
+                (0.707, 0.707),
+                (-0.707, 0.707),
+                (0.707, -0.707),
+                (-0.707, -0.707),
+            ] {
+                p.line_segment([c + egui::vec2(x, y) * 7., c + egui::vec2(x, y) * 10.], s);
+            }
+        }
+        Icon::Moon => {
+            line(&[
+                (4., -9.),
+                (-3., -8.),
+                (-8., -3.),
+                (-8., 4.),
+                (-3., 8.),
+                (4., 8.),
+                (9., 3.),
+                (3., 4.),
+                (-1., 1.),
+                (-2., -4.),
+                (0., -8.),
+                (4., -9.),
+            ]);
         }
         Icon::Sync => {
             line(&[(-8., -1.), (-7., -6.), (-3., -8.), (3., -8.), (8., -3.)]);
@@ -539,6 +633,30 @@ pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color3
         Icon::Back => {
             line(&[(-1., -7.), (-8., 0.), (-1., 7.)]);
             line(&[(-8., 0.), (9., 0.)]);
+        }
+        Icon::Close => {
+            line(&[(-5., -5.), (5., 5.)]);
+            line(&[(-5., 5.), (5., -5.)]);
+        }
+        Icon::Bookmark => {
+            line(&[
+                (-6., -9.),
+                (6., -9.),
+                (6., 9.),
+                (0., 5.),
+                (-6., 9.),
+                (-6., -9.),
+            ]);
+        }
+        Icon::More => {
+            for x in [-6., 0., 6.] {
+                p.circle_filled(pt(x, 0.), 1.5, color);
+            }
+        }
+        Icon::Correction => {
+            line(&[(-8., -8.), (2., -8.), (2., 2.), (-8., 2.), (-8., -8.)]);
+            line(&[(-5., -4.), (-1., -4.)]);
+            line(&[(-1., 6.), (3., 10.), (10., 2.)]);
         }
         Icon::Audio => {
             line(&[

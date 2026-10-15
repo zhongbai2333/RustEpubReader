@@ -47,7 +47,7 @@ fun TtsControlBar(
                 ) {
                     Icon(
                         Icons.Default.PlayArrow,
-                        contentDescription = "Play",
+                        contentDescription = I18n.t("tts.play"),
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(24.dp),
                     )
@@ -60,7 +60,7 @@ fun TtsControlBar(
                 ) {
                     Icon(
                         if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                        contentDescription = if (paused) "Resume" else "Pause",
+                        contentDescription = I18n.t(if (paused) "tts.resume" else "tts.pause"),
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(24.dp),
                     )
@@ -70,7 +70,7 @@ fun TtsControlBar(
                 IconButton(onClick = onStop, modifier = Modifier.size(44.dp)) {
                     Icon(
                         Icons.Default.Stop,
-                        contentDescription = "Stop",
+                        contentDescription = I18n.t("tts.stop"),
                         modifier = Modifier.size(24.dp),
                     )
                 }
@@ -78,7 +78,7 @@ fun TtsControlBar(
             Text(
                 text =
                     when {
-                        status.isNotEmpty() -> status
+                        status.isNotEmpty() -> I18n.message(status)
                         playing && paused -> I18n.t("tts.paused")
                         playing -> I18n.t("tts.playing")
                         else -> I18n.t("tts.ready")
@@ -92,7 +92,7 @@ fun TtsControlBar(
             IconButton(onClick = onSettings, modifier = Modifier.size(40.dp)) {
                 Icon(
                     Icons.Default.Settings,
-                    contentDescription = "Settings",
+                    contentDescription = I18n.t("settings.title"),
                     modifier = Modifier.size(24.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -106,7 +106,7 @@ fun TtsControlBar(
             ) {
                 Icon(
                     Icons.Default.Close,
-                    contentDescription = "Close",
+                    contentDescription = I18n.t("common.close"),
                     modifier = Modifier.size(22.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

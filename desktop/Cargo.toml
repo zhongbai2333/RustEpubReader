@@ -13,6 +13,7 @@ dirs = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
+chrono = "0.4.44"
 # self-update
 anyhow = "1"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
@@ -45,4 +46,5 @@ ttf-parser = "0.25"
 keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 keyring = { version = "3", features = ["linux-native-sync-persistent", "crypto-rust", "vendored"] }

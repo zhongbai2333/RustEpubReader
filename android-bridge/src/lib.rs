@@ -201,7 +201,9 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
         .blocks
         .iter()
         .map(|block| match block {
-            reader_core::epub::ContentBlock::Paragraph { spans, anchor_id } => {
+            reader_core::epub::ContentBlock::Paragraph {
+                spans, anchor_id, ..
+            } => {
                 serde_json::json!({
                     "type": "paragraph",
                     "spans": spans.iter().map(|s| serde_json::json!({
@@ -216,6 +218,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
                 level,
                 spans,
                 anchor_id,
+                ..
             } => {
                 serde_json::json!({
                     "type": "heading",
@@ -234,7 +237,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
             reader_core::epub::ContentBlock::BlankLine => {
                 serde_json::json!({ "type": "blankLine" })
             }
-            reader_core::epub::ContentBlock::Image { data, alt } => {
+            reader_core::epub::ContentBlock::Image { data, alt, .. } => {
                 serde_json::json!({
                     "type": "image",
                     "data": base64_encode(data),
@@ -248,6 +251,9 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
         "title": chapter.title,
         "sourceHref": chapter.source_href,
         "blocks": blocks,
+        "images": book.supplemental_images.get(&idx).into_iter().flatten().map(|image| serde_json::json!({
+            "block": image.block, "after": image.after, "data": base64_encode(&image.data), "alt": image.alt
+        })).collect::<Vec<_>>(),
     });
 
     jni_string_or_null!(env, json.to_string())
@@ -304,6 +310,103 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_loadLibrary(
         Ok(s) => s.into_raw(),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_renameBook(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    path: JString,
+    title: JString,
+) -> jstring {
+    let result = (|| -> Result<serde_json::Value, String> {
+        let data_dir: String = env.get_string(&data_dir).map_err(|e| e.to_string())?.into();
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        let title: String = env.get_string(&title).map_err(|e| e.to_string())?.into();
+        let mut library = Library::load_from(&data_dir);
+        let id = library
+            .books
+            .iter()
+            .find(|b| b.path == path)
+            .ok_or("Book is no longer in the library")?
+            .id
+            .clone();
+        let renamed = library.rename_book(&data_dir, &id, &title)?;
+        Ok(book_entry_to_android_json(&data_dir, &renamed))
+    })();
+    let json = match result {
+        Ok(entry) => serde_json::json!({"ok":true, "entry":entry}),
+        Err(error) => serde_json::json!({"ok":false, "error":error}),
+    };
+    jni_string_or_null!(env, json.to_string())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_prepareBookExports(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    paths: JString,
+    directory: JString,
+) -> jstring {
+    let result = (|| -> Result<Vec<String>, String> {
+        let data_dir: String = env.get_string(&data_dir).map_err(|e| e.to_string())?.into();
+        let paths: String = env.get_string(&paths).map_err(|e| e.to_string())?.into();
+        let directory: String = env
+            .get_string(&directory)
+            .map_err(|e| e.to_string())?
+            .into();
+        let paths: Vec<String> = serde_json::from_str(&paths).map_err(|e| e.to_string())?;
+        if paths.is_empty() {
+            return Err("No books selected".into());
+        }
+        let library = Library::load_from(&data_dir);
+        let books = paths
+            .iter()
+            .map(|path| {
+                library
+                    .books
+                    .iter()
+                    .find(|b| &b.path == path)
+                    .cloned()
+                    .ok_or("Book is no longer in the library".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        reader_core::export::export_originals(&books, std::path::Path::new(&directory))
+    })();
+    let json = match result {
+        Ok(paths) => serde_json::json!({"ok":true, "paths":paths}),
+        Err(error) => serde_json::json!({"ok":false, "error":error}),
+    };
+    jni_string_or_null!(env, json.to_string())
+}
+
+/// Explicit sharing is independent of whole-library sync and persistent pairing.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_bookShare(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    request: JString,
+) -> jstring {
+    let result = (|| -> Result<serde_json::Value, String> {
+        let root: String = env
+            .get_string(&data_dir)
+            .map_err(|_| "Invalid share storage")?
+            .into();
+        let request: String = env
+            .get_string(&request)
+            .map_err(|_| "Invalid share request")?
+            .into();
+        let request = serde_json::from_str(&request).map_err(|_| "Invalid share request")?;
+        reader_core::book_share::dispatch(&root, request)
+    })();
+    let envelope = match result {
+        Ok(value) => serde_json::json!({"ok":true,"result":value}),
+        Err(error) => serde_json::json!({"ok":false,"error":error}),
+    };
+    jni_string_or_null!(env, envelope.to_string())
 }
 
 /// Add or update a book in the library.
@@ -1516,6 +1619,34 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_searchBook(
 
 // ── Bookmark / Highlight / Note management ──
 
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_readingActivity(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    request: JString,
+) -> jstring {
+    let Ok(root) = env.get_string(&data_dir).map(String::from) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(request) = env.get_string(&request).map(String::from) else {
+        return std::ptr::null_mut();
+    };
+    let device = get_peer_store(&root)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .device_id
+        .clone();
+    let result = serde_json::from_str(&request)
+        .map_err(|_| "Invalid activity request".into())
+        .and_then(|v| reader_core::reading_activity::dispatch(&root, &device, &v));
+    let envelope = match result {
+        Ok(result) => serde_json::json!({"ok":true,"result":result}),
+        Err(error) => serde_json::json!({"ok":false,"error":error}),
+    };
+    jni_string_or_null!(env, envelope.to_string())
+}
+
 /// Return full BookConfig JSON for a given book ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getBookConfig(
@@ -1922,3 +2053,65 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_upsertCorrection(
 }
 
 mod github_sync;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_nativePresentation(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+    chapter: jni::sys::jint,
+    policy: JString,
+    enabled: jboolean,
+    events: JString,
+) -> jstring {
+    let result = (|| -> Result<String, String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        let policy: String = env.get_string(&policy).map_err(|e| e.to_string())?.into();
+        let events: String = env.get_string(&events).map_err(|e| e.to_string())?.into();
+        if events.len() > 32768 {
+            return Err("Interaction request exceeds limit".into());
+        }
+        let events: Vec<reader_core::epub::native::NativeEvent> =
+            serde_json::from_str(&events).map_err(|e| e.to_string())?;
+        let policy =
+            serde_json::from_value(serde_json::json!(policy)).map_err(|e| e.to_string())?;
+        let book = get_book(&path)?;
+        let chapter = book
+            .chapters
+            .get(chapter as usize)
+            .ok_or("Invalid chapter")?;
+        serde_json::to_string(
+            &chapter
+                .native_document
+                .present(policy, enabled != 0, &events),
+        )
+        .map_err(|e| e.to_string())
+    })();
+    match result {
+        Ok(v) => jni_string_or_null!(env, v),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_nativeNote(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+    chapter: jni::sys::jint,
+    href: JString,
+) -> jstring {
+    let result = (|| -> Option<String> {
+        let path: String = env.get_string(&path).ok()?.into();
+        let href: String = env.get_string(&href).ok()?.into();
+        if href.len() > 8192 {
+            return None;
+        }
+        let book = get_book(&path).ok()?;
+        serde_json::to_string(&book.native_note(chapter as usize, &href)?).ok()
+    })();
+    match result {
+        Some(value) => jni_string_or_null!(env, value),
+        None => std::ptr::null_mut(),
+    }
+}

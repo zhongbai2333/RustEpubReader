@@ -27,19 +27,21 @@ sealed class ContentBlock {
     data class Heading(
         val level: Int,
         val spans: List<TextSpan>,
-        @SerialName("anchor_id") val anchor_id: String? = null
+        @SerialName("anchor_id") val anchor_id: String? = null,
+        @SerialName("native_style") val nativeStyle: NativeStyle = NativeStyle()
     ) : ContentBlock()
 
     @Serializable
     @SerialName("paragraph")
     data class Paragraph(
         val spans: List<TextSpan>,
-        @SerialName("anchor_id") val anchor_id: String? = null
+        @SerialName("anchor_id") val anchor_id: String? = null,
+        @SerialName("native_style") val nativeStyle: NativeStyle = NativeStyle()
     ) : ContentBlock()
 
     @Serializable
     @SerialName("image")
-    data class Image(val data: String, val alt: String? = null) : ContentBlock()
+    data class Image(val data: String, val alt: String? = null, @SerialName("native_style") val nativeStyle: NativeStyle = NativeStyle()) : ContentBlock()
 
     @Serializable
     @SerialName("separator")
@@ -50,13 +52,20 @@ sealed class ContentBlock {
     data object BlankLine : ContentBlock()
 }
 
+/** Illustrations retain the original shared text coordinates. */
+@Serializable
+data class ChapterImage(val block: Int, val after: Boolean = false, val data: String, val alt: String? = null, val nativeStyle: NativeStyle = NativeStyle()) {
+    fun content() = ContentBlock.Image(data, alt, nativeStyle)
+}
+
 /** 单个章节的数据传输对象 */
 @Serializable
 data class ChapterDto(
     val title: String,
     @SerialName("sourceHref")
     val sourceHref: String? = null,
-    val blocks: List<ContentBlock>
+    val blocks: List<ContentBlock>,
+    val images: List<ChapterImage> = emptyList()
 )
 
 @Serializable
@@ -85,7 +94,8 @@ data class BookMetadataDto(
 data class Chapter(
     val title: String,
     val blocks: List<ContentBlock>,
-    val sourceHref: String? = null
+    val sourceHref: String? = null,
+    val images: List<ChapterImage> = emptyList()
 )
 
 /** EPUB 书籍 (兼容用) */
@@ -262,3 +272,37 @@ data class FullBookConfig(
     val notes: List<NoteDto> = emptyList(),
     val corrections: List<CorrectionDto> = emptyList()
 )
+
+@Serializable data class NativeDimension(val px: Float=0f,val em: Float=0f,val percent: Float=0f) { fun resolve(font: Float,extent: Float): Float=(px+em*font+(if(extent.isFinite())percent*extent else 0f)).coerceAtLeast(0f) }
+@Serializable data class NativeInline(val start:Int,val end:Int,val size:Float?=null,val color:String?=null,val family:String?=null,val bold:Boolean?=null,val italic:Boolean?=null,val underline:Boolean=false,val strike:Boolean=false,val hidden:Boolean=false,val baseline:Float=0f,@SerialName("small_caps")val smallCaps:Boolean=false,val note:String?=null)
+@Serializable data class NativeList(val start:Int,val end:Int,val text:String,val depth:Int,val marker:String)
+@Serializable data class NativeRuby(val start:Int,val end:Int,val text:String)
+@Serializable data class NativeCell(val start:Int,val end:Int,val text:String,val header:Boolean=false,val span:Int=1,val align:String?=null)
+@Serializable data class NativeTable(val cells:List<NativeCell>,val columns:Int)
+@Serializable data class NativeNote(val text:String,val href:String)
+@Serializable data class NativeStyle(
+ val align:String?=null,val size:Float?=null,val line:Float?=null,val indent:Float?=null,val before:Float?=null,val after:Float?=null,val color:String?=null,val family:String?=null,val bold:Boolean=false,val italic:Boolean=false,val hidden:Boolean=false,val action:Int?=null,val text:String?=null,
+ @SerialName("size_px")val sizePx:Float?=null,val inline:List<NativeInline> = emptyList(),val ruby:List<NativeRuby> = emptyList(),val table:NativeTable?=null,val list:List<NativeList> = emptyList(),@SerialName("list_depth")val listDepth:Int=0,val quote:Boolean=false,val pre:Boolean=false,
+ @SerialName("inset_left")val insetLeft:NativeDimension?=null,@SerialName("inset_right")val insetRight:NativeDimension?=null,
+ @SerialName("padding_left")val paddingLeft:NativeDimension?=null,@SerialName("padding_right")val paddingRight:NativeDimension?=null,@SerialName("padding_top")val paddingTop:NativeDimension?=null,@SerialName("padding_bottom")val paddingBottom:NativeDimension?=null,
+ @SerialName("margin_top")val marginTop:NativeDimension?=null,@SerialName("margin_bottom")val marginBottom:NativeDimension?=null,@SerialName("indent_length")val indentLength:NativeDimension?=null,
+ @SerialName("image_width")val imageWidth:NativeDimension?=null,@SerialName("image_height")val imageHeight:NativeDimension?=null,@SerialName("image_max_width")val imageMaxWidth:NativeDimension?=null,@SerialName("image_max_height")val imageMaxHeight:NativeDimension?=null
+) {
+ fun font(base:Float):Float=(sizePx?:base*(size?:1f)).coerceIn(6f,96f)
+ fun lineScale(base:Float):Float=((line?:base)*inline.filter { !it.hidden }.mapNotNull {it.size}.fold(1f,::maxOf)).coerceAtLeast(if(ruby.isEmpty())1f else 1.7f)
+ fun imageSize(naturalWidth:Float,naturalHeight:Float,font:Float,width:Float,height:Float):Pair<Float,Float>{
+  val validHeight=imageHeight?.takeIf {height.isFinite()||it.px!=0f||it.em!=0f}
+  val desiredWidth=imageWidth?.resolve(font,width)?:naturalWidth;val desiredHeight=validHeight?.resolve(font,height)?:naturalHeight
+  val requested=when{imageWidth!=null&&validHeight!=null->minOf(desiredWidth/naturalWidth,desiredHeight/naturalHeight);imageWidth!=null->desiredWidth/naturalWidth;validHeight!=null->desiredHeight/naturalHeight;else->1f}
+  val scale=minOf(requested,(imageMaxWidth?.resolve(font,width)?:width).coerceAtMost(width)/naturalWidth,(imageMaxHeight?.takeIf {height.isFinite()||it.px!=0f||it.em!=0f}?.resolve(font,height)?:height).coerceAtMost(height)/naturalHeight).coerceAtLeast(0f)
+  return naturalWidth*scale to naturalHeight*scale
+ }
+ // Rust ranges count Unicode scalars; Compose and persisted Android fragments use UTF-16.
+ fun inUtf16(source:String):NativeStyle {
+  val offsets=mutableListOf(0);var cursor=0;while(cursor<source.length){cursor+=Character.charCount(source.codePointAt(cursor));offsets.add(cursor)}
+  fun at(index:Int)=offsets[index.coerceIn(0,offsets.lastIndex)]
+  return copy(inline=inline.map {it.copy(start=at(it.start),end=at(it.end))},ruby=ruby.map {it.copy(start=at(it.start),end=at(it.end))})
+ }
+}
+@Serializable data class NativePresentation(val styles: List<NativeStyle> = emptyList(),val errors: List<String> = emptyList())
+fun ContentBlock.nativeStyle(): NativeStyle = when(this){is ContentBlock.Paragraph->nativeStyle;is ContentBlock.Heading->nativeStyle;is ContentBlock.Image->nativeStyle;else->NativeStyle()}

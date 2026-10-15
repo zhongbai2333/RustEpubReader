@@ -118,10 +118,7 @@ impl ReaderApp {
                 ui.separator();
 
                 // ── 预览列表 ──
-                let count_text = self
-                    .i18n
-                    .t("txt.chapter_count")
-                    .replace("{}", &state.previews.len().to_string());
+                let count_text = self.i18n.count("txt.chapter_count", state.previews.len());
                 ui.label(
                     egui::RichText::new(format!("{} — {}", self.i18n.t("txt.preview"), count_text))
                         .strong(),
@@ -146,8 +143,11 @@ impl ReaderApp {
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             ui.label(
-                                                egui::RichText::new(format!("{}字", ch.char_count))
-                                                    .weak(),
+                                                egui::RichText::new(self.i18n.count(
+                                                    "library.character_count",
+                                                    ch.char_count,
+                                                ))
+                                                .weak(),
                                             );
                                         },
                                     );

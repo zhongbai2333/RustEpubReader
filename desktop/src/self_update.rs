@@ -379,7 +379,7 @@ fn download_and_verify_from_url(
         if !eq_hash(&actual, expected) {
             let _ = fs::remove_file(&out_path);
             return Err(anyhow!(
-                "SHA256 校验失败：下载文件 {} 的哈希 {} 与期望 {} 不符",
+                "SHA256 verification failed: downloaded file {} hash {} does not match {}",
                 out_path.display(),
                 actual,
                 expected

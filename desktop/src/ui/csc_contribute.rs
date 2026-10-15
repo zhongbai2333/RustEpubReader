@@ -259,7 +259,7 @@ impl ReaderApp {
                     ui.label(
                         egui::RichText::new(
                             self.i18n
-                                .tf1("csc.contribute_sample_count", &samples.len().to_string()),
+                                .count("csc.contribute_sample_count", samples.len()),
                         )
                         .strong(),
                     );
@@ -340,7 +340,7 @@ impl ReaderApp {
                     // Submitting
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(&self.csc_contribute_status);
+                        ui.label(self.i18n.message(&self.csc_contribute_status));
                     });
                 } else if let Some(pr_url) = &self.csc_contribute_pr_url.clone() {
                     // Success
@@ -349,7 +349,7 @@ impl ReaderApp {
                             .size(24.0)
                             .color(egui::Color32::from_rgb(60, 180, 80)),
                     );
-                    ui.label(&self.csc_contribute_status);
+                    ui.label(self.i18n.message(&self.csc_contribute_status));
                     ui.add_space(4.0);
                     if ui.link(pr_url).clicked() {
                         ctx.open_url(egui::OpenUrl::new_tab(pr_url));

@@ -72,6 +72,11 @@ jobs:
                   cargo test --locked -p reader_ios -p reader_core --features reader_core/github-sync
                   ios/scripts/check-layout.sh
                   ios/scripts/check-oauth.sh
+                  ios/scripts/check-appearance.sh
+                  ios/scripts/check-reading-mode.sh
+                  ios/scripts/check-speech.sh
+                  ios/scripts/check-contents.sh
+                  ios/scripts/check-i18n.sh
 
             - name: Resolve pinned Swift dependencies
               run: |

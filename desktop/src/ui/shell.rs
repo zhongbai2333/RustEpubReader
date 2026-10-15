@@ -1,7 +1,6 @@
 use super::design::{self, Icon, Palette};
 use crate::app::{AppView, ReaderApp};
 use eframe::egui;
-use reader_core::i18n::Language;
 impl ReaderApp {
     pub fn open_sync(&mut self, tab: usize) {
         if self.view == AppView::Reader {
@@ -16,8 +15,39 @@ impl ReaderApp {
     }
     pub fn render_app_navigation(&mut self, ctx: &egui::Context) {
         let p = Palette::new(self.dark_mode);
+        if !self.show_app_navigation {
+            egui::TopBottomPanel::top("app_navigation_reopen")
+                .frame(egui::Frame::default().fill(p.surface).inner_margin(8.))
+                .show(ctx, |ui| {
+                    if ui.button(self.i18n.t("ui.show_navigation")).clicked() {
+                        self.show_app_navigation = true;
+                    }
+                });
+            return;
+        }
+        let font = egui::TextStyle::Button.resolve(&ctx.style());
+        let text_color = ctx.style().visuals.text_color();
+        let label_width = ctx.fonts(|fonts| {
+            [
+                "library.title",
+                "sync.multiplatform",
+                "ui.return_reader",
+                "stats.title",
+                "settings.title",
+            ]
+            .iter()
+            .map(|key| {
+                fonts
+                    .layout_no_wrap(self.i18n.t(key).to_owned(), font.clone(), text_color)
+                    .size()
+                    .x
+            })
+            .fold(0_f32, f32::max)
+        });
+        let navigation_width =
+            (label_width + 58. + 2. * f32::from(design::Geometry::CARD_INSET)).clamp(196., 260.);
         egui::SidePanel::left("app_navigation")
-            .exact_width(196.)
+            .exact_width(navigation_width)
             .resizable(false)
             .frame(
                 egui::Frame::default()
@@ -25,12 +55,12 @@ impl ReaderApp {
                     .inner_margin(design::Geometry::CARD_INSET),
             )
             .show(ctx, |ui| {
+                let panel_rect = ui
+                    .max_rect()
+                    .expand(f32::from(design::Geometry::CARD_INSET));
+                ui.set_max_width(ui.available_width() - 16.);
                 ui.add_space(12.);
-                ui.horizontal(|ui| {
-                    let (r, _) = ui.allocate_exact_size(egui::vec2(32., 32.), egui::Sense::hover());
-                    design::paint_icon(ui.painter(), r, Icon::Book, p.accent);
-                    ui.label(egui::RichText::new("EpubReader").size(19.).strong());
-                });
+                design::sidebar_title(ui, "EpubReader");
                 ui.add_space(32.);
                 for (key, icon, selected) in [
                     ("library.title", Icon::Book, self.view == AppView::Library),
@@ -39,6 +69,9 @@ impl ReaderApp {
                     let response = design::navigation_item(ui, icon, self.i18n.t(key), selected);
                     if response.clicked() {
                         if key == "library.title" {
+                            if self.view != AppView::Library {
+                                self.book_presentation.shelf_order.reset();
+                            }
                             self.view = AppView::Library;
                         } else {
                             self.open_sync(0);
@@ -88,22 +121,29 @@ impl ReaderApp {
                             )
                             .clicked()
                             {
-                                self.dark_mode = !self.dark_mode;
+                                self.appearance_linkage.set_app(!self.dark_mode);
+                                ui.memory_mut(|m| m.close_popup());
+                            }
+                            if design::menu_item(
+                                ui,
+                                self.i18n.t("appearance.link_title"),
+                                false,
+                                false,
+                            )
+                            .clicked()
+                            {
+                                self.show_appearance_linkage = true;
                                 ui.memory_mut(|m| m.close_popup());
                             }
                             ui.separator();
-                            for lang in Language::all() {
-                                if design::menu_item(
-                                    ui,
-                                    lang.label(),
-                                    self.i18n.language() == lang,
-                                    false,
-                                )
-                                .clicked()
-                                {
-                                    self.i18n.set_language(lang.clone());
-                                    ui.memory_mut(|m| m.close_popup());
-                                }
+                            let language_label = format!(
+                                "{} · {}",
+                                self.i18n.t("language.title"),
+                                self.i18n.choice_label(self.i18n.preference())
+                            );
+                            if design::menu_item(ui, &language_label, false, false).clicked() {
+                                self.show_language = true;
+                                ui.memory_mut(|m| m.close_popup());
                             }
                         },
                     );
@@ -111,10 +151,31 @@ impl ReaderApp {
                         ui,
                         &response.response,
                         Icon::Settings,
-                        self.i18n.t("ui.more"),
+                        self.i18n.t("settings.title"),
                         false,
                     );
+                    ui.add_space(4.);
+                    if design::navigation_item(
+                        ui,
+                        Icon::Notes,
+                        self.i18n.t("stats.title"),
+                        self.show_stats,
+                    )
+                    .clicked()
+                    {
+                        self.open_reading_stats(false);
+                    }
                 });
+                if design::sidebar_collapse_button(
+                    ui,
+                    panel_rect,
+                    true,
+                    self.i18n.t("common.collapse"),
+                )
+                .clicked()
+                {
+                    self.show_app_navigation = false;
+                }
             });
     }
     pub fn render_sync_page(&mut self, ui: &mut egui::Ui) {
@@ -177,6 +238,75 @@ impl ReaderApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn navigation_footer_fits_small_window_in_both_languages() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = ReaderApp::from_data_dir(directory.path().to_string_lossy().into_owned());
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../core/tests/fixtures/illustrations.epub");
+        app.book = Some(reader_core::epub::EpubBook::open(fixture.to_str().unwrap()).unwrap());
+        fn collect(
+            shape: &egui::Shape,
+            result: &mut std::collections::HashMap<String, (egui::Rect, bool)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, result)
+                    }
+                }
+                egui::Shape::Text(text) => {
+                    result.insert(
+                        text.galley.job.text.clone(),
+                        (text.visual_bounding_rect(), text.galley.elided),
+                    );
+                }
+                _ => {}
+            }
+        }
+        for language in [
+            reader_core::i18n::Language::ZhCN,
+            reader_core::i18n::Language::En,
+        ] {
+            app.i18n = reader_core::i18n::I18n::with_system(language, "en");
+            let ctx = egui::Context::default();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600., 400.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.render_app_navigation(ctx),
+            );
+            let mut labels = std::collections::HashMap::new();
+            for shape in output.shapes {
+                collect(&shape.shape, &mut labels)
+            }
+            let resume = labels[app.i18n.t("ui.return_reader")].0;
+            let stats = labels[app.i18n.t("stats.title")].0;
+            let settings = labels[app.i18n.t("settings.title")].0;
+            assert!(
+                stats.min.y > resume.max.y + 16.,
+                "Statistics must belong to the footer"
+            );
+            assert!(settings.min.y > stats.max.y + 4.);
+            assert!(settings.max.y < 392.);
+            for key in [
+                "library.title",
+                "sync.multiplatform",
+                "ui.return_reader",
+                "stats.title",
+                "settings.title",
+            ] {
+                let (rect, elided) = labels[app.i18n.t(key)];
+                assert!(!elided, "Navigation label truncated: {key}");
+                assert!(rect.min.x >= 0. && rect.max.x < 260.);
+            }
+        }
+    }
     #[test]
     fn switching_to_sync_keeps_resume_and_inflight_login() {
         keyring::set_default_credential_builder(keyring::mock::default_credential_builder());

@@ -1,5 +1,7 @@
 package com.zhongbai233.epub.reader.ui.reader
 
+import androidx.compose.foundation.verticalScroll
+
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -7,6 +9,8 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.util.Log
 import androidx.compose.animation.*
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -23,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
@@ -67,12 +72,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 阅读器界面 — 对应PC版 render_reader() */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReaderScreen(
     book: EpubBook,
+    bookPath: String = "",
     currentChapter: Int,
     currentBlock: Int = 0,
     fontSize: Float,
@@ -87,6 +95,14 @@ fun ReaderScreen(
     bgImageUri: String?,
     bgImageAlpha: Float,
     language: String,
+    appearance: com.zhongbai233.epub.reader.model.ReadingAppearance? = null,
+    appearanceLinkage: com.zhongbai233.epub.reader.model.AppearanceLinkage? = null,
+    systemAppearanceDark: Boolean = false,
+    ambientAppearanceDark: Boolean? = null,
+    onLinkageChange: (com.zhongbai233.epub.reader.model.AppearanceLinkage) -> Unit = {},
+    automaticAppearanceDark: Boolean = false,
+    ambientSensorAvailable: Boolean = false,
+    onAppearanceChange: (com.zhongbai233.epub.reader.model.ReadingAppearance) -> Unit = {},
     showImmersiveStatus: Boolean = false,
     systemFonts: List<FontItem> = emptyList(),
     showToc: Boolean,
@@ -116,6 +132,9 @@ fun ReaderScreen(
     isChapterBookmarked: Boolean = false,
     onToggleBookmark: () -> Unit = {},
     onShowAnnotations: () -> Unit = {},
+    onShowStatistics: () -> Unit = {},
+    onToggleDayNight: (Boolean) -> Unit = {},
+    onReadingActivityEnabled: (Boolean) -> Unit = {},
     highlights: List<HighlightDto> = emptyList(),
     notes: List<NoteDto> = emptyList(),
     onAddHighlight: (Int, Int, Int, Int, Int, String) -> Unit = { _, _, _, _, _, _ -> },
@@ -172,15 +191,49 @@ fun ReaderScreen(
     reviewPanelChapter: Int? = null,
     onOpenReviewPanel: (Int, String?) -> Unit = { _, _ -> },
     onCloseReviewPanel: () -> Unit = {},
-    cloudSyncContent: @Composable () -> Unit = {},
+    correctionContributionContent: @Composable (() -> Unit) -> Unit = {},
     toolsOverlayVisible: Boolean = false,
+    onInitialLayout: () -> Unit = {},
+    introductionRequested: Boolean = false,
+    onIntroductionShown: () -> Unit = {},
 ) {
     var textSelection by remember { mutableStateOf<TextSelectionState?>(null) }
     var selectionAnchorRange by remember { mutableStateOf<TextSelectionState?>(null) }
     var draggingHandle by remember { mutableStateOf<Int?>(null) }
     var rootLayoutCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val blockLayoutRegistry = remember { mutableMapOf<Int, BlockLayoutInfo>() }
-    val chapter = book.chapters.getOrNull(currentChapter)
+    val originalPrefs = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("reader.layout", Context.MODE_PRIVATE)
+    var cssPolicy by rememberSaveable(bookPath) { mutableStateOf(originalPrefs.getString(bookPath + ".css", "mixed") ?: "mixed") }
+    var scriptsEnabled by rememberSaveable(bookPath) { mutableStateOf(originalPrefs.getBoolean(bookPath + ".scripts", true)) }
+    var nativeEvents by remember(bookPath) { mutableStateOf<Map<Int,List<Int>>>(emptyMap()) }
+    val nativeDecoder=remember {kotlinx.serialization.json.Json {ignoreUnknownKeys=true}}
+    var presentations by remember(bookPath) { mutableStateOf<Map<Int,NativePresentation>>(emptyMap()) }
+    LaunchedEffect(bookPath,cssPolicy,scriptsEnabled) {
+        originalPrefs.edit().putString(bookPath+".css",cssPolicy).putBoolean(bookPath+".scripts",scriptsEnabled).apply()
+        presentations=emptyMap()
+    }
+    LaunchedEffect(bookPath,currentChapter,cssPolicy,scriptsEnabled,nativeEvents) {
+        suspend fun prepare(index:Int): NativePresentation = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val events=(nativeEvents[index]?:emptyList()).joinToString(",","[","]") { "{\"node\":$it}" }
+            com.zhongbai233.epub.reader.RustBridge.nativePresentation(bookPath,index,cssPolicy,scriptsEnabled,events)
+                ?.let { runCatching {nativeDecoder.decodeFromString<NativePresentation>(it)}.getOrNull() } ?: NativePresentation()
+        }
+        if(currentChapter in book.chapters.indices) presentations=presentations+(currentChapter to prepare(currentChapter))
+        for(index in (currentChapter-1..currentChapter+3).filter {it in book.chapters.indices && it!=currentChapter}) {
+            presentations=presentations+(index to prepare(index))
+        }
+    }
+    val displayBook=remember(book,presentations){book.copy(chapters=NativeChapterList(book.chapters,presentations))}
+    var firstContentVisible by remember(bookPath) { mutableStateOf(false) }
+    var initialLayout by remember(bookPath) { mutableStateOf(false) }
+    var contentPrepared by remember(bookPath,currentChapter,scrollMode,presentations[currentChapter]) { mutableStateOf(false) }
+    val initialReadyCallback by rememberUpdatedState(onInitialLayout)
+    LaunchedEffect(initialLayout, contentPrepared, presentations.containsKey(currentChapter)) {
+        if(initialLayout && (book.chapters.isEmpty() || presentations.containsKey(currentChapter)) && (contentPrepared || book.chapters.isEmpty())) {
+            withFrameNanos { }; withFrameNanos { }; firstContentVisible=true; initialReadyCallback()
+        }
+    }
+    val chapter = displayBook.chapters.getOrNull(currentChapter)
     val cscBlockCorrections =
         remember(cscCorrections, chapter) {
             if (cscCorrections.isEmpty() || chapter == null) emptyMap()
@@ -190,9 +243,20 @@ fun ReaderScreen(
     var cscPopupPosition by remember { mutableStateOf(Offset.Zero) }
     val uriHandler = LocalUriHandler.current
 
+    var publicationNote by remember(bookPath) { mutableStateOf<NativeNote?>(null) }
+    val noteScope=rememberCoroutineScope()
+    publicationNote?.let { note -> androidx.compose.material3.AlertDialog(onDismissRequest={publicationNote=null},title={Text(I18n.t("reader.publication_note"))},text={androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())){Text(note.text)}},confirmButton={androidx.compose.material3.TextButton(onClick={publicationNote=null}){Text(I18n.t("dialog.close"))}}) }
     val onLinkClick: (String) -> Unit = { raw ->
         val link = raw.trim()
-        if (link.isBlank()) {
+        if (link.startsWith("reader-note:")) {
+            val noteChapter=currentChapter
+            noteScope.launch {publicationNote=withContext(kotlinx.coroutines.Dispatchers.IO){com.zhongbai233.epub.reader.RustBridge.nativeNote(bookPath,noteChapter,link.removePrefix("reader-note:"))?.let {runCatching {nativeDecoder.decodeFromString<NativeNote>(it)}.getOrNull()}}}
+        } else if (link.startsWith("reader-event:")) {
+            link.removePrefix("reader-event:").toIntOrNull()?.let { node ->
+                val events=nativeEvents[currentChapter]?:emptyList()
+                if(events.size<128) nativeEvents=nativeEvents+(currentChapter to (events+node))
+            }
+        } else if (link.isBlank()) {
             // no-op
         } else {
             val lowered = link.lowercase()
@@ -243,6 +307,9 @@ fun ReaderScreen(
     }
     // 控制栏显示/隐藏
     var showControls by remember { mutableStateOf(false) }
+    var quickMenuOpen by remember { mutableStateOf(false) }
+    var settingsStartWithCorrection by remember { mutableStateOf(false) }
+    var ttsBarHeight by remember { mutableStateOf(80.dp) }
     var chromeInteraction by remember { mutableLongStateOf(0L) }
     var chromeTouchActive by remember { mutableStateOf(false) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
@@ -561,10 +628,7 @@ fun ReaderScreen(
 
     @Composable
     fun immersiveStatusText(): String {
-        val context = LocalView.current.context
-        val batteryPct = context.batteryPercentOrNull()
-        val timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
-        return if (batteryPct != null) "$timeText  $batteryPct%" else timeText
+        return SimpleDateFormat("HH:mm", I18n.locale).format(Date())
     }
 
     val batteryPercent = LocalView.current.context.batteryPercentOrNull()
@@ -582,8 +646,12 @@ fun ReaderScreen(
             else -> Color.Unspecified
         }
 
-    val textColor = if (selectedFont == Color.Unspecified) autoText else selectedFont
-    val bgColor = selectedBg
+    val appearanceDark = appearanceLinkage?.readingDark(systemAppearanceDark,ambientAppearanceDark) ?: appearance?.mode?.isDark(automaticAppearanceDark) ?: isDarkMode
+    val appearanceVariant = appearance?.style?.variant(appearanceDark)
+    val textColor = appearanceVariant?.let { Color(it.ink) } ?: if (selectedFont == Color.Unspecified) autoText else selectedFont
+    val bgColor = appearanceVariant?.let { Color(it.paper) } ?: selectedBg
+    val activeBgImageUri = if(appearanceVariant != null) appearanceVariant.image else bgImageUri
+    val activeBgImageAlpha = appearanceVariant?.strength ?: bgImageAlpha
     val linkColor = if (textColor.luminance() < 0.45f) Color(0xFF78B4FF) else Color(0xFF3366CC)
 
     val fontFamily: FontFamily =
@@ -618,8 +686,21 @@ fun ReaderScreen(
         }
     }
 
+    var showReaderIntroduction by rememberSaveable { mutableStateOf(false) }
+    val introOwner=androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var introForeground by remember(introOwner) { mutableStateOf(introOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) }
+    DisposableEffect(introOwner) {
+        val observer=androidx.lifecycle.LifecycleEventObserver {_,_->introForeground=introOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)}
+        introOwner.lifecycle.addObserver(observer)
+        onDispose { introOwner.lifecycle.removeObserver(observer) }
+    }
+    val canIntroduce=introductionRequested && firstContentVisible && introForeground && !quickMenuOpen && !showSettingsSheet && !showReviewPanel && !showTtsSettings && !showToc && !toolsOverlayVisible && !selectionMenuVisible
+    LaunchedEffect(canIntroduce) { if(canIntroduce) {showControls=false;showReaderIntroduction=true} }
+    if(showReaderIntroduction) ReaderIntroductionSheet(onShown=onIntroductionShown,onDismiss={showReaderIntroduction=false;showControls=true})
+    SideEffect { onReadingActivityEnabled(!introductionRequested && !showReaderIntroduction && !quickMenuOpen && !showSettingsSheet && !showReviewPanel && !showTtsSettings && !toolsOverlayVisible && !selectionMenuVisible) }
     val keepControlsVisible =
-        showSettingsSheet ||
+        showReaderIntroduction || quickMenuOpen ||
+            showSettingsSheet ||
             showTtsSettings ||
             showToc ||
             showReviewPanel ||
@@ -739,7 +820,7 @@ fun ReaderScreen(
             modifier =
                 Modifier.fillMaxSize()
                     .background(bgColor)
-                    .onGloballyPositioned { rootLayoutCoords = it }
+                    .onGloballyPositioned { rootLayoutCoords = it; initialLayout=true }
                     .pointerInput(Unit) {
                         // Observe without consuming: page turns, selection and buttons
                         // retain their own gesture handling. Never hide mid-gesture.
@@ -761,13 +842,13 @@ fun ReaderScreen(
                         }
                     }
         ) {
-            if (!bgImageUri.isNullOrBlank()) {
+            if (!activeBgImageUri.isNullOrBlank()) {
                 AsyncImage(
-                    model = bgImageUri,
+                    model = activeBgImageUri,
                     contentDescription = I18n.t("reader.bg_image_desc"),
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
-                    alpha = bgImageAlpha,
+                    alpha = activeBgImageAlpha,
                 )
             }
 
@@ -792,6 +873,8 @@ fun ReaderScreen(
                 ) {
                     Text(I18n.t("reader.no_content"), color = textColor)
                 }
+            } else if (!presentations.containsKey(currentChapter) && !firstContentVisible) {
+                Box(Modifier.fillMaxSize().background(bgColor))
             } else if (scrollMode) {
                 // 滚动模式: 点击任意处切换控制栏 + 下拉书签
                 Box(
@@ -817,8 +900,9 @@ fun ReaderScreen(
                             }
                 ) {
                     ScrollModeContent(
+                        onContentPrepared = { contentPrepared=true },
                         chapter = chapter,
-                        allChapters = book.chapters,
+                        allChapters = displayBook.chapters,
                         initialChapter = currentChapter,
                         onChapterVisible = { visibleChapter ->
                             if (visibleChapter != currentChapter) {
@@ -894,10 +978,11 @@ fun ReaderScreen(
             } else {
                 // 翻页模式: 左右点击翻页, 中间点击切换控制栏
                 PageModeContent(
+                    onContentPrepared = { contentPrepared=true },
                     chapter = chapter,
                     currentChapter = currentChapter,
                     totalChapters = book.chapters.size,
-                    allChapters = book.chapters,
+                    allChapters = displayBook.chapters,
                     fontSize = fontSize,
                     textColor = textColor,
                     linkColor = linkColor,
@@ -907,7 +992,7 @@ fun ReaderScreen(
                     controlsVisible = showControls,
                     settingsVisible = showSettingsSheet,
                     immersiveStatusText =
-                        if (showImmersiveStatus && !showControls) immersiveStatusText() else null,
+                        if (showImmersiveStatus) immersiveStatusText() else null,
                     immersiveBatteryPercent = batteryPercent,
                     startAtLastPageRef = startAtLastPageRef,
                     onPrevChapter = {
@@ -1054,11 +1139,16 @@ fun ReaderScreen(
                 }
             }
 
+            if (scrollMode && showImmersiveStatus) {
+                ImmersiveStatusBadge(immersiveStatusText(), batteryPercent, textColor,
+                    Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = 16.dp, bottom = 8.dp))
+            }
+
             // 顶部控制栏 — 覆盖层 + 动画
             AnimatedVisibility(
                 visible = showControls,
-                enter = slideInVertically { -it } + fadeIn(),
-                exit = slideOutVertically { -it } + fadeOut(),
+                enter = fadeIn(tween(180, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(140)),
                 modifier = Modifier.align(Alignment.TopCenter),
             ) {
                 ReaderTopBar(
@@ -1066,12 +1156,10 @@ fun ReaderScreen(
                     chapterTitle = chapter?.title,
                     currentChapter = currentChapter,
                     totalChapters = book.chapters.size,
-                    chapterProgress = chapterProgress,
-                    previousChapter = previousChapter,
+
                     isBookmarked = isChapterBookmarked,
                     onNavigateBack = onNavigateBack,
-                    onGoBackChapter = onGoBackChapter,
-                    onToggleSearch = onToggleSearch,
+
                     onToggleBookmark = onToggleBookmark,
                 )
             }
@@ -1096,21 +1184,33 @@ fun ReaderScreen(
                     onStop = onTtsStop,
                     onClose = onTtsClose,
                     onSettings = { showTtsSettings = true },
+                    modifier = Modifier.onSizeChanged { ttsBarHeight = with(density) { it.height.toDp() } },
                 )
             }
 
             // 底部控制栏 — 覆盖层 + 动画
             AnimatedVisibility(
                 visible = showControls,
-                enter = slideInVertically { it } + fadeIn(),
-                exit = slideOutVertically { it } + fadeOut(),
+                enter = fadeIn(tween(180, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(140)),
                 modifier = Modifier.align(Alignment.BottomCenter),
             ) {
                 ReaderBottomBar(
+                    menuOpen = quickMenuOpen,
+                    bottomInset = if(showTtsBar) ttsBarHeight + 104.dp else 0.dp,
+                    onMenuOpenChange = { quickMenuOpen = it; if(it) showControls = true },
+                    progressLabel = "${currentChapter + 1} / ${book.chapters.size} · ${(chapterProgress.coerceIn(0f, 1f) * 100).toInt()}%",
+                    showProgress = !showImmersiveStatus,
+                    readerNight = appearanceDark,
+                    onToggleDayNight = {onToggleDayNight(bgColor.luminance()<0.45f)},
                     onToggleToc = onToggleToc,
                     onShowAnnotations = onShowAnnotations,
                     onToggleTts = onTtsPlay,
+                    onOpenCorrection = { settingsStartWithCorrection = true; showSettingsSheet = true },
+                    onToggleSearch = onToggleSearch,
+                    onShowStatistics = onShowStatistics,
                     onOpenSettings = {
+                        settingsStartWithCorrection = false
                         showControls = true
                         showSettingsSheet = true
                     },
@@ -1118,8 +1218,27 @@ fun ReaderScreen(
             }
 
             if (showSettingsSheet) {
-                ReaderSettingsSheet(
-                    cloudSyncContent = cloudSyncContent,
+                if(settingsStartWithCorrection) ReaderCorrectionSheet(
+                    cscMode=cscMode, cscThreshold=cscThreshold,
+                    onCscModeChange=onCscModeChange, onCscThresholdChange=onCscThresholdChange,
+                    cscModelReady=cscModelReady, cscModelLoading=cscModelLoading,
+                    onDownloadCscModel=onDownloadCscModel,
+                    contributionContent={correctionContributionContent {showSettingsSheet=false}},
+                    onDismiss={showSettingsSheet=false},
+                ) else { ReaderSettingsSheet(
+                    appearanceLinkage = appearanceLinkage,
+                    systemAppearanceDark = systemAppearanceDark,
+                    ambientAppearanceDark = ambientAppearanceDark,
+                    onLinkageChange = onLinkageChange,
+                    scriptsEnabled = scriptsEnabled,
+                    onScriptsEnabledChange = { scriptsEnabled = it; nativeEvents = emptyMap() },
+                    cssPolicy = cssPolicy,
+                    onCssPolicyChange = { cssPolicy = it },
+                    appearance = appearance,
+                    appearanceDark = appearanceDark,
+                    ambientSensorAvailable = ambientSensorAvailable,
+                    onAppearanceChange = onAppearanceChange,
+                    previewFontFamily = fontFamily,
                     fontSize = fontSize,
                     scrollMode = scrollMode,
                     isDarkMode = isDarkMode,
@@ -1129,8 +1248,9 @@ fun ReaderScreen(
                     customFontColor = customFontColor,
                     fontFamilyName = fontFamilyName,
                     pageAnimation = pageAnimation,
-                    bgImageEnabled = !bgImageUri.isNullOrBlank(),
-                    bgImageAlpha = bgImageAlpha,
+                    bgImageEnabled = !activeBgImageUri.isNullOrBlank(),
+                    bgImageUri = activeBgImageUri,
+                    bgImageAlpha = activeBgImageAlpha,
                     language = language,
                     showImmersiveStatus = showImmersiveStatus,
                     systemFonts = systemFonts,
@@ -1165,20 +1285,8 @@ fun ReaderScreen(
                     onTranslateApiKeyChange = onTranslateApiKeyChange,
                     onDictionaryApiUrlChange = onDictionaryApiUrlChange,
                     onDictionaryApiKeyChange = onDictionaryApiKeyChange,
-                    ttsVoiceName = ttsVoiceName,
-                    ttsRate = ttsRate,
-                    ttsVolume = ttsVolume,
-                    onTtsVoiceNameChange = onTtsVoiceNameChange,
-                    onTtsRateChange = onTtsRateChange,
-                    onTtsVolumeChange = onTtsVolumeChange,
-                    cscMode = cscMode,
-                    cscThreshold = cscThreshold,
-                    onCscModeChange = onCscModeChange,
-                    onCscThresholdChange = onCscThresholdChange,
-                    cscModelReady = cscModelReady,
-                    cscModelLoading = cscModelLoading,
-                    onDownloadCscModel = onDownloadCscModel,
                 )
+                }
             }
 
             val handlePositions = getSelectionHandlePositions()
@@ -1538,19 +1646,17 @@ internal fun ImmersiveStatusBadge(
             fontSize = 11.sp,
             maxLines = 1,
         )
-        if (batteryPercent != null) {
-            BatteryGlyph(
-                percent = batteryPercent,
-                color = subtleColor,
-                modifier = Modifier.size(width = 18.dp, height = 9.dp),
-            )
-        }
+        BatteryGlyph(
+            percent = batteryPercent,
+            color = subtleColor,
+            modifier = Modifier.size(width = 18.dp, height = 9.dp),
+        )
     }
 }
 
 @Composable
 private fun BatteryGlyph(
-    percent: Int,
+    percent: Int?,
     color: Color,
     modifier: Modifier = Modifier,
 ) {
@@ -1573,7 +1679,11 @@ private fun BatteryGlyph(
             size = Size(capWidth, bodyHeight * 0.44f),
             cornerRadius = androidx.compose.ui.geometry.CornerRadius(0.8.dp.toPx(), 0.8.dp.toPx()),
         )
-        val fillWidth = (bodyWidth - strokeWidth * 2f) * (percent.coerceIn(0, 100) / 100f)
+        if (percent == null) {
+            drawLine(color, Offset(bodyWidth * 0.32f, bodyHeight * 0.5f),
+                Offset(bodyWidth * 0.68f, bodyHeight * 0.5f), strokeWidth)
+        }
+        val fillWidth = (bodyWidth - strokeWidth * 2f) * ((percent ?: 0).coerceIn(0, 100) / 100f)
         if (fillWidth > 0f) {
             drawRoundRect(
                 color = color,

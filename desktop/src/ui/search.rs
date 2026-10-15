@@ -5,14 +5,16 @@ use eframe::egui;
 impl ReaderApp {
     /// Render the search side-panel.
     pub fn render_search_panel(&mut self, ctx: &egui::Context) {
-        super::design::animated_side_panel(
+        let collapse_label = self.i18n.t("common.collapse").to_owned();
+        if super::design::animated_side_panel(
             ctx,
             "search_panel",
             false,
             320.,
             self.show_search && self.view == crate::app::AppView::Reader,
+            &collapse_label,
             |ui| {
-                ui.heading(self.i18n.t("search.title"));
+                super::design::sidebar_title(ui, self.i18n.t("search.title"));
                 ui.add_space(4.0);
 
                 let mut run_search = false;
@@ -40,10 +42,10 @@ impl ReaderApp {
 
                 super::design::block_gap(ui);
                 if !self.search_results.is_empty() {
-                    ui.label(self.i18n.tf1(
-                        "search.results_count",
-                        &self.search_results.len().to_string(),
-                    ));
+                    ui.label(
+                        self.i18n
+                            .count("search.results_count", self.search_results.len()),
+                    );
                     ui.add_space(4.0);
 
                     egui::ScrollArea::vertical()
@@ -71,6 +73,8 @@ impl ReaderApp {
                     ui.label(self.i18n.t("search.no_results"));
                 }
             },
-        );
+        ) {
+            self.show_search = false;
+        }
     }
 }

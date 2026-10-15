@@ -1,6 +1,9 @@
 package com.zhongbai233.epub.reader
 
 object RustBridge {
+    external fun bookShare(dataDir: String, request: String): String?
+    external fun renameBook(dataDir: String, path: String, title: String): String?
+    external fun prepareBookExports(dataDir: String, paths: String, directory: String): String?
     init {
         try {
             System.loadLibrary("android_bridge")
@@ -11,6 +14,8 @@ object RustBridge {
 
     external fun openBook(path: String): String?
     external fun getChapter(path: String, chapterIndex: Int): String?
+    external fun nativeNote(path: String, chapter: Int, href: String): String?
+    external fun nativePresentation(path: String, chapter: Int, policy: String, scripts: Boolean, events: String): String?
     external fun getCover(path: String): String?
 
     // Library management
@@ -52,6 +57,7 @@ object RustBridge {
     external fun convertTxtToEpub(txtPath: String, outputDir: String, title: String?, author: String?, useHeuristic: Boolean, customRegex: String?): String?
 
     // Search
+    external fun readingActivity(dataDir: String, request: String): String?
     external fun searchBook(path: String, query: String): String?
 
     // Bookmarks / Highlights / Notes

@@ -6,19 +6,8 @@ name: PR 标签触发多平台构建
 
 permissions:
     contents: read
-    pull-requests: read
-    issues: write
 
 jobs:
-    cancel-if-unrelated:
-        runs-on: ubuntu-latest
-        if: github.event.label.name != 'run-build' && github.event.label.name != 'Run-Build' && github.event.label.name != 'RUN-BUILD'
-        steps:
-            - name: 非目标标签，取消本次 Workflow
-              uses: styfle/cancel-workflow-action@0.9.1
-              with:
-                  access_token: ${{ secrets.GITHUB_TOKEN }}
-
     build-desktop:
         if: github.event.label.name == 'run-build' || github.event.label.name == 'Run-Build' || github.event.label.name == 'RUN-BUILD'
         name: Build desktop packages
@@ -36,7 +25,6 @@ jobs:
             ref: ${{ github.event.pull_request.head.sha }}
             version: sha-${{ github.event.pull_request.head.sha }}
             artifact-prefix: rustepubreader-pr-android
-        secrets: inherit
 
     build-ios:
         if: github.event.label.name == 'run-build' || github.event.label.name == 'Run-Build' || github.event.label.name == 'RUN-BUILD'
@@ -48,6 +36,9 @@ jobs:
             artifact-prefix: rustepubreader-pr-ios
 
     build-on-label:
+        permissions:
+            contents: read
+            pull-requests: write
         needs:
             - build-desktop
             - build-android

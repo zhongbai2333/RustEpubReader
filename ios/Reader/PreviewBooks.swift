@@ -18,9 +18,32 @@ struct LibraryEntry: Codable, Identifiable {
     var anchor: ReadingAnchor { .init(chapter: lastChapter, block: lastBlock ?? 0, charOffset: lastCharOffset ?? 0) }
     var color: Color { Color(red: 0.33, green: 0.31, blue: 0.40) }
 }
-struct BookSpan: Decodable { let text: String; let style: String; let link_url: String? }
-struct BookBlock: Decodable { let type: String; let core_block: Int?; let core_char_offset: Int?; let level: Int?; let spans: [BookSpan]?; let data: String?; let alt: String? }
-struct BookChapter: Decodable { let title: String; let blocks: [BookBlock] }
+struct BookSpan: Decodable, Equatable { let text: String; let style: String; let link_url: String? }
+struct NativeDimension: Decodable, Sendable, Equatable {
+    let px: Double; let em: Double; let percent: Double
+    func resolve(_ font: Double, _ extent: Double) -> Double { max(0,px+em*font+(extent.isFinite ? percent*extent : 0)) }
+}
+struct NativeInline: Decodable, Sendable, Equatable {
+    let start: Int; let end: Int; let size: Double?; let color: String?; let family: String?; let bold: Bool?; let italic: Bool?; let underline: Bool; let strike: Bool; let hidden: Bool; let baseline: Double; let small_caps: Bool; let note: String?
+}
+struct NativeList: Decodable, Sendable, Equatable {let start:Int;let end:Int;let text:String;let depth:Int;let marker:String}
+struct NativeRuby: Decodable, Sendable, Equatable { let start: Int; let end: Int; let text: String }
+struct NativeCell: Decodable, Sendable, Equatable { let start: Int; let end: Int; let text: String; let header: Bool; let span: Int; let align: String? }
+struct NativeTable: Decodable, Sendable, Equatable { let cells: [NativeCell]; let columns: Int }
+struct NativeNote: Decodable, Identifiable { let text: String; let href: String; var id: String { href } }
+struct NativeStyle: Decodable, Sendable, Equatable {
+    var size_px: Double? = nil; var inline: [NativeInline]? = nil; var ruby: [NativeRuby]? = nil; var table: NativeTable? = nil
+    var list: [NativeList]? = nil
+    var list_depth: Int? = nil; var quote: Bool? = nil; var pre: Bool? = nil
+    var inset_left: NativeDimension? = nil; var inset_right: NativeDimension? = nil
+    var padding_left: NativeDimension? = nil; var padding_right: NativeDimension? = nil; var padding_top: NativeDimension? = nil; var padding_bottom: NativeDimension? = nil
+    var margin_top: NativeDimension? = nil; var margin_bottom: NativeDimension? = nil; var indent_length: NativeDimension? = nil
+    var image_width: NativeDimension? = nil; var image_height: NativeDimension? = nil; var image_max_width: NativeDimension? = nil; var image_max_height: NativeDimension? = nil
+    var align: String?; var size: Double?; var line: Double?; var indent: Double?; var before: Double?; var after: Double?; var color: String?; var family: String?; var bold: Bool; var italic: Bool; var hidden: Bool; var action: Int?; var text: String?
+}
+struct NativePresentation: Decodable, Sendable { let styles: [NativeStyle]; let errors: [String] }
+struct BookBlock: Decodable, Equatable { var native_style: NativeStyle? = nil; let type: String; let core_block: Int?; let core_char_offset: Int?; let level: Int?; let spans: [BookSpan]?; let data: String?; let alt: String? }
+struct BookChapter: Decodable, Equatable { let title: String; let blocks: [BookBlock] }
 struct BookTOC: Decodable { let title: String; let chapter_index: Int }
 struct PreviewBook: Decodable, Identifiable {
     let entry: LibraryEntry
@@ -55,17 +78,23 @@ struct SyncSummary: Decodable {
     @Published var anchors: [String: ReadingAnchor] = [:]
     @Published var busy = false
     @Published var error: String?
-    @Published var errorTitle = "无法完成操作"
+    @Published var errorTitle = L("common.error_operation_failed")
     @Published var offer: CloudProgress?
     var openPath = ""
     let client: CoreClient
     let store: CoreStore
+    lazy var bookSharing = BookSharing(library: self)
+    @Published var receivingSharedBooks = false
     private var saveTask: Task<Void, Never>?
     var recent: String { recentBooks.first?.id ?? "" }
     var recentBooks: [LibraryEntry] { books.sorted { $0.lastOpened > $1.lastOpened } }
     init() {
         let documents = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let root = documents.appendingPathComponent("ReaderLibrary", isDirectory: true)
+        var temporary = root.appendingPathComponent(".book-share-tmp", isDirectory: true)
+        try? FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var values = URLResourceValues(); values.isExcludedFromBackup = true
+        try? temporary.setResourceValues(values)
         let device = UserDefaults.standard.string(forKey: "reader.device") ?? UUID().uuidString
         UserDefaults.standard.set(device, forKey: "reader.device")
         client = .init(root: root.path, device: device); store = CoreStore(client: client)
@@ -75,21 +104,31 @@ struct SyncSummary: Decodable {
         do {
             let loaded = try await store.library(); books = loaded
             anchors = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0.anchor) })
-        } catch { fail(error, title: "无法读取书库") }
+        } catch { fail(error, title: L("library.error_read_failed")) }
     }
     func importBook(_ url: URL) async {
         busy = true; defer { busy = false }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do { _ = try await store.importBook(path: url.path); await reload() }
-        catch { fail(error, title: "无法导入书籍") }
+        catch { fail(error, title: L("library.error_import_failed")) }
     }
     func remove(_ ids: Set<String>) async -> Bool {
         guard !busy else { return false }
         busy = true; defer { busy = false }
         await flush()
         do { try await store.remove(ids: Array(ids)); await reload(); return true }
-        catch { fail(error, title: "无法完成操作"); return false }
+        catch { fail(error, title: L("common.error_operation_failed")); return false }
+    }
+    func rename(_ entry: LibraryEntry, title: String) async -> Bool {
+        guard !busy else { return false }
+        busy = true; defer { busy = false }
+        await flush()
+        do { _ = try await store.rename(id: entry.id, title: title); await reload(); return true }
+        catch { fail(error, title: L("common.error_operation_failed")); return false }
+    }
+    func exportBooks(_ ids: [String], directory: URL) async throws -> [URL] {
+        try await store.exportBooks(ids: ids, directory: directory.path).map { URL(fileURLWithPath: $0) }
     }
     func open(_ entry: LibraryEntry) async -> PreviewBook? {
         guard !busy else { return nil }
@@ -100,7 +139,7 @@ struct SyncSummary: Decodable {
             openPath = book.entry.path
             save(book.entry.anchor, for: book)
             return book
-        } catch { fail(error, title: "无法打开书籍"); return nil }
+        } catch { fail(error, title: L("reader.error_open_failed")); return nil }
     }
     func save(_ anchor: ReadingAnchor, for book: PreviewBook) {
         anchors[book.id] = anchor
@@ -112,10 +151,10 @@ struct SyncSummary: Decodable {
             do {
                 let saved = try await store.save(id: book.id, anchor: anchor)
                 if let index = books.firstIndex(where: { $0.id == book.id }) { books[index] = saved }
-            } catch { fail(error, title: "无法保存阅读进度") }
+            } catch { fail(error, title: L("reader.error_save_progress_failed")) }
         }
     }
     func flush() async { await saveTask?.value }
     func closed() { openPath = ""; offer = nil; Task { try? await store.closed() } }
-    func fail(_ failure: Error, title: String) { errorTitle = title; error = failure.localizedDescription }
+    func fail(_ failure: Error, title: String) { errorTitle = title; error = (failure as? CoreFailure).map {ReaderErrors.display($0.message)} ?? L("common.error_operation_incomplete") }
 }

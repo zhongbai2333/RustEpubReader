@@ -1,5 +1,7 @@
 package com.zhongbai233.epub.reader.tts
 
+import com.zhongbai233.epub.reader.i18n.I18n
+
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -47,6 +49,7 @@ class TtsManager(context: Context) {
     // ── Internal state ──
     private var blocks: List<ContentBlock> = emptyList()
     private var mediaPlayer: MediaPlayer? = null
+    val audible: Boolean get() = runCatching { mediaPlayer?.isPlaying == true }.getOrDefault(false)
     private var prefetchJob: Job? = null
     private var prefetchBlock: Int = -1
     private var prefetchBytes: ByteArray? = null
@@ -62,7 +65,7 @@ class TtsManager(context: Context) {
         blocks = chapterBlocks
         val first = nextReadableBlock(0)
         if (first >= blocks.size) {
-            _status.value = "No readable content"
+            _status.value = I18n.t("tts.book_done")
             return
         }
         _playing.value = true
@@ -79,7 +82,7 @@ class TtsManager(context: Context) {
         blocks = chapterBlocks
         val target = nextReadableBlock(blockIndex)
         if (target >= blocks.size) {
-            _status.value = "No readable content"
+            _status.value = I18n.t("tts.book_done")
             return
         }
         _playing.value = true
@@ -134,7 +137,7 @@ class TtsManager(context: Context) {
             return
         }
 
-        _status.value = "合成中..."
+        _status.value = I18n.t("tts.synthesizing_label")
         synthesisJob?.cancel()
         synthesisJob = scope.launch {
             val bytes = engine.synthesize(text, voiceName, rate, volume)
@@ -146,7 +149,7 @@ class TtsManager(context: Context) {
                 // Start prefetching next block
                 startPrefetch(blockIdx)
             } else {
-                _status.value = "合成失败"
+                _status.value = I18n.t("tts.error_synthesis_failed")
                 _playing.value = false
             }
         }
@@ -181,7 +184,7 @@ class TtsManager(context: Context) {
         val next = nextReadableBlock(_currentBlock.value + 1)
         if (next >= blocks.size) {
             // Chapter finished
-            _status.value = "本章朗读完毕"
+            _status.value = I18n.t("tts.chapter_done")
             _playing.value = false
             _currentBlock.value = -1
             return
@@ -227,7 +230,7 @@ class TtsManager(context: Context) {
                 setOnCompletionListener { advanceToNext() }
                 setOnErrorListener { _, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
-                    _status.value = "播放错误"
+                    _status.value = I18n.t("tts.error_playback")
                     _playing.value = false
                     true
                 }
@@ -235,7 +238,7 @@ class TtsManager(context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "playBytes failed", e)
-            _status.value = "播放失败: ${e.message}"
+            _status.value = I18n.t("tts.error_playback")
             _playing.value = false
         }
     }

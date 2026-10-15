@@ -1,0 +1,6 @@
+EdgeSpeechToken.swift adapts drm.py in edge-tts, by rany2 and contributors.
+Upstream: https://github.com/rany2/edge-tts
+License: LGPLv3 (full upstream notice: edge-tts-LICENSE.txt).
+Swift adaptation: RustEpubReader contributors, 2026.
+Source and rebuild project: https://github.com/zhongbai2333/RustEpubReader
+The application source and Xcode project allow this module to be rebuilt and replaced. Other reader files retain their existing license.

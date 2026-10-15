@@ -84,6 +84,12 @@ class Library(private val context: Context) {
             )
     }
 
+    fun rename(uri: String, title: String) {
+        val result = org.json.JSONObject(RustBridge.renameBook(dataDir, uri, title) ?: error("Reader core returned no result"))
+        check(result.optBoolean("ok")) { result.optString("error") }
+        load()
+    }
+
     fun remove(index: Int) {
         if (index in books.indices) {
             removeByUri(books[index].uri)

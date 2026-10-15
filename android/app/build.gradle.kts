@@ -9,7 +9,8 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.zhongbai233.epub.reader"
+        applicationId = project.findProperty("READER_DIAGNOSTIC_APPLICATION_ID") as String? ?: "com.zhongbai233.epub.reader"
+        testInstrumentationRunner = "com.zhongbai233.epub.reader.ui.reader.IllustrationInstrumentation"
         minSdk = 26
         targetSdk = 35
         versionCode = (project.findProperty("APP_VERSION_CODE") as String?)?.toInt() ?: 1
@@ -71,6 +72,9 @@ android {
             isUniversalApk = false
         }
     }
+
+    sourceSets.getByName("androidTest").assets.srcDir("../../core/tests/fixtures")
+    sourceSets.getByName("test").resources.srcDir("../../core/tests/fixtures")
 
     packaging {
         jniLibs {
@@ -149,6 +153,7 @@ dependencies {
 
     // HTML parsing
     implementation("org.jsoup:jsoup:1.18.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     // Coil for image loading
     implementation("io.coil-kt:coil-compose:2.7.0")
@@ -187,3 +192,17 @@ tasks.whenTaskAdded {
         dependsOn("cargoBuild")
     }
 }
+
+// Both native UIs consume the exact core catalog source; generated assets are not edited.
+val readerCatalogs by tasks.registering(Sync::class) {
+    from(rootProject.file("../core/src/i18n")) {include("en.json", "zh_cn.json")}
+    into(layout.buildDirectory.dir("generated/readerCatalogs/i18n"))
+}
+android.sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/readerCatalogs").get().asFile)
+tasks.named("preBuild") {dependsOn(readerCatalogs)}
+
+val validateReaderTranslations by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile)
+    commandLine("python3", "scripts/check-i18n.py")
+}
+readerCatalogs { dependsOn(validateReaderTranslations) }

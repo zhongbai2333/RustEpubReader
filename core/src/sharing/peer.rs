@@ -656,7 +656,9 @@ fn handle_encrypted_session(
                     return Err("Failed to persist received book".into());
                 }
             }
-            Message::SyncProgress { entries } => {
+            Message::SyncProgress { entries, activity } => {
+                let device = store.lock().map_err(|e| e.to_string())?.device_id.clone();
+                crate::reading_activity::import(data_dir, &device, &activity)?;
                 let all_progress = {
                     let mut s = store
                         .lock()
@@ -669,6 +671,7 @@ fn handle_encrypted_session(
                     stream,
                     &Message::ProgressResponse {
                         entries: all_progress,
+                        activity: crate::reading_activity::snapshots(data_dir, &device)?,
                     },
                     &aes_key,
                     &mut send_counter,
@@ -945,6 +948,7 @@ pub fn auto_sync_session(
         stream,
         &Message::SyncProgress {
             entries: store.progress.clone(),
+            activity: crate::reading_activity::snapshots(data_dir, &store.device_id)?,
         },
         aes_key,
         send_ctr,
@@ -952,7 +956,8 @@ pub fn auto_sync_session(
     dbg_log!("SYNC: SyncProgress sent, waiting for ProgressResponse...");
 
     let changed_progress = match crypto::read_encrypted_message(stream, aes_key, recv_ctr)? {
-        Message::ProgressResponse { entries } => {
+        Message::ProgressResponse { entries, activity } => {
+            crate::reading_activity::import(data_dir, &store.device_id, &activity)?;
             dbg_log!("SYNC: got ProgressResponse with {} entries", entries.len());
             let changed = store.merge_progress(&entries);
             store.save(data_dir);

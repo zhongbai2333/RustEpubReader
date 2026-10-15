@@ -14,6 +14,10 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.key
+import kotlinx.coroutines.ensureActive
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -102,9 +106,12 @@ internal fun PageModeContent(
     onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
     initialBlock: Int = 0,
     onPositionChange: (Int) -> Unit = {},
+    onContentPrepared: () -> Unit = {},
 ) {
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
+    val fontResolver = androidx.compose.ui.platform.LocalFontFamilyResolver.current
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
     val screenHeightDp = configuration.screenHeightDp.dp
     val screenWidthDp = configuration.screenWidthDp.dp
     // 按屏幕比例计算边距，适配不同尺寸设备
@@ -124,49 +131,34 @@ internal fun PageModeContent(
     val contentWidthPx = with(density) { contentWidthDp.toPx() }
     val spToPx = density.fontScale * density.density
     val showChapterTitle = remember(chapter) { shouldRenderChapterTitle(chapter) }
-
-    // 预加载缓存（以章节索引为 key，布局参数变化时清空，LRU 限制最多 10 章防止 OOM）
-    val paginationCache = remember {
-        lruCache<Int, List<List<PaginatedBlock>>>(PAGINATION_CACHE_MAX_SIZE)
-    }
-    val layoutTag =
-        "$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale-${fontFamily.hashCode()}"
-    val prevLayoutTag = remember { mutableStateOf(layoutTag) }
-    if (prevLayoutTag.value != layoutTag) {
-        prevLayoutTag.value = layoutTag
-        paginationCache.clear()
-    }
-
-    // 将内容分页（优先从缓存取，避免主线程重复计算）
-    val pages =
-        remember(
-            currentChapter,
-            fontSize,
-            availableHeightDp,
-            contentWidthDp,
-            showChapterTitle,
-            lineSpacing,
-            paraSpacing,
-            textIndent,
-            titleFontScale,
-            fontFamily,
-        ) {
-            paginationCache.getOrPut(currentChapter) {
-                paginateContent(
-                    chapter,
-                    fontSize,
-                    availableHeightDp,
-                    contentWidthDp,
-                    density,
-                    showChapterTitle,
-                    titleVPaddingDp,
-                    lineSpacing,
-                    paraSpacing,
-                    textIndent,
-                    titleFontScale,
-                )
+    val paginationCache=remember { PageLayoutCache(PAGINATION_CACHE_MAX_SIZE) }
+    val layoutTag="$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale-${fontFamily.hashCode()}"
+    val pages=key(chapter,currentChapter,layoutTag) {
+        val prepared by produceState<List<List<PaginatedBlock>>>(paginationCache.get(currentChapter,chapter,layoutTag) ?: emptyList()) {
+            value=withContext(Dispatchers.Default) {
+                val backgroundMeasurer=androidx.compose.ui.text.TextMeasurer(fontResolver,density,layoutDirection,cacheSize=16)
+                val measured=paginationCache.get(currentChapter,chapter,layoutTag) ?: paginateContent(
+                    chapter,fontSize,availableHeightDp,contentWidthDp,density,showChapterTitle,
+                    titleVPaddingDp,lineSpacing,paraSpacing,textIndent,titleFontScale,backgroundMeasurer,fontFamily).ifEmpty { listOf(emptyList()) }
+                coroutineContext.ensureActive()
+                // Prepare only the restored visible leaf/spread; neighbours are optional warmup.
+                val first=measured.indexOfFirst {page->page.any {it.sourceBlockIndex==initialBlock}}.let {if(it>=0) it else measured.lastIndex.coerceAtLeast(0)}
+                val begin=if(isTwoColumn) first/2*2 else first
+                measured.drop(begin).take(if(isTwoColumn) 2 else 1).flatten().mapNotNull {it.block as? ContentBlock.Image}
+                    .distinctBy {it.data}.forEach {ReaderImageCache.load(it.data)?.prepareToDraw()}
+                coroutineContext.ensureActive()
+                paginationCache.put(currentChapter,chapter,layoutTag,measured)
+                measured
             }
         }
+        prepared
+    }
+    if(pages.isEmpty()) {
+        Box(Modifier.fillMaxSize().background(bgColor))
+        return
+    }
+    val preparedCallback by rememberUpdatedState(onContentPrepared)
+    LaunchedEffect(pages) { withFrameNanos { }; withFrameNanos { }; preparedCallback() }
 
     val pairedPages =
         remember(pages, isTwoColumn) {
@@ -175,6 +167,7 @@ internal fun PageModeContent(
 
     // 预加载相邻章节，消除跨章翻页时的白屏闪烁
     LaunchedEffect(
+        ChapterListIdentity(allChapters),
         currentChapter,
         fontSize,
         availableHeightDp,
@@ -186,23 +179,15 @@ internal fun PageModeContent(
         fontFamily,
     ) {
         withContext(Dispatchers.Default) {
+            val backgroundMeasurer=androidx.compose.ui.text.TextMeasurer(fontResolver,density,layoutDirection,cacheSize=16)
             for (adjIdx in listOf(currentChapter - 1, currentChapter + 1)) {
                 val adjChapter = allChapters.getOrNull(adjIdx) ?: continue
-                paginationCache.getOrPut(adjIdx) {
-                    val adjShowTitle = shouldRenderChapterTitle(adjChapter)
-                    paginateContent(
-                        adjChapter,
-                        fontSize,
-                        availableHeightDp,
-                        contentWidthDp,
-                        density,
-                        adjShowTitle,
-                        titleVPaddingDp,
-                        lineSpacing,
-                        paraSpacing,
-                        textIndent,
-                        titleFontScale,
-                    )
+                if(paginationCache.get(adjIdx,adjChapter,layoutTag)==null) {
+                    val prepared=paginateContent(adjChapter,fontSize,availableHeightDp,contentWidthDp,density,
+                        shouldRenderChapterTitle(adjChapter),titleVPaddingDp,lineSpacing,paraSpacing,textIndent,titleFontScale,
+                        backgroundMeasurer,fontFamily)
+                    coroutineContext.ensureActive()
+                    paginationCache.put(adjIdx,adjChapter,layoutTag,prepared)
                 }
             }
         }
@@ -707,7 +692,7 @@ internal fun PageModeContent(
                     }
                 } else if (isLeadingVirtual) {
                     val pCh = allChapters.getOrNull(currentChapter - 1)
-                    val pPg = paginationCache[currentChapter - 1] ?: emptyList()
+                    val pPg = paginationCache.peek(currentChapter - 1,layoutTag) ?: emptyList()
                     val pPaired = if (isTwoColumn) pPg.chunked(2) else pPg.map { listOf(it) }
                     slotColumns = pPaired.lastOrNull() ?: emptyList()
                     slotTitle = pCh?.title ?: ""
@@ -721,7 +706,7 @@ internal fun PageModeContent(
                     slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pPg.size)
                 } else if (isTrailingVirtual) {
                     val nCh = allChapters.getOrNull(currentChapter + 1)
-                    val nPg = paginationCache[currentChapter + 1] ?: emptyList()
+                    val nPg = paginationCache.peek(currentChapter + 1,layoutTag) ?: emptyList()
                     val nPaired = if (isTwoColumn) nPg.chunked(2) else nPg.map { listOf(it) }
                     slotColumns = nPaired.firstOrNull() ?: emptyList()
                     slotTitle = nCh?.title ?: ""
@@ -826,7 +811,7 @@ internal fun PageModeContent(
                     }
                 } else if (isLeadingVirtual) {
                     val pCh = allChapters.getOrNull(currentChapter - 1)
-                    val pPg = paginationCache[currentChapter - 1] ?: emptyList()
+                    val pPg = paginationCache.peek(currentChapter - 1,layoutTag) ?: emptyList()
                     val pPaired = if (isTwoColumn) pPg.chunked(2) else pPg.map { listOf(it) }
                     slotColumns = pPaired.lastOrNull() ?: emptyList()
                     slotTitle = pCh?.title ?: ""
@@ -840,7 +825,7 @@ internal fun PageModeContent(
                     slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pPg.size)
                 } else if (isTrailingVirtual) {
                     val nCh = allChapters.getOrNull(currentChapter + 1)
-                    val nPg = paginationCache[currentChapter + 1] ?: emptyList()
+                    val nPg = paginationCache.peek(currentChapter + 1,layoutTag) ?: emptyList()
                     val nPaired = if (isTwoColumn) nPg.chunked(2) else nPg.map { listOf(it) }
                     slotColumns = nPaired.firstOrNull() ?: emptyList()
                     slotTitle = nCh?.title ?: ""
@@ -941,7 +926,7 @@ internal fun PageModeContent(
                     }
                 } else if (isLeadingVirtual) {
                     val pCh = allChapters.getOrNull(currentChapter - 1)
-                    val pPg = paginationCache[currentChapter - 1] ?: emptyList()
+                    val pPg = paginationCache.peek(currentChapter - 1,layoutTag) ?: emptyList()
                     val pPaired = if (isTwoColumn) pPg.chunked(2) else pPg.map { listOf(it) }
                     slotColumns = pPaired.lastOrNull() ?: emptyList()
                     slotTitle = pCh?.title ?: ""
@@ -955,7 +940,7 @@ internal fun PageModeContent(
                     slotPageLabel = getPageLabelLocal(slotColumns, startIdx, pPg.size)
                 } else if (isTrailingVirtual) {
                     val nCh = allChapters.getOrNull(currentChapter + 1)
-                    val nPg = paginationCache[currentChapter + 1] ?: emptyList()
+                    val nPg = paginationCache.peek(currentChapter + 1,layoutTag) ?: emptyList()
                     val nPaired = if (isTwoColumn) nPg.chunked(2) else nPg.map { listOf(it) }
                     slotColumns = nPaired.firstOrNull() ?: emptyList()
                     slotTitle = nCh?.title ?: ""
@@ -1169,6 +1154,7 @@ private fun PageRenderLayer(
                             blockIndex = blockIndex,
                             block = block,
                             sourceCharOffset = paginatedBlock.sourceCharOffset,
+                            imageMaxHeight = paginatedBlock.imageMaxHeight,
                             fontSize = fontSize,
                             textColor = textColor,
                             linkColor = linkColor,

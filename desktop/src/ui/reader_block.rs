@@ -8,7 +8,7 @@ use reader_core::epub::{ContentBlock, InlineStyle, TextSpan};
 
 use super::reader_state::*;
 
-fn family_from_name(name: &str) -> FontFamily {
+pub(crate) fn family_from_name(name: &str) -> FontFamily {
     match name {
         "Monospace" => FontFamily::Monospace,
         "Serif" => FontFamily::Name("Serif".into()),
@@ -86,16 +86,11 @@ pub(crate) fn render_content_layout(
     block_start: usize,
     block_end: usize,
     show_title: bool,
+    fragment: Option<super::reader_pagination::PageFragment>,
     font_size: f32,
     title_font_scale: f32,
     bg_color: Color32,
     current_chapter: usize,
-    total_ch: usize,
-    action_prev: &mut bool,
-    action_next: &mut bool,
-    action_go_back: &mut bool,
-    show_chapter_nav: bool,
-    has_previous_chapter: bool,
     font_color: Option<Color32>,
     font_family_name: &str,
     i18n: &reader_core::i18n::I18n,
@@ -105,6 +100,32 @@ pub(crate) fn render_content_layout(
         Vec<(usize, usize, reader_core::library::HighlightColor)>,
     >,
 ) {
+    super::reader_images::reading_column(blocks, text_width, font_size, title_font_scale);
+    let show_title = show_title
+        && !blocks
+            .first()
+            .is_some_and(|b| matches!(b, ContentBlock::Heading { .. }));
+    let original_clip = ui.clip_rect();
+    let mut fragment_ui;
+    let ui = if let Some(fragment) = fragment {
+        let top = ui.cursor().top();
+        let visible_top = top + READER_CONTENT_TOP_PADDING;
+        let clip = egui::Rect::from_min_max(
+            egui::pos2(ui.max_rect().left(), visible_top),
+            egui::pos2(ui.max_rect().right(), visible_top + fragment.height.max(0.)),
+        )
+        .intersect(original_clip);
+        fragment_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("page_fragment", block_start, fragment.offset.to_bits()))
+                .max_rect(ui.max_rect().translate(egui::vec2(0., -fragment.offset)))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        fragment_ui.set_clip_rect(clip);
+        &mut fragment_ui
+    } else {
+        ui
+    };
     egui::Frame::new()
         .inner_margin(egui::Margin {
             left: 0,
@@ -117,6 +138,7 @@ pub(crate) fn render_content_layout(
                 ui.add_space(h_margin);
                 ui.vertical(|ui| {
                     ui.set_max_width(text_width);
+                    ui.spacing_mut().item_spacing.y = 0.;
                     if show_title {
                         let title_color = effective_text_color(bg_color, font_color);
                         let title_family = family_from_name(font_family_name);
@@ -131,86 +153,202 @@ pub(crate) fn render_content_layout(
                         });
                         ui.add_space(TITLE_SPACING);
                     }
-                    let effective_start = if show_title && block_start == 0 {
-                        if matches!(blocks.first(), Some(ContentBlock::Heading { .. })) {
-                            1
-                        } else {
-                            0
-                        }
-                    } else {
-                        block_start
-                    };
+                    let effective_start = block_start;
                     for (i, block) in blocks[effective_start..block_end].iter().enumerate() {
                         let abs_idx = effective_start + i;
                         let hl_ranges = highlight_ranges
                             .get(&abs_idx)
                             .map(|v| v.as_slice())
                             .unwrap_or(&[]);
-                        render_block(
-                            ui,
-                            block,
+                        let media = super::reader_images::media_for(BlockKey::new(
+                            current_chapter,
+                            abs_idx,
+                        ));
+                        let replaced_heading = show_title
+                            && abs_idx == 0
+                            && matches!(block, ContentBlock::Heading { .. });
+                        let text_height = if replaced_heading {
+                            0.
+                        } else {
+                            estimate_block_height(
+                                block,
+                                font_size,
+                                title_font_scale,
+                                font_size * line_spacing(),
+                                text_width,
+                            )
+                        };
+                        let limit = super::reader_images::media_limit(
+                            text_height,
+                            media.len(),
                             font_size,
-                            title_font_scale,
-                            bg_color,
-                            text_width,
-                            font_color,
-                            font_family_name,
-                            i18n,
-                            clicked_link,
-                            BlockKey::new(current_chapter, abs_idx),
-                            hl_ranges,
+                            super::reader_images::current_limit(),
                         );
-                    }
-                    if show_chapter_nav {
-                        ui.add_space(60.0);
-                        if has_previous_chapter {
-                            ui.vertical_centered(|ui| {
-                                if ui
-                                    .button(
-                                        egui::RichText::new(i18n.t("reader.go_back_chapter"))
-                                            .size(15.0),
-                                    )
-                                    .clicked()
-                                {
-                                    *action_go_back = true;
-                                }
-                            });
-                            ui.add_space(8.0);
-                        }
-                        ui.separator();
-                        ui.add_space(30.0);
-                        ui.horizontal(|ui| {
-                            if current_chapter > 0
-                                && ui
-                                    .button(
-                                        egui::RichText::new(i18n.t("reader.prev_chapter"))
-                                            .size(16.0),
-                                    )
-                                    .clicked()
-                            {
-                                *action_prev = true;
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if current_chapter + 1 < total_ch
-                                        && ui
-                                            .button(
-                                                egui::RichText::new(i18n.t("reader.next_chapter"))
-                                                    .size(16.0),
-                                            )
-                                            .clicked()
-                                    {
-                                        *action_next = true;
-                                    }
-                                },
+                        for image in media.iter().filter(|image| !image.after) {
+                            super::reader_images::styled_paint(
+                                ui,
+                                &image.data,
+                                image.alt.as_deref(),
+                                text_width,
+                                limit,
+                                font_size,
+                                i18n,
+                                &block.native_style(),
                             );
-                        });
+                        }
+                        if !replaced_heading {
+                            render_block(
+                                ui,
+                                block,
+                                font_size,
+                                title_font_scale,
+                                bg_color,
+                                text_width,
+                                font_color,
+                                font_family_name,
+                                i18n,
+                                clicked_link,
+                                BlockKey::new(current_chapter, abs_idx),
+                                hl_ranges,
+                            );
+                        }
+                        for image in media.iter().filter(|image| image.after) {
+                            super::reader_images::styled_paint(
+                                ui,
+                                &image.data,
+                                image.alt.as_deref(),
+                                text_width,
+                                limit,
+                                font_size,
+                                i18n,
+                                &block.native_style(),
+                            );
+                        }
                     }
                 });
                 ui.add_space(h_margin);
             });
         });
+}
+
+type NativeGalleyCacheEntry = (
+    std::sync::Weak<egui::Galley>,
+    std::sync::Arc<egui::Galley>,
+    u64,
+);
+
+#[derive(Clone, Default)]
+struct NativeGalleyCache {
+    entries: std::collections::HashMap<(usize, u64), NativeGalleyCacheEntry>,
+    clock: u64,
+}
+
+// egui center/right rows have negative coordinates around their alignment
+// origin. Move glyphs and meshes into the native reading column together so
+// painting, hit testing and highlights use the same coordinates.
+fn native_galley(
+    ui: &egui::Ui,
+    mut job: LayoutJob,
+    style: &reader_core::epub::native::NativeStyle,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    // egui applies explicit line_height to the glyph's decoration rectangle.
+    // Lay out glyphs at their real font height first, then space the rows. This
+    // keeps underlines, superscripts and ruby tied to their actual baselines.
+    let heights: Vec<_> = job.sections.iter().map(|s| s.format.line_height).collect();
+    for section in &mut job.sections {
+        section.format.line_height = None;
+    }
+    let mut galley = ui.painter().layout_job(job);
+    let source = std::sync::Arc::downgrade(&galley);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    for height in &heights {
+        height.map(f32::to_bits).hash(&mut hasher);
+    }
+    style.align.hash(&mut hasher);
+    width.to_bits().hash(&mut hasher);
+    let key = (std::sync::Arc::as_ptr(&galley) as usize, hasher.finish());
+    let id = egui::Id::new("reader_native_galleys");
+    if let Some(cached) = ui.ctx().data_mut(|store| {
+        let cache = store.get_temp_mut_or_default::<NativeGalleyCache>(id);
+        cache.clock += 1;
+        cache
+            .entries
+            .get_mut(&key)
+            .filter(|entry| entry.0.strong_count() > 0 && entry.0.ptr_eq(&source))
+            .map(|entry| {
+                entry.2 = cache.clock;
+                entry.1.clone()
+            })
+    }) {
+        return cached;
+    }
+    let value = std::sync::Arc::make_mut(&mut galley);
+    let x = match style.align.as_deref() {
+        Some("right") => width,
+        Some("center") => width * 0.5,
+        _ => 0.,
+    };
+    let mut next_y = 0.;
+    let mut mesh_bounds = egui::Rect::NOTHING;
+    for row in &mut value.rows {
+        let target = row
+            .glyphs
+            .iter()
+            .filter_map(|g| heights[g.section_index as usize])
+            .fold(row.rect.height(), f32::max);
+        let delta = egui::vec2(
+            x,
+            next_y - row.rect.top() + (target - row.rect.height()) * 0.5,
+        );
+        for glyph in &mut row.glyphs {
+            glyph.pos += delta;
+        }
+        for vertex in &mut row.visuals.mesh.vertices {
+            vertex.pos += delta;
+        }
+        row.visuals.mesh_bounds = row.visuals.mesh_bounds.translate(delta);
+        mesh_bounds = mesh_bounds.union(row.visuals.mesh_bounds);
+        row.rect = egui::Rect::from_min_size(
+            egui::pos2(row.rect.left() + x, next_y),
+            egui::vec2(row.rect.width(), target),
+        );
+        next_y += target;
+    }
+    value.rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, next_y));
+    value.mesh_bounds = mesh_bounds;
+    ui.ctx().data_mut(|store| {
+        let cache = store.get_temp_mut_or_default::<NativeGalleyCache>(id);
+        cache.entries.retain(|_, entry| entry.0.strong_count() > 0);
+        cache
+            .entries
+            .insert(key, (source, galley.clone(), cache.clock));
+        while cache.entries.len() > 64
+            || cache
+                .entries
+                .values()
+                .map(|entry| {
+                    entry
+                        .1
+                        .rows
+                        .iter()
+                        .map(|row| row.glyphs.len())
+                        .sum::<usize>()
+                })
+                .sum::<usize>()
+                > 80_000
+        {
+            let oldest = cache
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.2)
+                .map(|(key, _)| *key)
+                .unwrap();
+            cache.entries.remove(&oldest);
+        }
+    });
+    galley
 }
 
 // ── Block-level rendering ──
@@ -230,15 +368,241 @@ pub(crate) fn render_block(
     block_key: BlockKey,
     highlight_ranges: &[(usize, usize, reader_core::library::HighlightColor)],
 ) {
+    let style = block.native_style();
+    if style.hidden {
+        return;
+    }
+    let font = style.size_at(font_size);
+    let (left, right, top, bottom) = native_insets(&style, font, max_width);
+    ui.add_space(top);
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.;
+        ui.horizontal(|ui| {
+            ui.add_space(left);
+            ui.vertical(|ui| {
+                ui.set_max_width((max_width - left - right).max(32.));
+                render_block_content(
+                    ui,
+                    block,
+                    font_size,
+                    title_font_scale,
+                    bg_color,
+                    (max_width - left - right).max(32.),
+                    font_color,
+                    font_family_name,
+                    i18n,
+                    clicked_link,
+                    block_key,
+                    highlight_ranges,
+                );
+            });
+            ui.add_space(right);
+        });
+    });
+    ui.add_space(bottom);
+}
+fn native_insets(
+    style: &reader_core::epub::native::NativeStyle,
+    font: f32,
+    width: f32,
+) -> (f32, f32, f32, f32) {
+    let resolve = |v: &Option<reader_core::epub::native::Dimension>| {
+        v.as_ref().map_or(0., |v| v.resolve(font, width))
+    };
+    let left = (resolve(&style.inset_left) + resolve(&style.padding_left)).min(width * 0.4);
+    let right = (resolve(&style.inset_right) + resolve(&style.padding_right)).min(width * 0.4);
+    (
+        left,
+        right,
+        resolve(&style.margin_top) + resolve(&style.padding_top),
+        resolve(&style.margin_bottom) + resolve(&style.padding_bottom),
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn render_block_content(
+    ui: &mut egui::Ui,
+    block: &ContentBlock,
+    font_size: f32,
+    title_font_scale: f32,
+    bg_color: Color32,
+    max_width: f32,
+    font_color: Option<Color32>,
+    font_family_name: &str,
+    i18n: &reader_core::i18n::I18n,
+    clicked_link: &mut Option<String>,
+    block_key: BlockKey,
+    highlight_ranges: &[(usize, usize, reader_core::library::HighlightColor)],
+) {
+    let style = block.native_style();
+    if style.hidden {
+        return;
+    }
+    let font_size = style.size_at(font_size);
+    ui.add_space(font_size * style.before.unwrap_or(0.0));
+    if !style.ruby.is_empty() {
+        ui.add_space(font_size * 0.65);
+    }
+    if let Some(action) = style.action {
+        let label = style.text.clone().unwrap_or_else(|| match block {
+            ContentBlock::Paragraph { spans, .. } | ContentBlock::Heading { spans, .. } => {
+                spans.iter().map(|s| s.text.as_str()).collect()
+            }
+            _ => String::new(),
+        });
+        if ui.button(label).clicked() {
+            *clicked_link = Some(format!("reader-event:{}:{action}", block_key.chapter));
+        }
+        return;
+    }
+    if let Some(text) = &style.text {
+        let galley = ui.painter().layout(
+            text.clone(),
+            egui::FontId::new(font_size, family_from_name(font_family_name)),
+            effective_text_color(bg_color, font_color),
+            max_width,
+        );
+        let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+        super::reader_pagination::record_galley(&galley, rect.min, 0.);
+        ui.painter().galley(rect.min, galley, Color32::PLACEHOLDER);
+        ui.add_space(font_size * style.after.unwrap_or(para_spacing()));
+        return;
+    }
+    if !style.list.is_empty() {
+        for line in &style.list {
+            ui.horizontal_top(|ui| {
+                ui.add_space(
+                    font_size * 1.2 * line.depth.saturating_sub(style.list_depth as usize) as f32,
+                );
+                ui.label(
+                    egui::RichText::new(&line.marker)
+                        .size(font_size)
+                        .color(effective_text_color(bg_color, font_color)),
+                );
+                let available = ui.available_width();
+                let spans = [TextSpan {
+                    text: line.text.clone(),
+                    style: InlineStyle::Normal,
+                    link_url: None,
+                    correction: None,
+                }];
+                let mut line_style = style.clone();
+                line_style.list.clear();
+                line_style.indent = Some(0.);
+                line_style.inline.clear();
+                let galley = native_galley(
+                    ui,
+                    build_layout_job(
+                        &spans,
+                        font_size,
+                        bg_color,
+                        false,
+                        available,
+                        font_color,
+                        font_family_name,
+                        &[],
+                        &line_style,
+                    ),
+                    &line_style,
+                    available,
+                );
+                let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+                super::reader_pagination::record_galley(&galley, rect.min, 0.);
+                ui.painter().galley(rect.min, galley, Color32::PLACEHOLDER);
+            });
+            ui.add_space(font_size * 0.3);
+        }
+        return;
+    }
+    if let Some(table) = &style.table {
+        let color = effective_text_color(bg_color, font_color);
+        let column = max_width / table.columns.max(1) as f32;
+        let jobs: Vec<_> = table
+            .cells
+            .iter()
+            .map(|cell| {
+                let mut cell_style = style.clone();
+                cell_style.table = None;
+                cell_style.inline.clear();
+                cell_style.indent = Some(0.);
+                cell_style.align = cell.align.clone();
+                let spans = [TextSpan {
+                    text: cell.text.clone(),
+                    style: if cell.header {
+                        InlineStyle::Bold
+                    } else {
+                        InlineStyle::Normal
+                    },
+                    link_url: None,
+                    correction: None,
+                }];
+                let width = (column * cell.span as f32 - 12.).max(16.);
+                let galley = native_galley(
+                    ui,
+                    build_layout_job(
+                        &spans,
+                        font_size,
+                        bg_color,
+                        cell.header,
+                        width,
+                        font_color,
+                        font_family_name,
+                        &[],
+                        &cell_style,
+                    ),
+                    &cell_style,
+                    width,
+                );
+                (cell, galley)
+            })
+            .collect();
+        let height = jobs
+            .iter()
+            .map(|(_, g)| g.size().y)
+            .fold(font_size, f32::max)
+            + 12.;
+        let (area, _) = ui.allocate_exact_size(egui::vec2(max_width, height), egui::Sense::hover());
+        let mut x = area.left();
+        for (cell, galley) in jobs {
+            let width = column * cell.span as f32;
+            let rect =
+                egui::Rect::from_min_size(egui::pos2(x, area.top()), egui::vec2(width, height));
+            if cell.header {
+                ui.painter()
+                    .rect_filled(rect, 0., color.linear_multiply(0.07));
+            }
+            ui.painter().rect_stroke(
+                rect,
+                0.,
+                egui::Stroke::new(0.5_f32, color.linear_multiply(0.3)),
+                egui::StrokeKind::Inside,
+            );
+            super::reader_pagination::record_galley(&galley, rect.min + egui::vec2(6., 6.), 0.);
+            super::reader_pagination::record_table_source(
+                &galley,
+                rect.top() + 6.,
+                cell.start,
+                cell.end,
+            );
+            ui.painter()
+                .galley(rect.min + egui::vec2(6., 6.), galley, Color32::PLACEHOLDER);
+            x += width;
+        }
+        ui.add_space(font_size * style.after.unwrap_or(0.));
+        return;
+    }
     match block {
         ContentBlock::Heading { level, spans, .. } => {
-            let scale = match level {
-                1 => title_font_scale * 1.3,
-                2 => title_font_scale * 1.1,
-                3 => title_font_scale * 0.9,
-                _ => title_font_scale * 0.8,
-            }
-            .max(1.0);
+            let scale = if style.size.is_some() || style.size_px.is_some() {
+                1.0
+            } else {
+                match level {
+                    1 => title_font_scale * 1.3,
+                    2 => title_font_scale * 1.1,
+                    3 => title_font_scale * 0.9,
+                    _ => title_font_scale * 0.8,
+                }
+                .max(1.0)
+            };
             let job = build_layout_job(
                 spans,
                 font_size * scale,
@@ -248,10 +612,22 @@ pub(crate) fn render_block(
                 font_color,
                 font_family_name,
                 &[],
+                &style,
             );
-            ui.add_space(font_size * 0.8);
+            if style.before.is_none() {
+                ui.add_space(font_size * 0.8);
+            }
             let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(block_key);
-            let galley = ui.painter().layout_job(job);
+            let galley = native_galley(ui, job, &style, max_width);
+            super::reader_pagination::record_galley(
+                &galley,
+                ui.cursor().min,
+                if style.ruby.is_empty() {
+                    0.
+                } else {
+                    font_size * 0.65
+                },
+            );
             let galley_size = galley.size();
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
@@ -261,6 +637,16 @@ pub(crate) fn render_block(
             }
             ui.painter()
                 .galley(rect.min, galley.clone(), Color32::PLACEHOLDER);
+            paint_native_ruby(
+                ui,
+                &galley,
+                rect,
+                &style,
+                font_size,
+                bg_color,
+                font_color,
+                font_family_name,
+            );
 
             let text: String = spans.iter().map(|span| span.text.as_str()).collect();
             BLOCK_GALLEYS.with(|galleys| {
@@ -268,6 +654,7 @@ pub(crate) fn render_block(
                     key: block_key,
                     galley: galley.clone(),
                     rect,
+                    clip: ui.clip_rect(),
                     text,
                     response: response.clone(),
                 });
@@ -275,7 +662,7 @@ pub(crate) fn render_block(
 
             // Handle individual link clicks via pointer position matching
             if let Some(hover_pos) = ui.ctx().pointer_hover_pos() {
-                if rect.contains(hover_pos) {
+                if rect.intersect(ui.clip_rect()).contains(hover_pos) {
                     let cursor = galley.cursor_from_pos(hover_pos - rect.min);
                     let mut cumulative = 0;
                     let mut hovered_url = None;
@@ -290,6 +677,18 @@ pub(crate) fn render_block(
                         cumulative += span_len;
                     }
 
+                    let hovered_url = style
+                        .inline
+                        .iter()
+                        .rev()
+                        .find(|r| {
+                            cursor.ccursor.index >= r.start
+                                && cursor.ccursor.index < r.end
+                                && r.note.is_some()
+                        })
+                        .and_then(|r| r.note.as_ref())
+                        .map(|href| format!("reader-note:{href}"))
+                        .or(hovered_url);
                     if let Some(url) = hovered_url {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         if response.clicked() {
@@ -298,7 +697,7 @@ pub(crate) fn render_block(
                     }
                 }
             }
-            ui.add_space(font_size * 0.4);
+            ui.add_space(font_size * style.after.unwrap_or(0.4));
         }
         ContentBlock::Paragraph { spans, .. } => {
             let is_readwrite = CSC_READWRITE.get();
@@ -412,11 +811,21 @@ pub(crate) fn render_block(
                 font_color,
                 font_family_name,
                 highlight_ranges,
+                &style,
             );
             let text: String = display_spans.iter().map(|s| s.text.as_str()).collect();
 
             // Layout into Galley, allocate space, and paint manually
-            let galley = ui.painter().layout_job(job);
+            let galley = native_galley(ui, job, &style, max_width);
+            super::reader_pagination::record_galley(
+                &galley,
+                ui.cursor().min,
+                if style.ruby.is_empty() {
+                    0.
+                } else {
+                    font_size * 0.65
+                },
+            );
             let galley_size = galley.size();
             let (rect, response) =
                 ui.allocate_exact_size(galley_size, egui::Sense::click_and_drag());
@@ -426,10 +835,20 @@ pub(crate) fn render_block(
             }
             ui.painter()
                 .galley(rect.min, galley.clone(), Color32::PLACEHOLDER);
+            paint_native_ruby(
+                ui,
+                &galley,
+                rect,
+                &style,
+                font_size,
+                bg_color,
+                font_color,
+                font_family_name,
+            );
 
             // ── Paint CSC annotations ──
             if !csc_annotations.is_empty() {
-                let mapping = build_csc_char_mapping(&display_spans, font_size, max_width);
+                let mapping: Vec<_> = (0..text.chars().count()).collect();
                 let ruby_font = FontId::new(font_size * 0.45, FontFamily::Proportional);
                 let ruby_color = Color32::from_gray(140);
                 // Pre-fetch hover position once, skip per-char hover checks if pointer outside block
@@ -531,6 +950,7 @@ pub(crate) fn render_block(
                     key: block_key,
                     galley: galley.clone(),
                     rect,
+                    clip: ui.clip_rect(),
                     text: text.clone(),
                     response: response.clone(),
                 });
@@ -538,7 +958,7 @@ pub(crate) fn render_block(
 
             // Handle individual link clicks via pointer position matching
             if let Some(hover_pos) = ui.ctx().pointer_hover_pos() {
-                if rect.contains(hover_pos) {
+                if rect.intersect(ui.clip_rect()).contains(hover_pos) {
                     let cursor = galley.cursor_from_pos(hover_pos - rect.min);
                     let mut cumulative = 0;
                     let mut hovered_url = None;
@@ -553,6 +973,18 @@ pub(crate) fn render_block(
                         cumulative += span_len;
                     }
 
+                    let hovered_url = style
+                        .inline
+                        .iter()
+                        .rev()
+                        .find(|r| {
+                            cursor.ccursor.index >= r.start
+                                && cursor.ccursor.index < r.end
+                                && r.note.is_some()
+                        })
+                        .and_then(|r| r.note.as_ref())
+                        .map(|href| format!("reader-note:{href}"))
+                        .or(hovered_url);
                     if let Some(url) = hovered_url {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         if response.clicked() {
@@ -561,7 +993,7 @@ pub(crate) fn render_block(
                     }
                 }
             }
-            ui.add_space(font_size * para_spacing());
+            ui.add_space(font_size * style.after.unwrap_or(para_spacing()));
         }
         ContentBlock::Separator => {
             ui.add_space(8.0);
@@ -571,16 +1003,75 @@ pub(crate) fn render_block(
         ContentBlock::BlankLine => {
             ui.add_space(font_size * 0.5);
         }
-        ContentBlock::Image { alt, .. } => {
-            ui.add_space(font_size * 0.6);
-            let text = alt
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| i18n.tf1("reader.image_with_alt", s))
-                .unwrap_or_else(|| i18n.t("reader.image").to_string());
-            ui.label(egui::RichText::new(text).italics().color(Color32::GRAY));
-            ui.add_space(font_size * 0.6);
+        ContentBlock::Image { data, alt, .. } => {
+            super::reader_images::styled_paint(
+                ui,
+                data,
+                alt.as_deref(),
+                max_width,
+                super::reader_images::current_limit(),
+                font_size,
+                i18n,
+                &style,
+            );
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_native_ruby(
+    ui: &egui::Ui,
+    galley: &egui::Galley,
+    rect: egui::Rect,
+    style: &reader_core::epub::native::NativeStyle,
+    font: f32,
+    bg: Color32,
+    fg: Option<Color32>,
+    family: &str,
+) {
+    for ruby in &style.ruby {
+        let start =
+            galley.pos_from_cursor(&galley.from_ccursor(egui::text::CCursor::new(ruby.start)));
+        let end = galley.pos_from_cursor(&galley.from_ccursor(egui::text::CCursor::new(ruby.end)));
+        let start_cursor = galley.from_ccursor(egui::text::CCursor::new(ruby.start));
+        let end_cursor = galley.from_ccursor(egui::text::CCursor::new(ruby.end));
+        let width = if start_cursor.rcursor.row == end_cursor.rcursor.row {
+            end.left() - start.left()
+        } else {
+            font * (ruby.end - ruby.start) as f32
+        };
+        let ruby_family = if family == "ReaderFont" && ruby.text.chars().any(uses_cjk_font) {
+            "ReaderCjk"
+        } else {
+            family
+        };
+        let color = effective_text_color(bg, fg);
+        let mut annotation = ui.painter().layout_no_wrap(
+            ruby.text.clone(),
+            FontId::new(font * 0.5, family_from_name(ruby_family)),
+            color,
+        );
+        let extent = width + font;
+        if annotation.size().x > extent {
+            let size = (font * 0.5 * extent / annotation.size().x).max(4.);
+            annotation = ui.painter().layout_no_wrap(
+                ruby.text.clone(),
+                FontId::new(size, family_from_name(ruby_family)),
+                color,
+            );
+        }
+        let cursor = galley.from_ccursor(egui::text::CCursor::new(ruby.start));
+        let base_top = galley
+            .rows
+            .get(cursor.rcursor.row)
+            .and_then(|row| row.glyphs.get(cursor.rcursor.column))
+            .map_or(start.top(), |glyph| glyph.logical_rect().top());
+        let x = rect.left() + start.left() + (width - annotation.size().x) * 0.5;
+        ui.painter().galley(
+            egui::pos2(x, rect.top() + base_top - annotation.size().y - 1.),
+            annotation,
+            Color32::PLACEHOLDER,
+        );
     }
 }
 
@@ -648,7 +1139,11 @@ pub(crate) fn show_selection_toolbar(
                         }
                     }
                     // Delete highlight (only shown when block has existing highlight)
-                    if has_highlight && ui.small_button("x").on_hover_text("删除标注").clicked()
+                    if has_highlight
+                        && ui
+                            .small_button("x")
+                            .on_hover_text(i18n.t("context.delete_highlight"))
+                            .clicked()
                     {
                         result = SelToolbarResult::DeleteHighlight;
                     }
@@ -692,14 +1187,47 @@ pub(crate) fn build_layout_job(
     font_color: Option<Color32>,
     font_family_name: &str,
     highlight_ranges: &[(usize, usize, reader_core::library::HighlightColor)],
+    style: &reader_core::epub::native::NativeStyle,
 ) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = max_width;
+    job.halign = match style.align.as_deref() {
+        Some("center") => egui::Align::Center,
+        Some("right") => egui::Align::Max,
+        _ => egui::Align::Min,
+    };
+    job.justify = style.align.as_deref() == Some("justify");
+    let line = style.line.unwrap_or(line_spacing());
+    let font_family_name = style
+        .family
+        .as_deref()
+        .filter(|n| {
+            matches!(
+                *n,
+                "Sans" | "Serif" | "Monospace" | "serif" | "sans-serif" | "monospace"
+            )
+        })
+        .map(|n| match n {
+            "serif" => "Serif",
+            "sans-serif" => "Sans",
+            "monospace" => "Monospace",
+            n => n,
+        })
+        .unwrap_or(font_family_name);
     let bg_lum = {
         let [r, g, b, _] = bg_color.to_array();
         (r as f32 * 0.299 + g as f32 * 0.587 + b as f32 * 0.114) / 255.0
     };
-    let base_color = effective_text_color(bg_color, font_color);
+    let base_color = if bg_lum > 0.45 {
+        style
+            .color
+            .as_deref()
+            .and_then(|v| u32::from_str_radix(v.trim_start_matches('#'), 16).ok())
+            .map(|n| Color32::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8))
+            .unwrap_or_else(|| effective_text_color(bg_color, font_color))
+    } else {
+        effective_text_color(bg_color, font_color)
+    };
     let link_color = if bg_lum < 0.45 {
         Color32::from_rgb(100, 160, 255)
     } else {
@@ -717,139 +1245,152 @@ pub(crate) fn build_layout_job(
         })
     };
 
-    let mut char_offset: usize = 0; // cumulative char offset across spans
-    for (i, span) in spans.iter().enumerate() {
-        let is_bold =
-            matches!(span.style, InlineStyle::Bold | InlineStyle::BoldItalic) || is_heading;
-        let is_italic = matches!(span.style, InlineStyle::Italic | InlineStyle::BoldItalic);
-        let is_link = span.link_url.is_some();
-        let family = if is_bold {
-            FontFamily::Name("Bold".into())
-        } else {
-            family_from_name(font_family_name)
-        };
-        let cjk_family = if !is_bold && font_family_name == "ReaderFont" {
-            FontFamily::Name("ReaderCjk".into())
-        } else {
-            family.clone()
-        };
-        let normal_color = if is_link { link_color } else { base_color };
-        let leading = if i == 0 && !is_heading {
-            font_size * text_indent()
-        } else {
-            0.0
-        };
-        let wrapped = wrap_cjk_text(
-            &span.text,
-            font_size,
-            max_width,
-            if i == 0 && !is_heading { leading } else { 0.0 },
-        );
-
-        // If no highlights touch this span, fast-path: append entire span at once
-        let span_char_len = span.text.chars().count();
-        let span_start = char_offset;
-        let span_end = char_offset + span_char_len;
-        let any_hl = highlight_ranges
+    {
+        let max_scale = style
+            .inline
             .iter()
-            .any(|(s, e, _)| *s < span_end && *e > span_start);
-
-        if !any_hl || highlight_ranges.is_empty() {
-            let format = TextFormat {
-                font_id: FontId::new(font_size, family),
-                color: normal_color,
-                italics: is_italic,
-                underline: if is_link {
-                    egui::Stroke::new(1.0_f32, link_color)
-                } else {
-                    egui::Stroke::NONE
-                },
-                line_height: Some(font_size * line_spacing()),
-                ..Default::default()
-            };
-            append_font_runs(&mut job, &wrapped, leading, format, &cjk_family);
-        } else {
-            // Split span text at highlight boundaries
-            let mut first_section = true;
-            let chars: Vec<char> = wrapped.chars().collect();
-            let mut ci = 0usize; // index into chars
-            let mut cur_hl = hl_at(span_start);
-            let mut seg_start = 0usize;
-
-            for (j, _ch) in chars.iter().enumerate() {
-                let abs_pos = span_start + j;
-                let this_hl = hl_at(abs_pos);
-                let same = match (&cur_hl, &this_hl) {
-                    (None, None) => true,
-                    (Some(a), Some(b)) => std::mem::discriminant(*a) == std::mem::discriminant(*b),
-                    _ => false,
+            .filter(|r| !r.hidden)
+            .filter_map(|r| r.size)
+            .fold(1., f32::max);
+        let line_height =
+            font_size * (line * max_scale).max(if style.ruby.is_empty() { 1. } else { 1.7 });
+        let mut offset = 0;
+        let mut previous: Option<TextFormat> = None;
+        let mut run = String::new();
+        let mut first = true;
+        for span in spans {
+            for ch in span.text.chars() {
+                let mut format = TextFormat {
+                    font_id: FontId::new(font_size, family_from_name(font_family_name)),
+                    underline: if span.link_url.is_some() {
+                        egui::Stroke::new(1.0_f32, link_color)
+                    } else {
+                        egui::Stroke::NONE
+                    },
+                    color: if span.link_url.is_some() {
+                        link_color
+                    } else {
+                        base_color
+                    },
+                    italics: matches!(span.style, InlineStyle::Italic | InlineStyle::BoldItalic)
+                        || style.italic,
+                    line_height: Some(line_height),
+                    ..Default::default()
                 };
-                if !same {
-                    // Flush segment
-                    let seg_text: String = chars[seg_start..j].iter().collect();
-                    let (fg, bg_c) = match cur_hl {
-                        Some(hc) => (highlight_text_color(hc), highlight_bg_color(hc)),
-                        None => (normal_color, Color32::TRANSPARENT),
-                    };
-                    let format = TextFormat {
-                        font_id: FontId::new(font_size, family.clone()),
-                        color: fg,
-                        italics: is_italic,
-                        underline: if is_link {
-                            egui::Stroke::new(1.0_f32, link_color)
+                let mut bold = is_heading
+                    || style.bold
+                    || matches!(span.style, InlineStyle::Bold | InlineStyle::BoldItalic);
+                let mut hidden = false;
+                let mut caps = false;
+                for item in style
+                    .inline
+                    .iter()
+                    .filter(|r| offset >= r.start && offset < r.end)
+                {
+                    if let Some(scale) = item.size {
+                        format.font_id.size = font_size * scale;
+                    }
+                    if let Some(value) = item.bold {
+                        bold = value;
+                    }
+                    if let Some(value) = item.italic {
+                        format.italics = value;
+                    }
+                    if let Some(family) = &item.family {
+                        format.font_id.family = match family.as_str() {
+                            "serif" => family_from_name("Serif"),
+                            "monospace" => FontFamily::Monospace,
+                            _ => format.font_id.family,
+                        };
+                    }
+                    if bg_lum > 0.45 {
+                        if let Some(color) = &item.color {
+                            if let Ok(n) = u32::from_str_radix(color.trim_start_matches('#'), 16) {
+                                format.color =
+                                    Color32::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8);
+                            }
+                        }
+                    }
+                    if item.underline || item.note.is_some() {
+                        format.underline = egui::Stroke::new(1.0_f32, format.color);
+                    }
+                    if item.strike {
+                        format.strikethrough = egui::Stroke::new(1.0_f32, format.color);
+                    }
+                    if item.baseline != 0. {
+                        format.valign = if item.baseline > 0. {
+                            egui::Align::Min
                         } else {
-                            egui::Stroke::NONE
-                        },
-                        background: bg_c,
-                        line_height: Some(font_size * line_spacing()),
-                        ..Default::default()
-                    };
-                    let lead = if first_section { leading } else { 0.0 };
-                    append_font_runs(&mut job, &seg_text, lead, format, &cjk_family);
-                    first_section = false;
-                    seg_start = j;
-                    cur_hl = this_hl;
+                            egui::Align::Max
+                        };
+                    }
+                    hidden |= item.hidden;
+                    caps = item.small_caps;
                 }
-                ci = j + 1;
-            }
-            // Flush final segment
-            let seg_text: String = chars[seg_start..ci].iter().collect();
-            let (fg, bg_c) = match cur_hl {
-                Some(hc) => (highlight_text_color(hc), highlight_bg_color(hc)),
-                None => (normal_color, Color32::TRANSPARENT),
-            };
-            let format = TextFormat {
-                font_id: FontId::new(font_size, family),
-                color: fg,
-                italics: is_italic,
-                underline: if is_link {
-                    egui::Stroke::new(1.0_f32, link_color)
-                } else {
-                    egui::Stroke::NONE
-                },
-                background: bg_c,
-                line_height: Some(font_size * line_spacing()),
-                ..Default::default()
-            };
-            let lead = if first_section { leading } else { 0.0 };
-            append_font_runs(&mut job, &seg_text, lead, format, &cjk_family);
-        }
+                if bold {
+                    format.font_id.family = family_from_name("Bold");
+                } else if uses_cjk_font(ch) && font_family_name == "ReaderFont" {
+                    format.font_id.family = family_from_name("ReaderCjk");
+                }
+                if let Some(color) = hl_at(offset) {
+                    format.color = highlight_text_color(color);
+                    format.background = highlight_bg_color(color);
+                }
+                if hidden {
+                    format.font_id.size = 0.01;
+                    format.color = Color32::TRANSPARENT;
+                    format.underline = egui::Stroke::NONE;
+                    format.strikethrough = egui::Stroke::NONE;
+                }
+                if caps && ch.is_ascii_lowercase() {
+                    format.font_id.size *= 0.8;
+                }
+                if previous.as_ref() != Some(&format) && !run.is_empty() {
+                    append_font_runs(
+                        &mut job,
+                        &run,
+                        if first && !is_heading {
+                            style
+                                .indent_length
+                                .as_ref()
+                                .map_or(font_size * style.indent.unwrap_or(text_indent()), |v| {
+                                    v.resolve(font_size, max_width)
+                                })
+                        } else {
+                            0.
+                        },
+                        previous.as_ref().unwrap().clone(),
+                        &previous.as_ref().unwrap().font_id.family,
+                    );
 
-        char_offset = span_end;
+                    run.clear();
+                    first = false;
+                }
+                previous = Some(format);
+                run.push(if caps { ch.to_ascii_uppercase() } else { ch });
+                offset += 1;
+            }
+        }
+        if let Some(format) = previous {
+            append_font_runs(
+                &mut job,
+                &run,
+                if first && !is_heading {
+                    style
+                        .indent_length
+                        .as_ref()
+                        .map_or(font_size * style.indent.unwrap_or(text_indent()), |v| {
+                            v.resolve(font_size, max_width)
+                        })
+                } else {
+                    0.
+                },
+                format.clone(),
+                &format.font_id.family,
+            );
+        }
+        job
     }
-    if job.sections.is_empty() {
-        job.append(
-            " ",
-            0.0,
-            TextFormat {
-                font_id: FontId::new(font_size, FontFamily::Proportional),
-                color: Color32::TRANSPARENT,
-                line_height: Some(font_size * 1.0),
-                ..Default::default()
-            },
-        );
-    }
-    job
 }
 
 // ── Block height estimation ──
@@ -858,42 +1399,281 @@ pub(crate) fn estimate_block_height(
     block: &ContentBlock,
     font_size: f32,
     title_font_scale: f32,
-    line_height: f32,
+    _line_height: f32,
     max_width: f32,
 ) -> f32 {
-    match block {
-        ContentBlock::Heading { level, spans, .. } => {
-            let scale = match level {
-                1 => title_font_scale * 1.3,
-                2 => title_font_scale * 1.1,
-                3 => title_font_scale * 0.9,
-                _ => title_font_scale * 0.8,
-            }
-            .max(1.0);
-            let sz = font_size * scale;
-            let text_len: f32 = spans.iter().map(|s| estimate_text_width(&s.text, sz)).sum();
-            (text_len / max_width).ceil().max(1.0) * sz * line_spacing() + font_size * 1.2
-        }
-        ContentBlock::Paragraph { spans, .. } => {
-            let text_len: f32 = spans
-                .iter()
-                .map(|s| estimate_text_width(&s.text, font_size))
-                .sum();
-            ((text_len + font_size * text_indent()) / max_width)
-                .ceil()
-                .max(1.0)
-                * line_height
-                + font_size * para_spacing()
-        }
-        ContentBlock::Separator => 24.0,
-        ContentBlock::BlankLine => font_size * 0.5,
-        ContentBlock::Image { .. } => font_size * 3.0,
+    let style = block.native_style();
+    if style.hidden {
+        return 0.0;
     }
+    let font_size = style.size_at(font_size);
+    let (left, right, top, bottom) = native_insets(&style, font_size, max_width);
+    let max_width = (max_width - left - right).max(32.);
+    let max_scale = style
+        .inline
+        .iter()
+        .filter(|r| !r.hidden)
+        .filter_map(|r| r.size)
+        .fold(1., f32::max);
+    let line_height = font_size
+        * (style.line.unwrap_or(line_spacing()) * max_scale).max(if style.ruby.is_empty() {
+            1.
+        } else {
+            1.7
+        });
+    let height = if !style.list.is_empty() {
+        style
+            .list
+            .iter()
+            .map(|r| {
+                estimate_lines(
+                    &r.text,
+                    font_size,
+                    (max_width
+                        - font_size
+                            * 1.2
+                            * r.depth.saturating_sub(style.list_depth as usize) as f32
+                        - 32.)
+                        .max(32.),
+                    0.,
+                ) * line_height
+                    + font_size * 0.3
+            })
+            .sum()
+    } else if let Some(table) = &style.table {
+        let column = max_width / table.columns.max(1) as f32;
+        table
+            .cells
+            .iter()
+            .map(|cell| {
+                estimate_lines(
+                    &cell.text,
+                    font_size,
+                    (column * cell.span as f32 - 12.).max(16.),
+                    0.,
+                ) * line_height
+            })
+            .fold(font_size, f32::max)
+            + 12.
+            + font_size * style.after.unwrap_or(0.)
+    } else {
+        match block {
+            ContentBlock::Heading { level, spans, .. } => {
+                let scale = if style.size.is_some() || style.size_px.is_some() {
+                    1.
+                } else {
+                    (title_font_scale
+                        * match level {
+                            1 => 1.3,
+                            2 => 1.1,
+                            3 => 0.9,
+                            _ => 0.8,
+                        })
+                    .max(1.)
+                };
+                let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                estimate_lines(&text, font_size * scale * max_scale, max_width, 0.)
+                    * line_height
+                    * scale
+                    + font_size * (style.before.unwrap_or(0.8) + style.after.unwrap_or(0.4))
+            }
+            ContentBlock::Paragraph { spans, .. } => {
+                let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                let indent = style
+                    .indent_length
+                    .as_ref()
+                    .map_or(font_size * style.indent.unwrap_or(text_indent()), |v| {
+                        v.resolve(font_size, max_width)
+                    });
+                estimate_lines(&text, font_size * max_scale, max_width, indent) * line_height
+                    + font_size
+                        * (style.before.unwrap_or(0.) + style.after.unwrap_or(para_spacing()))
+            }
+            ContentBlock::Image { data, .. } => super::reader_images::styled_height(
+                data,
+                max_width,
+                super::reader_images::current_limit(),
+                font_size,
+                &style,
+            ),
+            ContentBlock::Separator => 24.,
+            ContentBlock::BlankLine => font_size * 0.5,
+        }
+    };
+    height
+        + top
+        + bottom
+        + if style.ruby.is_empty() {
+            0.
+        } else {
+            font_size * 0.65
+        }
+}
+fn estimate_lines(text: &str, font: f32, width: f32, indent: f32) -> f32 {
+    text.split('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            ((estimate_text_width(line, font) + if i == 0 { indent } else { 0. }) / width)
+                .ceil()
+                .max(1.)
+        })
+        .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_punctuation_wraps_across_font_runs_without_changing_source_offsets() {
+        let ctx = egui::Context::default();
+        crate::setup_fonts(&ctx);
+        let prefix = "不管怎么说，就算真有什么圣女，也还是很离谱呀，上哪和圣女说话去";
+        for font in [14., 18., 26.] {
+            for ending in [
+                "？", "！", "，", "；", "：", "）", "》", "？！", "？）", "?", "!",
+            ] {
+                let source = format!("{prefix}{ending}");
+                let spans = [
+                    TextSpan {
+                        text: prefix.into(),
+                        style: InlineStyle::Normal,
+                        link_url: None,
+                        correction: None,
+                    },
+                    TextSpan {
+                        text: ending.into(),
+                        style: InlineStyle::Bold,
+                        link_url: Some("#note".into()),
+                        correction: None,
+                    },
+                ];
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let style = reader_core::epub::native::NativeStyle::default();
+                        let prefix_job = build_layout_job(
+                            &spans[..1],
+                            font,
+                            Color32::WHITE,
+                            false,
+                            f32::INFINITY,
+                            None,
+                            "Sans",
+                            &[],
+                            &style,
+                        );
+                        let width = ui.painter().layout_job(prefix_job).rect.width() + 0.01;
+                        let job = build_layout_job(
+                            &spans,
+                            font,
+                            Color32::WHITE,
+                            false,
+                            width,
+                            None,
+                            "Sans",
+                            &[],
+                            &style,
+                        );
+                        assert_eq!(job.text, source);
+                        let sections = job.sections.len();
+                        let galley = native_galley(ui, job, &style, width);
+                        let rows: Vec<_> = galley.rows.iter().map(|r| r.text()).collect();
+                        assert_eq!(rows.concat(), source);
+                        assert!(
+                            rows.iter()
+                                .skip(1)
+                                .all(|row| !row.chars().next().is_some_and(|c| ending.contains(c))),
+                            "orphan at {font}pt: {rows:?}"
+                        );
+                        assert!(galley
+                            .rows
+                            .iter()
+                            .flat_map(|r| &r.glyphs)
+                            .all(|g| (g.section_index as usize) < sections));
+                    });
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn enriched_native_layout_preserves_unicode_and_fits_columns() {
+        let book = reader_core::epub::EpubBook::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../core/tests/fixtures/native-typography.epub"
+        ))
+        .unwrap();
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        for family in ["Bold", "Serif", "ReaderFont", "ReaderCjk"] {
+            fonts.families.insert(
+                egui::FontFamily::Name(family.into()),
+                fonts.families[&egui::FontFamily::Proportional].clone(),
+            );
+        }
+        ctx.set_fonts(fonts);
+        set_spacing(1.5, 0.5, 2.);
+        for policy in [
+            reader_core::epub::native::CssPolicy::None,
+            reader_core::epub::native::CssPolicy::Mixed,
+            reader_core::epub::native::CssPolicy::Publisher,
+        ] {
+            let styles = book.chapters[0]
+                .native_document
+                .present(policy, false, &[])
+                .styles;
+            for width in [320., 640.] {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width + 40., 3000.),
+                    )),
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        for (block, style) in book.chapters[0].blocks.iter().zip(&styles) {
+                            if let ContentBlock::Paragraph { spans, .. }
+                            | ContentBlock::Heading { spans, .. } = block
+                            {
+                                if style.inline.is_empty() {
+                                    continue;
+                                }
+                                let font = style.size_at(18.);
+                                let (left, right, _, _) = native_insets(style, font, width);
+                                let extent = (width - left - right).max(32.);
+                                let source: String =
+                                    spans.iter().map(|s| s.text.as_str()).collect();
+                                let job = build_layout_job(
+                                    spans,
+                                    font,
+                                    Color32::WHITE,
+                                    false,
+                                    extent,
+                                    None,
+                                    "ReaderFont",
+                                    &[],
+                                    style,
+                                );
+                                assert_eq!(
+                                    job.text, source,
+                                    "Native layout changed shared scalar offsets"
+                                );
+                                let galley = native_galley(ui, job, style, extent);
+                                assert!(
+                                    galley.mesh_bounds.width() <= extent + font * 2.,
+                                    "Native text escaped column"
+                                );
+                                for ruby in &style.ruby {
+                                    assert!(ruby.end <= source.chars().count());
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+        }
+    }
 
     #[test]
     fn routes_only_cjk_characters_and_punctuation_to_cjk_font() {
@@ -947,9 +1727,49 @@ mod tests {
             None,
             "ReaderFont",
             &[(0, 3, reader_core::library::HighlightColor::Yellow)],
+            &Default::default(),
         );
         assert!(job.sections.iter().all(|section| {
             section.format.font_id.family == FontFamily::Name("ReaderCjk".into())
         }));
+    }
+    #[test]
+    fn publisher_alignment_keeps_glyphs_inside_the_native_column() {
+        for align in ["right", "center"] {
+            let ctx = egui::Context::default();
+            let style = reader_core::epub::native::NativeStyle {
+                align: Some(align.into()),
+                ..Default::default()
+            };
+            let mut checked = false;
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let spans = [TextSpan {
+                        text: "A native publication paragraph".into(),
+                        style: InlineStyle::Normal,
+                        link_url: None,
+                        correction: None,
+                    }];
+                    let job = build_layout_job(
+                        &spans,
+                        18.,
+                        Color32::WHITE,
+                        false,
+                        340.,
+                        None,
+                        "Sans",
+                        &[],
+                        &style,
+                    );
+                    let galley = native_galley(ui, job, &style, 340.);
+                    assert_eq!(galley.rect.width(), 340.);
+                    for row in &galley.rows {
+                        assert!(row.rect.left() >= -0.1 && row.rect.right() <= 340.1);
+                    }
+                    checked = true;
+                });
+            });
+            assert!(checked);
+        }
     }
 }

@@ -132,7 +132,7 @@ fun TxtImportDialog(
                 HorizontalDivider()
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    I18n.t("txt.chapter_count").replace("{}", previews.size.toString()),
+                    I18n.count("txt.chapter_count", previews.size),
                     fontWeight = FontWeight.Medium,
                     fontSize = 14.sp,
                 )
@@ -159,7 +159,7 @@ fun TxtImportDialog(
                                     modifier = Modifier.weight(1f),
                                 )
                                 Text(
-                                    "${ch.charCount}字",
+                                    I18n.count("library.character_count", ch.charCount),
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,

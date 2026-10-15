@@ -8,9 +8,9 @@ body:
       value: |
         感谢反馈！为了更快定位问题，请尽量提供：
         - **程序版本**（关于页面可查看）
-        - **操作系统与平台**（Windows / macOS / Linux / Android）
+        - **操作系统与平台**（Windows / macOS / Linux / Android / iOS / iPadOS）
         - **复现步骤**
-        - **日志或截图**（如涉及崩溃、渲染异常、Android 安装/启动问题）
+        - **日志或截图**（如涉及崩溃、渲染异常、Android 或 iOS 安装/启动问题）
 
         > 如涉及私有电子书内容，请优先提供脱敏片段或可公开复现文件，避免上传完整私有书籍。
 
@@ -31,7 +31,7 @@ body:
     id: platform
     attributes:
       label: 平台
-      description: 问题出现在哪个平台？
+      description: 问题出现在哪些平台？（可多选）
       multiple: true
       options:
         - Windows (x64)
@@ -41,6 +41,8 @@ body:
         - Linux (x64)
         - Linux (ARM64)
         - Android
+        - iOS (iPhone)
+        - iPadOS (iPad)
     validations:
       required: true
 
@@ -52,10 +54,11 @@ body:
       options:
         - 桌面端阅读 / 书库管理
         - Android 阅读 / 安装 / 启动
+        - iOS / iPadOS 阅读 / 导入 / 启动
         - EPUB 解析 / 渲染
         - TXT 转 EPUB
         - 搜索 / 导出 / 分享
-        - CSC 校对 / 模型加载
+        - 中文纠错（CSC）/ 模型加载
         - 自更新 / Release 产物
         - 构建 / CI / 发布
         - 文档 / 示例
@@ -96,11 +99,24 @@ body:
       required: false
 
   - type: textarea
+    id: environment
+    attributes:
+      label: 系统与设备
+      description: 请补充系统版本、设备型号及安装方式；iOS 构建问题请附 Xcode 版本，并注明真机或模拟器。
+      placeholder: |
+        - 系统版本：
+        - 设备型号 / CPU 架构：
+        - 安装方式：Release 下载 / 源码构建 / Xcode 安装 / 其他
+        - 真机或模拟器（iOS / iPadOS）：
+    validations:
+      required: false
+
+  - type: textarea
     id: logs
     attributes:
       label: 日志与截图（建议）
       description: |
-        可通过"关于"页面的"导出日志"功能导出日志文件，拖拽上传到此处。
+        如客户端提供“导出日志”，可导出后上传；iOS 构建或崩溃问题也可提供脱敏的 Xcode 输出。
         也可粘贴关键报错信息或附上截图。
       placeholder: |
         - 已附日志：是/否

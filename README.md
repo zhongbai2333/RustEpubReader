@@ -1,166 +1,104 @@
 # RustEpubReader
 
-一款用 Rust 编写的跨平台 EPUB 阅读器，支持 **桌面端（Windows / Linux / macOS）** 、**Android** 和 **iOS / iPadOS**。
+[简体中文](README.md) · [English](README.en.md)
 
-## 特性
+一个以 Rust 为共享核心的 EPUB 阅读器，提供 Windows、macOS、Linux、Android 和 iOS / iPadOS 客户端。桌面使用 egui / eframe，Android 使用 Jetpack Compose，iOS 使用 SwiftUI / UIKit；正文由各客户端本地排版，不依赖 WebView。
 
-- **书库管理** — 自动记录已打开的书籍、阅读进度与章节位置
-- **阅读模式** — 支持滚动模式与翻页模式，翻页动画可选（滑动 / 覆盖 / 仿真 / 无）
-- **目录导航** — 侧边栏目录（TOC），可随时展开/折叠
-- **外观自定义** — 亮色 / 暗色主题，自定义背景色、字体颜色、背景图片及透明度
-- **字体设置** — 自动发现系统字体，可按需切换字体与字号
-- **多语言** — 内置中文（简体）与 English 界面
-- **局域网共享** — 通过点对点协议在设备间传输书籍（PIN 配对）
-- **GitHub 同步** — 同步 EPUB 和阅读进度，自动同步间隔为 5 分钟
-- **Android 支持** — 通过 JNI 桥接核心逻辑，Jetpack Compose 构建 Android UI
-- **iOS / iPadOS 支持** — SwiftUI / UIKit 原生界面，Rust 核心桥接；具体支持范围见 [iOS 说明](ios/README.md)
+## 平台与安装
 
-## 项目结构
+| 平台 | 获取方式与要求 |
+| --- | --- |
+| Windows | [Releases](https://github.com/zhongbai2333/RustEpubReader/releases) 中的 x64 / ARM64 压缩包，或从源码构建 |
+| macOS | Intel / Apple Silicon DMG；发布流程尚未配置 Developer ID 签名及公证 |
+| Linux | x64 / ARM64 压缩包；桌面构建依赖 GTK 3、ALSA 等系统库，见[构建说明](docs/BUILD_AND_CI.md) |
+| Android | Android 8.0 / API 26 及以上；按设备架构选择 APK |
+| iOS / iPadOS | 开发预览，最低 iOS 17；当前面向 arm64 真机与 Apple Silicon 模拟器。通过 Xcode 构建，安装真机需要自行配置签名 |
 
+发布流程为桌面和 Android 打包安装文件。iOS CI 目前提供模拟器应用和**未签名真机归档**，它们不是可直接安装的 IPA；尚未配置 TestFlight 或 App Store 发布。各系统的实际兼容性仍需分别验证，构建通过不等于完成真机验收。
+
+iOS 的环境光读取使用私有 IOHID 接口，Debug 和 Release 构建均包含该实现（模拟器不启用）。构建成功不代表已具备 App Store 分发条件，详见 [iOS 说明](ios/README.md)。
+
+## 阅读与书库
+
+- 导入 EPUB，管理书库、目录与阅读位置；支持书内搜索、书签、划线和笔记。
+- 支持连续滚动和分页阅读。桌面与 Android 提供多种翻页效果；iOS 使用系统卷曲翻页与滑动过渡，具体范围见 [iOS 说明](ios/README.md)。
+- 可调整中英文字体、字号、行距、段距、页边距、纸张颜色及背景图片。应用界面和阅读外观可联动，也可分别设置。
+- 提供阅读统计、朗读和可选的中文纠错（CSC）功能。在线语音与模型下载需要网络连接，具体实现随平台而异。
+- 桌面与 Android 支持 TXT 转 EPUB；iOS 当前通过文件导入器导入 EPUB。
+- 界面支持简体中文、English，并可跟随系统语言。
+
+EPUB 的样式、媒体与脚本支持有明确边界。项目保留共享文本坐标来恢复位置，不把不同设备的页码当作同一个位置。详见[原生排版](docs/EPUB_NATIVE_TYPOGRAPHY.md)、[媒体与交互](docs/EPUB_MEDIA_AND_INTERACTIVITY.md)和[分页与性能](docs/EPUB_PAGINATION_AND_PERFORMANCE.md)。
+
+## 同步与分享
+
+**多平台同步**用于自己的设备：支持局域网配对与 GitHub 私有仓库，可同步 EPUB、阅读进度及按设备记录的每日阅读／朗读时长。GitHub 同步需要授权并单独启用；当前打开的书不会因远端进度而自动跳页。
+
+**书本分享**用于向他人发送选定书籍：提供局域网传输和 GitHub 加密分享链接 / 二维码。它与私有书库同步使用不同的流程和存储。收到的书籍先验证，再由接收者确认导入。
+
+- [GitHub 同步与权限说明](docs/GITHUB_SYNC.md)：同步范围、账号存储、重试和取消行为。
+- [书本分享说明](docs/BOOK_SHARING.md)：接收方式、加密包、链接权限和使用限制。
+
+GitHub 私有同步需要 `repo` 权限，该权限范围大于单个同步仓库。桌面和 iOS 将令牌保存在系统凭据存储中；Android 使用 Keystore 密钥加密令牌后保存在应用私有存储中。令牌不进入同步文件。私有仓库也不等于端到端加密存储。请在启用前阅读权限说明；分享时仅发送自己有权分享的内容。
+
+## 从源码构建
+
+### 桌面
+
+安装 Rust stable 及对应平台的 C/C++ 构建工具。Linux 还需安装系统开发库，Windows 构建使用 MSVC 与 Windows SDK。
+
+```sh
+cargo build --locked --release -p rust_epub_reader
 ```
-RustEpubReader/
-├── core/           # 核心库：EPUB 解析、书库、i18n、局域网共享协议
-├── desktop/        # 桌面端（egui/eframe）
-├── android-bridge/ # Android JNI 桥接层（cdylib）
-├── android/        # Android 工程（Kotlin + Jetpack Compose）
-├── ios-bridge/     # iOS JSON / C ABI 桥接层（staticlib）
-└── ios/            # iOS / iPadOS 工程（SwiftUI + UIKit）
-```
 
-## 构建
-
-### 桌面端
-
-```bash
-cargo build --release -p rust_epub_reader
-```
-
-Windows 下会自动嵌入应用图标（需要 `rc.exe`）。
-
-### macOS 安装说明
-
-当前发布流程生成 Apple Silicon 和 Intel 两种 DMG。打开 DMG 后，将应用拖入“应用程序”目录。
-现有流程尚未配置 Developer ID 签名及公证；系统可能要求在“系统设置 → 隐私与安全性”中授权打开。
-本地开发的稳定签名方式见 [开发签名说明](desktop/scripts/README.md)，它不替代公开发行签名。
+运行生成的程序即可。需要缩短本地构建时间时，可改用 `--profile release-fast`。macOS 本地开发签名见[桌面签名说明](desktop/scripts/README.md)，公开分发仍需另行配置签名与公证。
 
 ### Android
 
-使用 JDK 21、Android SDK 和 NDK 26.1.10909125，配置 `android/local.properties` 的 `sdk.dir`，然后：
+需要 JDK 21、Android SDK 35、Build Tools 36.0.0、NDK 26.1.10909125、`cargo-ndk`，以及供原生脚本绑定生成使用的 LLVM / libclang。在 `android/local.properties` 中设置 `sdk.dir`，或通过环境变量配置 SDK 路径。
 
-```bash
+```sh
 cargo install cargo-ndk --locked
 rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
 cd android
-./gradlew assembleRelease
+./gradlew :app:assembleRelease
 ```
 
-Gradle 会编译并打包三个 ABI 的 Rust 桥接库。没有配置发布密钥时，Release APK 使用开发签名；
-正式分发需要仓库的 Android 签名配置。
+Gradle 会构建并打包三个 ABI 的 Rust 桥接库。未提供发布密钥时使用开发签名；正式分发需要配置自己的签名密钥。
 
 ### iOS / iPadOS
 
-需要 Apple Silicon Mac、完整 Xcode 26 和 Rust iOS target。构建与功能范围见 [iOS 说明](ios/README.md)。
-Windows 可以修改代码、检查共享 Rust 核心，并通过 GitHub CI 验证 Apple 平台构建；本地 iOS 构建需要 macOS / Xcode。
+需要 Apple Silicon Mac、完整 Xcode 26 或更新版本，以及 Rust iOS 目标。
 
-### CI 与提交前检查
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+open ios/RustEpubReader.xcodeproj
+```
 
-普通 CI 覆盖 Rust 格式、严格 Clippy、workspace 测试、Android 单元测试 / Release lint，
-以及桌面、Android 和 iOS 构建。iOS 流程产出 arm64 模拟器应用及**未签名真机 Release 归档**，
-不产出可安装 IPA，也不执行 TestFlight / App Store 上传。
+选择 `ReaderPreview` scheme 和模拟器运行。真机安装、命令行构建、依赖及功能限制见 [iOS 说明](ios/README.md)。Windows / Linux 可以修改共享代码；本地 Apple 平台构建需要 macOS / Xcode。
 
-- [CI 配置与产物说明](docs/BUILD_AND_CI.md)
-- [Windows 最后测试清单](docs/WINDOWS_TESTING.md)
+## 开发与反馈
 
+- [贡献指南](CONTRIBUTING.md#简体中文)：开发环境、检查命令、Issue 与 PR 提交流程。
+- [提交 Issue](https://github.com/zhongbai2333/RustEpubReader/issues/new/choose)：请附客户端版本、系统与设备、复现步骤及必要日志。iOS 问题请注明真机或模拟器。
+- [构建与 CI](docs/BUILD_AND_CI.md)：各工作流、构建产物与本地检查。
+- [提交前检查记录](docs/PRECOMMIT_REVIEW.md)：本次检查的结果和未验证项。
 
-## 依赖
+不要在 Issue、PR 或测试材料中附上令牌、签名密钥或完整私有书籍；优先使用可公开复现的样例。
 
-| 用途 | 库 |
-|------|----|
-| EPUB 解析 | `rbook` |
-| HTML 提取 | `scraper` |
-| 桌面 UI | `eframe` / `egui` |
-| 文件对话框 | `rfd` |
-| 图像处理 | `image` |
-| Android JNI | `jni` |
-| 序列化 | `serde` / `serde_json` |
+## 项目结构
 
-## License
+```text
+core/            EPUB 解析、书库、同步、分享、统计与本地化
+desktop/        egui / eframe 桌面客户端
+android-bridge/  Rust JNI 桥接
+android/         Kotlin / Jetpack Compose 客户端
+ios-bridge/     Rust JSON / C ABI 桥接
+ios/            SwiftUI / UIKit 客户端和原生检查
+scripts/         跨平台开发检查
+vendor/          本地修订的第三方源码
+docs/           功能边界、构建与验证说明
+```
 
-本项目采用 [Apache License 2.0](LICENSE)。
+## 许可证
 
-## GitHub sync (desktop, Android and iOS)
-
-Use **Multi-platform sync** in the library on all three clients, then choose
-local network sharing or GitHub sign-in / account management. The desktop reader
-toolbar uses the same entry. **Manage GitHub account** is also available in reader
-settings and contributions.
-The unified account interface requests `repo` access to create and synchronize the
-private `EpubReaderInfo` repository. Sign-in alone does not enable synchronization
-or submit correction samples. **Sign in and enable sync** starts sync only after
-authorization succeeds; cancelling or failing authorization does not enable it.
-Existing narrow-scope tokens require renewed device authorization, not deletion.
-GitHub's `repo` scope also covers other private repositories accessible to the
-account; this app's sync transport writes only its marked sync repository. Legacy
-Android contribution-only authorization can use `public_repo` and needs renewed
-permission for private sync.
-
-Desktop uses macOS Keychain, Windows credential storage or Linux Secret Service.
-iOS uses native Keychain. Android encrypts the token with an AES-GCM key in Android
-Keystore, migrates legacy plaintext tokens after successful secure storage, and
-excludes credentials and device identity from backups/transfers.
-Tokens are never included in sync files or settings JSON.
-
-The app creates or reuses the private `EpubReaderInfo` repository. A repository
-with that name must have the reader schema marker; an unrelated repository or a
-public repository is rejected without uploading books. If initial creation was
-interrupted before the marker was written, rename that incomplete repository
-before retrying. The client never deletes or changes repository visibility.
-
-- `epub-reader.json`: application/schema marker.
-- `books/<sha256>.epub`: immutable EPUB bytes (20 MiB maximum per file).
-- `devices/<device-id>.json`: device-specific book inventory and reading positions.
-
-Only EPUB files and reading progress are synchronized. Bookmarks, highlights,
-notes, settings and reading statistics remain local. Positions currently use the
-shared parser's chapter/block/character coordinates; EPUB CFI is not implemented.
-Progress suggestions select the latest timestamp, so intentional rereading can
-move backwards. Each device's record remains separate; device clocks should be
-correct. The current open book never jumps automatically: use the settings
-button to apply another device's suggested position. Books not currently open
-receive newer positions automatically. Uploads use SHA-based compare-and-set;
-conflicts are reread and retried without force updates.
-
-All three clients sync and apply reading progress before starting EPUB transfers.
-The file phase uses validated device manifests as an index to avoid checking every
-already uploaded book individually. Automatic sync runs while the desktop app is
-open or a mobile app is in the foreground, normally every five minutes. Mobile clients cancel further requests when
-backgrounded, disabled, signed out, or when the account changes. Network
-failures retain local records and retry; missing permissions require renewed
-authorization. GitHub rate-limit delays are respected. Background downloads are
-bounded to 20 attempts / 100 MiB per pass; uploads also have a 20-attempt limit.
-Additional batches resume after 15 seconds. A failed book does not stop other
-books: its account/device-specific retry record is saved locally, with exponential
-backoff from 30 seconds up to one hour. **Retry failed books** retries only the
-queued files, after refreshing progress, and still respects GitHub rate limits.
-Completed uploads are retained in the manifest; download failures are cleared
-only after EPUB validation and a successful library save.
-Downloads are verified by size and SHA-256 before import. Unreadable/oversized
-local books are skipped and counted. Disabling sync or signing out cancels future
-requests without deleting local books or the repository; an already sent request
-may complete. Local deletions do not delete cloud files; a previously advertised
-book removed on this device is not automatically restored on the same device.
-
-`reader_core` exposes the portable schema and the optional `github-sync` API
-transport. Desktop, Android and iOS use this transport and repository format.
-Mobile clients stage
-downloads and applies them to the live library only after account/session checks.
-Android resume uses the saved library position, allowing intentional rereading to
-move backwards despite older preferences.
-Private repositories are
-not end-to-end encrypted storage, and Git history retains previous file versions.
-
-Validation: local simulated GitHub API tests cover permission checks, private
-repository creation, public/unrelated repository refusal, upload/download hashes,
-progress conflicts, cancellation, progress-first ordering, per-book failure
-isolation, persistent retries and rate-limit stopping. Real-account OAuth, remote creation and
-multi-device acceptance require an authorized live run.
+项目采用 [Apache License 2.0](LICENSE)。第三方源码和依赖保留各自许可证。

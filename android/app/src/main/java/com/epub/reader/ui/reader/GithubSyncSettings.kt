@@ -157,7 +157,7 @@ fun GithubAccountContent(vm: ReaderViewModel, embedded: Boolean = false) {
                         OutlinedButton(onClick = vm::syncGithubNow, enabled = vm.githubSyncEnabled && !vm.githubSyncRunning, shape = ReaderGeometry.Shape) { Text(I18n.t("cloud.now")) }
                     }
                     if (vm.githubSyncRunning) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    if (vm.githubSyncStatus.isNotBlank()) Text(vm.githubSyncStatus, style = MaterialTheme.typography.bodySmall)
+                    if (vm.githubSyncStatus.isNotBlank()) Text(I18n.message(vm.githubSyncStatus), style = MaterialTheme.typography.bodySmall)
                     if (vm.githubSyncFailures.isNotEmpty()) {
                         Text(I18n.tf1("cloud.files_failed", vm.githubSyncFailures.size.toString()), style = MaterialTheme.typography.bodySmall)
                         vm.githubSyncFailures.forEach { failure ->

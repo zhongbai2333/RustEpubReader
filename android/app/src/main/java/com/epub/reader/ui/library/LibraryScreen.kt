@@ -1,12 +1,16 @@
 package com.zhongbai233.epub.reader.ui.library
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.core.tween
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreVert
@@ -16,10 +20,14 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -42,18 +50,34 @@ fun LibraryScreen(
     onOpenBook: (String, Int) -> Unit,
     onRemoveBook: (String) -> Unit,
     onExportBooks: (List<String>) -> Unit = {},
+    onRenameBook: (String, String) -> Unit = { _, _ -> },
+    exportingBooks: Boolean = false,
+    shareModel: BookShareModel? = null,
+    githubToken: String? = null,
+    githubAuthorized: Boolean = false,
+    onGithubLogin: () -> Unit = {},
+    onReceiveBooks: () -> Unit = {},
     onRequestCover: (String) -> Unit = {},
     onUpdateLanguage: (String) -> Unit = {},
     onRefreshLibrary: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenSync: () -> Unit = {},
+    onOpenStatistics: () -> Unit = {},
     onToggleTheme: () -> Unit = {},
     syncing: Boolean = false,
+    onCoverBounds: (String, Rect) -> Unit = { _, _ -> },
+    shelfOrder: StableShelfOrder = remember { StableShelfOrder() },
+    shelfRevision: Int = 0,
+    promotedUri: String? = null,
+    reduceShelfMotion: Boolean = false,
 ) {
     val langVersion = I18n.version
     var managing by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf(listOf<String>()) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var shareTargets by remember { mutableStateOf<List<String>>(emptyList()) }
+    var renaming by remember { mutableStateOf<BookEntry?>(null) }
+    var renameTitle by remember { mutableStateOf("") }
     LaunchedEffect(books.map { it.uri }) { selected = selected.filter { uri -> books.any { it.uri == uri } } }
     BackHandler(enabled = managing) { managing = false; selected = emptyList() }
     var query by rememberSaveable { mutableStateOf("") }
@@ -62,13 +86,10 @@ fun LibraryScreen(
     var showLanguage by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val filtered =
-        books
-            .filter { it.title.contains(query, ignoreCase = true) }
-            .let {
-                if (sortTitle) it.sortedBy { b -> b.title.lowercase() }
-                else it.sortedByDescending { b -> b.lastOpened }
-            }
+    val ranked=if(sortTitle) books.sortedBy {it.title.lowercase()} else books.sortedByDescending {it.lastOpened}
+    val ranks=shelfOrder.resolve(ranked.map {it.uri},sortTitle,shelfRevision)
+        .withIndex().associate {it.value to it.index}
+    val filtered=ranked.sortedBy {ranks[it.uri] ?: Int.MAX_VALUE}.filter {it.title.contains(query,ignoreCase=true)}
     val recent = books.maxByOrNull { it.lastOpened }?.takeIf { it.lastOpened > 0 }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -93,7 +114,7 @@ fun LibraryScreen(
                             }
                         }
                         Text(
-                            I18n.tf1("ui.library_count", "${books.size}"),
+                            I18n.count("ui.library_count", books.size),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -106,6 +127,8 @@ fun LibraryScreen(
                             Icon(Icons.Default.MoreVert, I18n.t("ui.more"))
                         }
                         DropdownMenu(showMore, { showMore = false }) {
+                            DropdownMenuItem(text={Text(I18n.t("transfer.receive"))},onClick={showMore=false;onReceiveBooks()})
+                            DropdownMenuItem(text={Text(I18n.t("stats.title"))},onClick={showMore=false;onOpenStatistics()})
                             DropdownMenuItem(
                                 text = { Text(I18n.t("ui.language")) },
                                 onClick = {
@@ -140,6 +163,7 @@ fun LibraryScreen(
                 scope.launch {
                     refreshing = true
                     try {
+                        shelfOrder.reset()
                         onRefreshLibrary()
                     } finally {
                         refreshing = false
@@ -215,7 +239,7 @@ fun LibraryScreen(
                                     )
                                 }
                                 Button(
-                                    onClick = { onOpenBook(recent.uri, recent.lastChapter) },
+                                    onClick = { onCoverBounds(recent.uri, Rect.Zero); onOpenBook(recent.uri, recent.lastChapter) },
                                     contentPadding = ReaderGeometry.ButtonPadding,
                                     shape = ReaderGeometry.Shape,
                                 ) {
@@ -287,12 +311,13 @@ fun LibraryScreen(
                             TextButton(onClick = { selected = emptyList() }) { Text(I18n.t("manage.clear")) }
                         }
                         Row {
-                            TextButton(onClick = { onExportBooks(selected) }, enabled = selected.isNotEmpty()) { Text(I18n.t("manage.export")) }
+                            TextButton(onClick = { shareTargets = selected.toList() }, enabled = selected.isNotEmpty()) { Text(I18n.t("manage.share")) }
                             TextButton(onClick = { confirmDelete = true }, enabled = selected.isNotEmpty(), colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(I18n.t("manage.delete")) }
                         }
                     }
                 }
                 items(filtered, key = { it.uri }) { entry ->
+                    DisposableEffect(entry.uri) { onDispose { onCoverBounds(entry.uri, Rect.Zero) } }
                     LaunchedEffect(entry.uri) {
                         if (!coverCache.containsKey(entry.uri)) onRequestCover(entry.uri)
                     }
@@ -302,6 +327,11 @@ fun LibraryScreen(
                         { if (managing) selected = if (entry.uri in selected) selected - entry.uri else selected + entry.uri else onOpenBook(entry.uri, entry.lastChapter) },
                         { onRemoveBook(entry.uri) },
                         managing, entry.uri in selected,
+                        onShare = { shareTargets = listOf(entry.uri) },
+                        onRename = { renaming = entry; renameTitle = entry.title },
+                        onBounds = { onCoverBounds(entry.uri, it) },
+                        modifier = Modifier.zIndex(if(entry.uri == promotedUri) 1f else 0f).animateItem(fadeInSpec = null, fadeOutSpec = null,
+                            placementSpec = if (reduceShelfMotion) null else tween(380)),
                     )
                 }
             }
@@ -310,6 +340,22 @@ fun LibraryScreen(
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text(I18n.t("manage.confirm")) }, text = { Text(I18n.t("manage.delete_note")) }, confirmButton = {
         TextButton(onClick = { val deleting = selected; confirmDelete = false; selected = emptyList(); deleting.forEach(onRemoveBook) }) { Text(I18n.t("manage.delete"), color = MaterialTheme.colorScheme.error) }
     }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(I18n.t("settings.cancel")) } })
+    if (shareTargets.isNotEmpty()) {
+        val shareBooks = shareTargets.mapNotNull { uri -> books.find { it.uri == uri } }
+        BookShareSendSheet(shareModel, shareBooks, coverCache, githubToken, githubAuthorized, onGithubLogin, exportingBooks,
+            onExport = { onExportBooks(shareBooks.map { it.uri }) }, onDismiss = { if (!exportingBooks) shareTargets = emptyList() })
+    }
+    renaming?.let { entry ->
+        AlertDialog(onDismissRequest = { renaming = null }, title = { Text(I18n.t("book.rename")) }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(I18n.t("book.rename_description"))
+                OutlinedTextField(value = renameTitle, onValueChange = { renameTitle = it }, singleLine = true,
+                    label = { Text(I18n.t("book.rename_hint")) })
+            }
+        }, confirmButton = {
+            TextButton(onClick = { onRenameBook(entry.uri, renameTitle.trim()); renaming = null }, enabled = renameTitle.trim().isNotEmpty()) { Text(I18n.t("error.ok")) }
+        }, dismissButton = { TextButton(onClick = { renaming = null }) { Text(I18n.t("settings.cancel")) } })
+    }
     if (showLanguage)
         AlertDialog(
             onDismissRequest = { showLanguage = false },
@@ -356,6 +402,10 @@ private fun BookCard(
     onDelete: () -> Unit,
     managing: Boolean = false,
     selected: Boolean = false,
+    onBounds: (Rect) -> Unit = {},
+    onShare: () -> Unit = {},
+    onRename: () -> Unit = {},
+    modifier: Modifier = Modifier,
 ) {
     var more by remember { mutableStateOf(false) }
     val bitmap by
@@ -365,10 +415,11 @@ private fun BookCard(
                     coverBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
                 }
         }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Box(
             Modifier.fillMaxWidth()
                 .aspectRatio(2f / 3f)
+                .onGloballyPositioned { onBounds(it.boundsInRoot()) }
                 .clip(ReaderGeometry.Shape)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .clickable(onClick = onClick),
@@ -406,10 +457,13 @@ private fun BookCard(
                 modifier = Modifier.weight(1f).clickable(onClick = onClick),
             )
             Box {
-                IconButton(onClick = { more = true }, modifier = Modifier.size(28.dp)) {
+                IconButton(onClick = { more = true }, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Default.MoreVert, I18n.t("ui.more"), modifier = Modifier.size(20.dp))
                 }
                 DropdownMenu(more, { more = false }) {
+                    DropdownMenuItem(text = { Text(I18n.t("book.share")) }, onClick = { more = false; onShare() })
+                    DropdownMenuItem(text = { Text(I18n.t("book.rename")) }, onClick = { more = false; onRename() })
+                    HorizontalDivider()
                     DropdownMenuItem(
                         text = { Text(I18n.t("library.delete")) },
                         onClick = {

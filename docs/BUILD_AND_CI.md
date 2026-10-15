@@ -7,7 +7,7 @@
 | `ci.yml`: main/dev pushes, PRs, manual | Rust fmt / locked metadata / strict Clippy / workspace tests; Android JVM tests and Release lint; all three platform builds |
 | `desktop-build.yml`: reusable | Windows x64/arm64 ZIP, Linux x64/arm64 ZIP, macOS Intel/Apple Silicon DMG |
 | `android-build.yml`: reusable | Three per-ABI Release APKs; publishing secrets are optional, otherwise development signing |
-| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift layout/OAuth checks, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive |
+| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift layout, OAuth, appearance, reading-mode, speech, contents and localization checks, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive |
 | `pr-review.yml`: `run-build` label | Reuses all three builds for the PR head SHA |
 | `release.yml`: `v*` tag or manual tag | Requires all three builds; publishes desktop/Android assets. iOS validation artifacts remain in Actions |
 
@@ -43,6 +43,17 @@ submission are not configured. The project has host Swift checks and Rust tests,
 but no XCTest/UI test target. Compilation does not validate physical page-turn
 gestures, background behavior or App Store acceptance.
 
+All three readers use native rendering. Publication scripts use an embedded
+QuickJS interpreter without a WebView, JIT, network, filesystem or account APIs.
+Android generates interpreter bindings against the NDK; its build host needs
+libclang (provided by the CI LLVM toolchain). Desktop builds need no WebView2 or
+WebKitGTK runtime.
+
+For native EPUB image diagnostics and CSS/JavaScript runtime boundaries,
+see [EPUB media and interactivity](EPUB_MEDIA_AND_INTERACTIVITY.md). The iOS
+Debug painting diagnostic and Android device runner are local checks; CI does not
+currently launch them in a simulator/emulator.
+
 ## Local gates
 
 Run from the repository root:
@@ -50,8 +61,10 @@ Run from the repository root:
 ```sh
 cargo fmt --all -- --check
 cargo metadata --locked --format-version 1
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --locked --all --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features
+python3 scripts/check-i18n.py
+python3 scripts/test-i18n.py
 git diff --check
 ```
 
@@ -61,6 +74,11 @@ On macOS with full Xcode:
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ios/scripts/check-layout.sh
 ios/scripts/check-oauth.sh
+ios/scripts/check-appearance.sh
+ios/scripts/check-reading-mode.sh
+ios/scripts/check-speech.sh
+ios/scripts/check-contents.sh
+ios/scripts/check-i18n.sh
 xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
   -configuration Debug -sdk iphonesimulator \
   -destination 'generic/platform=iOS Simulator' \
@@ -73,7 +91,12 @@ xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
 ```
 
 Android uses JDK 21 to align CI with the locally verified environment. The Java
-bytecode target remains 17. With SDK configured, run from `android/`:
+bytecode target remains 17. Both Android workflows explicitly install
+`platform-tools`, `platforms;android-35` and `build-tools;36.0.0`; the APK workflow
+then installs NDK 26.1.10909125. The setup action v3 defaults to the obsolete
+`tools` package, so never omit its `packages` override. See the
+[action input defaults](https://github.com/android-actions/setup-android/blob/v3/action.yml).
+With SDK configured, run from `android/`:
 
 ```sh
 ./gradlew :app:testDebugUnitTest :app:lintVitalRelease -x cargoBuild
@@ -101,3 +124,9 @@ Local check results apply to their exact source snapshot. A new workflow has not
 passed GitHub Actions until the source is committed/pushed and the resulting run
 succeeds. Previous main-branch runs do not validate uncommitted work. Windows and
 Linux runtime acceptance remains separate from builds and macOS-host tests.
+
+PR label builds and ordinary CI do not inherit Android release signing secrets.
+The release workflow still passes signing secrets to the reusable Android build.
+The Android workflow is reusable only; manually dispatching ordinary CI does not
+pass release secrets. A manual dispatch of the controlled release workflow can
+pass them. Builds without signing values fall back to development signing.

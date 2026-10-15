@@ -4,6 +4,8 @@ name: CI
     push:
         branches: ["main", "dev"]
         paths:
+            - "scripts/**"
+            - "vendor/**"
             - "core/**"
             - "desktop/**"
             - "android-bridge/**"
@@ -21,6 +23,8 @@ name: CI
     pull_request:
         branches: ["main", "dev"]
         paths:
+            - "scripts/**"
+            - "vendor/**"
             - "core/**"
             - "desktop/**"
             - "android-bridge/**"
@@ -72,6 +76,11 @@ jobs:
                       ${{ runner.os }}-cargo-ci-
                       ${{ runner.os }}-cargo-
 
+            - name: Validate shared translations
+              run: |
+                  python3 scripts/check-i18n.py
+                  python3 scripts/test-i18n.py
+
             - name: Check formatting
               run: cargo fmt --all -- --check
 
@@ -79,10 +88,10 @@ jobs:
               run: cargo metadata --locked --format-version 1 > /dev/null
 
             - name: Run Clippy
-              run: cargo clippy --locked --all-targets --all-features -- -D warnings
+              run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
             - name: Run tests
-              run: cargo test --locked --all --all-features
+              run: cargo test --locked --workspace --all-features
 
     android-gradle-check:
         name: Android Gradle check
@@ -97,8 +106,15 @@ jobs:
                   java-version: "21"
                   distribution: temurin
 
+            - name: Install native script binding toolchain
+              run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
             - name: Setup Android SDK
               uses: android-actions/setup-android@v3
+              with:
+                  # Override v3's obsolete default "tools" package.
+                  packages: "platform-tools platforms;android-35 build-tools;36.0.0"
+                  log-accepted-android-sdk-licenses: false
 
             - name: Cache Gradle
               uses: actions/cache@v4
@@ -130,7 +146,6 @@ jobs:
         with:
             version: ci-${{ github.sha }}
             artifact-prefix: ci-android
-        secrets: inherit
 
     build-ios:
         name: Build and check iOS

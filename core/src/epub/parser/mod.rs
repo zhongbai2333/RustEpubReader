@@ -15,6 +15,15 @@ use image::load_referenced_images;
 /// Render blocks grouped by chapter, with shared block and scalar coordinates.
 pub type RenderChapters = Vec<Vec<(usize, usize, super::ContentBlock)>>;
 
+/// Render-only illustrations attached to stable canonical block coordinates.
+#[derive(Clone, Debug)]
+pub struct SupplementalImage {
+    pub block: usize,
+    pub after: bool,
+    pub data: std::sync::Arc<Vec<u8>>,
+    pub alt: Option<String>,
+}
+
 fn resource_key_to_string(key: &ResourceKey<'_>) -> Option<String> {
     match key {
         ResourceKey::Value(value) => Some(value.as_ref().to_string()),
@@ -97,6 +106,8 @@ pub struct EpubBook {
     pub cover_data: Option<Vec<u8>>,
     #[serde(skip)]
     pub fonts: Vec<(String, Vec<u8>)>,
+    #[serde(skip)]
+    pub supplemental_images: HashMap<usize, Vec<SupplementalImage>>,
     #[serde(default)]
     pub chapter_reviews: HashMap<usize, usize>,
     #[serde(default)]
@@ -146,13 +157,14 @@ impl EpubBook {
 
         let mut chapters = Vec::new();
         let mut toc = Vec::new();
+        let mut supplemental_images = HashMap::new();
+        let mut pending_images = Vec::new();
 
         // Build image resource path index (lazy: bytes loaded only when referenced)
         let image_resource_paths: Vec<String> = epub
             .manifest()
             .images()
             .filter_map(|entry| resource_key_to_string(entry.resource().key()))
-            .map(|path| normalize_resource_path(&path))
             .collect();
         let mut image_resources: HashMap<String, Vec<u8>> = HashMap::new();
 
@@ -193,12 +205,45 @@ impl EpubBook {
                 .unwrap_or_else(|| format!("第 {} 章", chapters.len() + 1));
 
             if blocks.is_empty() {
+                // Previously omitted image-only spine items must not renumber
+                // saved text chapters. Display their media beside the next
+                // canonical chapter while retaining the original shared indices.
+                pending_images.extend(
+                    html::parse_render_blocks(&html, &path_str, &image_resources)
+                        .into_iter()
+                        .filter_map(|(_, _, block)| match block {
+                            super::ContentBlock::Image { data, alt, .. } => {
+                                Some(SupplementalImage {
+                                    block: 0,
+                                    after: false,
+                                    data,
+                                    alt,
+                                })
+                            }
+                            _ => None,
+                        }),
+                );
                 continue;
             }
 
             let chapter_idx = chapters.len();
 
+            let mut media = std::mem::take(&mut pending_images);
+            media.extend(html::supplemental_images(
+                &html,
+                &path_str,
+                &image_resources,
+            ));
+            if !media.is_empty() {
+                supplemental_images.insert(chapter_idx, media);
+            }
+
+            let native_document =
+                super::native::NativeDocument::parse(&html, &path_str, &blocks, |p| {
+                    epub.read_resource_str(p).ok().map(|s| s.to_string())
+                });
             chapters.push(Chapter {
+                native_document: std::sync::Arc::new(native_document),
                 title: chapter_title.clone(),
                 blocks,
                 source_href: Some(path_str.clone()),
@@ -211,6 +256,36 @@ impl EpubBook {
                 toc.push(TocEntry {
                     title: chapter_title,
                     chapter_index: chapter_idx,
+                });
+            }
+        }
+
+        if !pending_images.is_empty() {
+            if let Some(chapter) = chapters.last() {
+                let block = chapter.blocks.len().saturating_sub(1);
+                for image in &mut pending_images {
+                    image.block = block;
+                    image.after = true;
+                }
+                supplemental_images
+                    .entry(chapters.len() - 1)
+                    .or_default()
+                    .extend(pending_images);
+            } else {
+                // A wholly illustrated book had no readable coordinates before.
+                // Give each image its own canonical block so it can paginate.
+                chapters.push(Chapter {
+                    native_document: Default::default(),
+                    title: title.clone(),
+                    source_href: None,
+                    blocks: pending_images
+                        .into_iter()
+                        .map(|image| super::ContentBlock::Image {
+                            native_style: Default::default(),
+                            data: image.data,
+                            alt: image.alt,
+                        })
+                        .collect(),
                 });
             }
         }
@@ -271,6 +346,7 @@ impl EpubBook {
             toc,
             cover_data,
             fonts,
+            supplemental_images,
             chapter_reviews,
             review_chapter_indices,
         })
@@ -278,27 +354,53 @@ impl EpubBook {
 
     /// Render-only supplemental media; tuple indices retain the original shared
     /// block/scalar coordinate. The canonical chapters and sync schema stay stable.
-    pub fn render_blocks<P: AsRef<Path>>(&self, path: P) -> Result<RenderChapters, String> {
-        let epub = RbookEpub::open(path).map_err(|e| e.to_string())?;
-        let images: Vec<String> = epub
-            .manifest()
-            .images()
-            .filter_map(|entry| resource_key_to_string(entry.resource().key()))
-            .map(|p| normalize_resource_path(&p))
-            .collect();
-        let mut resources = HashMap::new();
+    pub fn render_blocks<P: AsRef<Path>>(&self, _path: P) -> Result<RenderChapters, String> {
         self.chapters
             .iter()
-            .map(|chapter| {
-                let href = chapter
-                    .source_href
-                    .as_deref()
-                    .ok_or("Chapter source is missing")?;
-                let html = epub.read_resource_str(href).map_err(|e| e.to_string())?;
-                load_referenced_images(&html, href, &images, &mut resources, |p| {
-                    epub.read_resource_bytes(p).ok()
-                });
-                Ok(html::parse_render_blocks(&html, href, &resources))
+            .enumerate()
+            .map(|(index, chapter)| {
+                let media = self
+                    .supplemental_images
+                    .get(&index)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let mut blocks = Vec::new();
+                for (i, block) in chapter.blocks.iter().enumerate() {
+                    for image in media
+                        .iter()
+                        .filter(|image| image.block == i && !image.after)
+                    {
+                        blocks.push((
+                            i,
+                            0,
+                            super::ContentBlock::Image {
+                                native_style: Default::default(),
+                                data: image.data.clone(),
+                                alt: image.alt.clone(),
+                            },
+                        ));
+                    }
+                    blocks.push((i, 0, block.clone()));
+                    let end = match block {
+                        super::ContentBlock::Paragraph { spans, .. }
+                        | super::ContentBlock::Heading { spans, .. } => {
+                            spans.iter().map(|s| s.text.chars().count()).sum()
+                        }
+                        _ => 0,
+                    };
+                    for image in media.iter().filter(|image| image.block == i && image.after) {
+                        blocks.push((
+                            i,
+                            end,
+                            super::ContentBlock::Image {
+                                native_style: Default::default(),
+                                data: image.data.clone(),
+                                alt: image.alt.clone(),
+                            },
+                        ));
+                    }
+                }
+                Ok(blocks)
             })
             .collect()
     }
@@ -359,4 +461,53 @@ impl EpubBook {
             chapter_count,
         })
     }
+}
+
+impl EpubBook {
+    pub fn native_note(&self, chapter: usize, href: &str) -> Option<super::native::NativeNote> {
+        let (path, id) = href.split_once('#')?;
+        if id.is_empty() {
+            return None;
+        }
+        let source = self.chapters.get(chapter)?.source_href.as_deref()?;
+        let target = if path.is_empty() {
+            chapter
+        } else {
+            let resolved = super::native::resolve(source, path)?;
+            self.chapters.iter().position(|c| {
+                c.source_href.as_deref().is_some_and(|p| {
+                    normalize_resource_path(p) == normalize_resource_path(&resolved)
+                })
+            })?
+        };
+        let id = decode_fragment(id)?;
+        self.chapters[target]
+            .native_document
+            .note(&id)
+            .map(|text| super::native::NativeNote {
+                text,
+                href: href.into(),
+            })
+    }
+}
+fn decode_fragment(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut output = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            output.push(
+                u8::from_str_radix(std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?, 16)
+                    .ok()?,
+            );
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(output).ok()
 }

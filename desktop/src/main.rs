@@ -166,6 +166,11 @@ fn startup_open_path_from_process_args() -> Option<PathBuf> {
 }
 
 fn main() -> eframe::Result {
+    // Isolated UI diagnostics must never ask for access to real keychain entries.
+    #[cfg(debug_assertions)]
+    if std::env::args().any(|arg| arg == "--ui-preview") {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    }
     let debug_enabled = debug_enabled_from_args(std::env::args().skip(1));
     reader_core::sharing::set_debug_logging_enabled(debug_enabled);
     if debug_enabled {
@@ -177,6 +182,14 @@ fn main() -> eframe::Result {
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1200.0, 800.0])
         .with_min_inner_size([600.0, 400.0]);
+    #[cfg(debug_assertions)]
+    let viewport = if std::env::args().any(|arg| arg == "--ui-preview")
+        && std::env::args().any(|arg| arg == "--ui-preview-small")
+    {
+        viewport.with_inner_size([600.0, 400.0])
+    } else {
+        viewport
+    };
     let viewport = if let Some(icon) = load_app_icon() {
         viewport.with_icon(icon)
     } else {
@@ -193,6 +206,19 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
             let mut app = ReaderApp::default();
+            #[cfg(debug_assertions)]
+            if std::env::args().any(|a| a == "--appearance-linkage-preview") {
+                app.show_appearance_linkage = true;
+                app.i18n
+                    .set_language(reader_core::i18n::Language::from_code("zh_cn"));
+                if std::env::args().any(|a| a == "--appearance-linkage-independent") {
+                    app.appearance_linkage.set_app(true);
+                    app.appearance_linkage.reading_linked = false;
+                    app.appearance_linkage.reading_mode =
+                        reader_core::appearance::DisplayChoice::Light;
+                    app.appearance_selected_node = 2;
+                }
+            }
             if let Some(path) = &startup_open_path {
                 if path
                     .extension()

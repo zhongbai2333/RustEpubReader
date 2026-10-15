@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,6 +21,20 @@ import com.zhongbai233.epub.reader.i18n.I18n
 import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
 import com.zhongbai233.epub.reader.util.FontItem
 import java.io.File
+import coil.compose.AsyncImage
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -27,6 +42,15 @@ internal fun ReaderSettingsSheet(
     fontSize: Float,
     scrollMode: Boolean,
     isDarkMode: Boolean,
+    appearance: com.zhongbai233.epub.reader.model.ReadingAppearance? = null,
+    appearanceDark: Boolean = false,
+    appearanceLinkage: com.zhongbai233.epub.reader.model.AppearanceLinkage? = null,
+    systemAppearanceDark: Boolean = false,
+    ambientAppearanceDark: Boolean? = null,
+    onLinkageChange: (com.zhongbai233.epub.reader.model.AppearanceLinkage) -> Unit = {},
+    ambientSensorAvailable: Boolean = false,
+    onAppearanceChange: (com.zhongbai233.epub.reader.model.ReadingAppearance) -> Unit = {},
+    previewFontFamily: FontFamily = FontFamily.Default,
     bgColorIndex: Int,
     customBgColor: Color,
     fontColorIndex: Int,
@@ -35,6 +59,7 @@ internal fun ReaderSettingsSheet(
     pageAnimation: String,
     bgImageEnabled: Boolean,
     bgImageAlpha: Float,
+    bgImageUri: String? = null,
     language: String,
     showImmersiveStatus: Boolean = false,
     systemFonts: List<FontItem> = emptyList(),
@@ -71,288 +96,31 @@ internal fun ReaderSettingsSheet(
     onTranslateApiKeyChange: (String) -> Unit = {},
     onDictionaryApiUrlChange: (String) -> Unit = {},
     onDictionaryApiKeyChange: (String) -> Unit = {},
-    // TTS
-    ttsVoiceName: String = "zh-CN-XiaoxiaoNeural",
-    ttsRate: Int = 0,
-    ttsVolume: Int = 0,
-    onTtsVoiceNameChange: (String) -> Unit = {},
-    onTtsRateChange: (Int) -> Unit = {},
-    onTtsVolumeChange: (Int) -> Unit = {},
-    // CSC
-    cscMode: String = "none",
-    cscThreshold: String = "standard",
-    onCscModeChange: (String) -> Unit = {},
-    onCscThresholdChange: (String) -> Unit = {},
-    cscModelReady: Boolean = false,
-    cscModelLoading: Boolean = false,
-    onDownloadCscModel: () -> Unit = {},
-    cloudSyncContent: @Composable () -> Unit = {},
+    scriptsEnabled: Boolean = true,
+    onScriptsEnabledChange: (Boolean) -> Unit = {},
+    cssPolicy: String = "mixed",
+    onCssPolicyChange: (String) -> Unit = {},
 ) {
-    val bgOptions =
-        listOf(
-            I18n.t("color.warm_white"),
-            I18n.t("color.light_gray"),
-            I18n.t("color.bean_green"),
-            I18n.t("color.deep_night"),
-            I18n.t("color.graphite"),
-            I18n.t("settings.custom"),
-        )
-    val fontColorOptions =
-        listOf(
-            I18n.t("color.auto"),
-            I18n.t("color.ink_black"),
-            I18n.t("color.dark_gray"),
-            I18n.t("color.light_gray"),
-            I18n.t("color.cream"),
-            I18n.t("settings.custom"),
-        )
-    val fontFamilyOptions = listOf("Sans", "Serif", "Monospace")
-    val pageAnimationOptions = listOf("Slide", "Cover", "Realistic", "None")
-    var fontDropdownExpanded by remember { mutableStateOf(false) }
-    var fontSearchQuery by remember { mutableStateOf("") }
-
-    val scrollState = rememberScrollState()
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier =
-                Modifier.fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            Text(I18n.t("settings.title"), style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(12.dp))
-
-            Text(I18n.tf1("settings.font_size", "${fontSize.toInt()}sp"))
-            Slider(
-                value = fontSize,
-                onValueChange = onFontSizeChange,
-                valueRange = 12f..40f,
-            )
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(I18n.t("settings.reading_mode"), modifier = Modifier.width(72.dp))
-                FilterChip(
-                    selected = scrollMode,
-                    onClick = { onScrollModeChange(true) },
-                    label = { Text(I18n.t("settings.scroll")) },
-                )
-                Spacer(Modifier.width(8.dp))
-                FilterChip(
-                    selected = !scrollMode,
-                    onClick = { onScrollModeChange(false) },
-                    label = { Text(I18n.t("settings.paging")) },
-                )
+    var more by rememberSaveable { mutableStateOf(false) }
+    var fontPicker by remember { mutableStateOf(false) }
+    var confirmReset by rememberSaveable { mutableStateOf(false) }
+    val readingScroll = rememberScrollState()
+    val moreScroll = rememberScrollState()
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val closeSheet = rememberReaderSheetDismiss(sheet, onDismiss)
+    val themeNames = listOf("color.warm_white", "color.light_gray", "color.bean_green", "color.deep_night", "color.graphite").map { I18n.t(it) } + I18n.t("settings.custom")
+    val papers = listOf(Color(0xFFF5F0E8), Color(0xFFF1F3F5), Color(0xFFE8F0E8), Color(0xFF1A1A1A), Color(0xFF24262B), customBgColor)
+    val manualTypography = cssPolicy != "publisher"
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, sheetMaxWidth = 560.dp,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (more) IconButton(onClick = { more = false }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, I18n.t("settings.back")) }
+                Text(I18n.t(if (more) "settings.more" else "settings.appearance_title"), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = closeSheet) { Text(I18n.t("settings.done")) }
             }
-            Spacer(Modifier.height(10.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(I18n.t("settings.visual"), modifier = Modifier.width(72.dp))
-                FilterChip(
-                    selected = !isDarkMode,
-                    onClick = { onDarkModeChange(false) },
-                    label = { Text(I18n.t("toolbar.light_mode")) },
-                )
-                Spacer(Modifier.width(8.dp))
-                FilterChip(
-                    selected = isDarkMode,
-                    onClick = { onDarkModeChange(true) },
-                    label = { Text(I18n.t("toolbar.dark_mode")) },
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.bg_color"))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-            ) {
-                bgOptions.forEachIndexed { index, name ->
-                    FilterChip(
-                        selected = bgColorIndex == index,
-                        onClick = { onBgColorChange(index) },
-                        label = { Text(name) },
-                    )
-                }
-            }
-            if (bgColorIndex == bgOptions.lastIndex) {
-                Spacer(Modifier.height(8.dp))
-                ColorEditorRow(
-                    label = I18n.t("settings.custom_bg"),
-                    color = customBgColor,
-                    onColorChange = onCustomBgColorChange,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.font_color"))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-            ) {
-                fontColorOptions.forEachIndexed { index, name ->
-                    FilterChip(
-                        selected = fontColorIndex == index,
-                        onClick = { onFontColorChange(index) },
-                        label = { Text(name) },
-                    )
-                }
-            }
-            if (fontColorIndex == fontColorOptions.lastIndex) {
-                Spacer(Modifier.height(8.dp))
-                ColorEditorRow(
-                    label = I18n.t("settings.custom_font_color"),
-                    color = customFontColor,
-                    onColorChange = onCustomFontColorChange,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.font"))
-            Box {
-                OutlinedButton(
-                    onClick = { fontDropdownExpanded = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = ReaderGeometry.Shape,
-                    contentPadding = ReaderGeometry.ButtonPadding,
-                ) {
-                    Text(fontFamilyName, modifier = Modifier.weight(1f))
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                }
-                DropdownMenu(
-                    expanded = fontDropdownExpanded,
-                    onDismissRequest = {
-                        fontDropdownExpanded = false
-                        fontSearchQuery = ""
-                    },
-                    modifier = Modifier.fillMaxWidth(0.9f),
-                ) {
-                    // 搜索框
-                    OutlinedTextField(
-                        value = fontSearchQuery,
-                        onValueChange = { fontSearchQuery = it },
-                        placeholder = { Text(I18n.t("settings.search_font")) },
-                        singleLine = true,
-                        modifier =
-                            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                        shape = ReaderGeometry.Shape,
-                    )
-                    val q = fontSearchQuery.lowercase()
-                    // 内置字体
-                    fontFamilyOptions
-                        .filter { q.isEmpty() || it.lowercase().contains(q) }
-                        .forEach { fam ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(friendlyFontLabel(fam))
-                                        Text(
-                                            fontPreviewText(fam),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            fontFamily = previewFontFamily(fam),
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    onFontFamilyChange(fam)
-                                    fontDropdownExpanded = false
-                                    fontSearchQuery = ""
-                                },
-                                leadingIcon =
-                                    if (fontFamilyName == fam) {
-                                        { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else null,
-                            )
-                        }
-                    // 系统字体
-                    val filteredSystem = systemFonts.filter {
-                        q.isEmpty() || it.displayName.lowercase().contains(q)
-                    }
-                    if (filteredSystem.isNotEmpty()) {
-                        HorizontalDivider()
-                        filteredSystem.forEach { item ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(item.displayName)
-                                        Text(
-                                            fontPreviewText(item.displayName),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            fontFamily =
-                                                previewFontFamily(item.displayName, item.path),
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    onFontFamilyChange(item.displayName)
-                                    fontDropdownExpanded = false
-                                    fontSearchQuery = ""
-                                },
-                                leadingIcon =
-                                    if (fontFamilyName == item.displayName) {
-                                        { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else null,
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.page_animation"))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-            ) {
-                pageAnimationOptions.forEach { mode ->
-                    FilterChip(
-                        selected = pageAnimation == mode,
-                        onClick = { onPageAnimationChange(mode) },
-                        label = {
-                            Text(
-                                when (mode) {
-                                    "Slide" -> I18n.t("settings.slide")
-                                    "Cover" -> I18n.t("settings.cover")
-                                    "Realistic" -> I18n.t("settings.realistic")
-                                    else -> I18n.t("settings.none")
-                                }
-                            )
-                        },
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(I18n.t("settings.bg_image"), modifier = Modifier.weight(1f))
-                TextButton(
-                    onClick = onPickBackgroundImage,
-                    shape = ReaderGeometry.Shape,
-                    contentPadding = ReaderGeometry.ButtonPadding,
-                ) {
-                    Text(I18n.t("settings.pick_bg_image"))
-                }
-                if (bgImageEnabled) {
-                    TextButton(
-                        onClick = onClearBackgroundImage,
-                        shape = ReaderGeometry.Shape,
-                        contentPadding = ReaderGeometry.ButtonPadding,
-                    ) {
-                        Text(I18n.t("settings.clear_bg_image"))
-                    }
-                }
-            }
-
-            if (bgImageEnabled) {
-                Text("${I18n.t("settings.opacity")}: ${(bgImageAlpha * 100).toInt()}%")
-                Slider(
-                    value = bgImageAlpha,
-                    onValueChange = onBgImageAlphaChange,
-                    valueRange = 0f..1f,
-                )
-            }
-
+            Column(Modifier.weight(1f).verticalScroll(if (more) moreScroll else readingScroll).padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (more) {
             // ─── 语言选择 ───
             Spacer(Modifier.height(12.dp))
             Text(I18n.t("settings.language"))
@@ -376,9 +144,9 @@ internal fun ReaderSettingsSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("沉浸状态信息")
+                    Text(I18n.t("settings.immersive_status_info"))
                     Text(
-                        "在阅读界面左下角显示时间和电量",
+                        I18n.t("settings.immersive_status_info_desc"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -388,45 +156,6 @@ internal fun ReaderSettingsSheet(
                     onCheckedChange = onShowImmersiveStatusChange,
                 )
             }
-
-            // ─── 排版设置 ───
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.typography"), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-
-            Text("${I18n.t("settings.line_spacing")}: ${"%.1f".format(lineSpacing)}")
-            Slider(
-                value = lineSpacing,
-                onValueChange = onLineSpacingChange,
-                valueRange = 1.0f..3.0f,
-                steps = 19,
-            )
-
-            Text("${I18n.t("settings.para_spacing")}: ${"%.1f".format(paraSpacing)}")
-            Slider(
-                value = paraSpacing,
-                onValueChange = onParaSpacingChange,
-                valueRange = 0.0f..2.0f,
-                steps = 19,
-            )
-
-            Text("${I18n.t("settings.text_indent")}: $textIndent ${I18n.t("settings.chars")}")
-            Slider(
-                value = textIndent.toFloat(),
-                onValueChange = { onTextIndentChange(it.toInt()) },
-                valueRange = 0f..4f,
-                steps = 3,
-            )
-
-            Text("标题字号倍率: ${"%.1f".format(titleFontScale)}x")
-            Slider(
-                value = titleFontScale,
-                onValueChange = onTitleFontScaleChange,
-                valueRange = 1.0f..2.5f,
-                steps = 14,
-            )
 
             // ─── API 设置 ───
             Spacer(Modifier.height(16.dp))
@@ -507,221 +236,134 @@ internal fun ReaderSettingsSheet(
                 shape = ReaderGeometry.Shape,
             )
 
-            // ─── TTS 设置 ───
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.tts_settings"), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment=Alignment.CenterVertically){Text(I18n.t("settings.book_scripts"),modifier=Modifier.weight(1f));Switch(checked=scriptsEnabled,onCheckedChange=onScriptsEnabledChange)}
+            Text(I18n.t("settings.book_scripts_desc"),style=MaterialTheme.typography.bodySmall)
 
-            val voicePresets =
-                listOf(
-                    "zh-CN-XiaoxiaoNeural" to "晓晓 (女)",
-                    "zh-CN-YunyangNeural" to "云扬 (男)",
-                    "zh-CN-XiaoyiNeural" to "晓依 (女)",
-                    "zh-CN-YunjianNeural" to "云健 (男)",
-                    "zh-CN-YunxiNeural" to "云希 (男)",
-                    "zh-CN-XiaochenNeural" to "晓辰 (女)",
-                    "zh-CN-XiaohanNeural" to "晓涵 (女)",
-                    "zh-CN-XiaomoNeural" to "晓墨 (女)",
-                    "zh-CN-XiaoruiNeural" to "晓睿 (女)",
-                    "zh-CN-XiaoshuangNeural" to "晓双 (女)",
-                    "en-US-AriaNeural" to "Aria (EN Female)",
-                    "en-US-GuyNeural" to "Guy (EN Male)",
-                    "ja-JP-NanamiNeural" to "Nanami (JP Female)",
-                )
-            val rateOptions =
-                listOf(
-                    -50 to "-50%",
-                    -25 to "-25%",
-                    0 to I18n.t("tts.rate_normal"),
-                    25 to "+25%",
-                    50 to "+50%",
-                    100 to "+100%",
-                )
-            val volumeOptions =
-                listOf(
-                    -50 to "-50%",
-                    -25 to "-25%",
-                    0 to I18n.t("tts.rate_normal"),
-                    25 to "+25%",
-                    50 to "+50%",
-                )
+            TextButton(onClick={confirmReset=true},modifier=Modifier.fillMaxWidth()) {Text(I18n.t("settings.reset_display"))}
+            Text(I18n.t("settings.reset_display_scope"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
 
-            var voiceDropdownExpanded by remember { mutableStateOf(false) }
-            Text(I18n.t("settings.tts_voice"))
-            Box {
-                OutlinedButton(
-                    onClick = { voiceDropdownExpanded = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = ReaderGeometry.Shape,
-                    contentPadding = ReaderGeometry.ButtonPadding,
-                ) {
-                    Text(
-                        voicePresets.firstOrNull { it.first == ttsVoiceName }?.second
-                            ?: ttsVoiceName,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                }
-                DropdownMenu(
-                    expanded = voiceDropdownExpanded,
-                    onDismissRequest = { voiceDropdownExpanded = false },
-                    modifier = Modifier.fillMaxWidth(0.9f),
-                ) {
-                    voicePresets.forEach { (name, label) ->
-                        DropdownMenuItem(
-                            text = { Text(label) },
-                            onClick = {
-                                onTtsVoiceNameChange(name)
-                                voiceDropdownExpanded = false
-                            },
-                            leadingIcon =
-                                if (ttsVoiceName == name) {
-                                    { Icon(Icons.Default.Check, contentDescription = null) }
-                                } else null,
-                        )
+                } else {
+                    if(appearanceLinkage != null) SettingsGroup("") {
+                        AppearanceLinkageSettings(appearanceLinkage,systemAppearanceDark,ambientAppearanceDark,ambientSensorAvailable,onLinkageChange)
                     }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            Text(I18n.t("settings.tts_rate"))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-            ) {
-                rateOptions.forEach { (value, label) ->
-                    FilterChip(
-                        selected = ttsRate == value,
-                        onClick = { onTtsRateChange(value) },
-                        label = { Text(label) },
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            Text(I18n.t("settings.tts_volume"))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-            ) {
-                volumeOptions.forEach { (value, label) ->
-                    FilterChip(
-                        selected = ttsVolume == value,
-                        onClick = { onTtsVolumeChange(value) },
-                        label = { Text(label) },
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(12.dp))
-            cloudSyncContent()
-
-            // ─── CSC 中文纠错设置 ───
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.csc_settings"), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-
-            Text(I18n.t("settings.csc_mode"))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-            ) {
-                listOf(
-                        "none" to I18n.t("csc.mode_none"),
-                        "readonly" to I18n.t("csc.mode_readonly"),
-                        "readwrite" to I18n.t("csc.mode_readwrite"),
-                    )
-                    .forEach { (mode, label) ->
-                        FilterChip(
-                            selected = cscMode == mode,
-                            onClick = { onCscModeChange(mode) },
-                            label = { Text(label) },
-                        )
+                    if(appearance != null) SettingsGroup("") {
+                        ReadingAppearanceSettings(appearance, appearanceDark, ambientSensorAvailable, fontSize, previewFontFamily, onAppearanceChange, appearanceLinkage == null)
                     }
-            }
-
-            if (cscMode != "none") {
-                Spacer(Modifier.height(8.dp))
-                Text(I18n.t("settings.csc_threshold"))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                ) {
-                    listOf(
-                            "conservative" to I18n.t("csc.conservative"),
-                            "standard" to I18n.t("csc.standard"),
-                            "aggressive" to I18n.t("csc.aggressive"),
-                        )
-                        .forEach { (th, label) ->
-                            FilterChip(
-                                selected = cscThreshold == th,
-                                onClick = { onCscThresholdChange(th) },
-                                label = { Text(label) },
-                            )
+                    SettingsGroup(I18n.t("settings.page_turn_method")) {
+                        Text(I18n.t("settings.reading_mode"))
+                        SettingChoices(listOf(I18n.t("settings.scroll"), I18n.t("settings.paging")), if(scrollMode) 0 else 1) { onScrollModeChange(it == 0) }
+                        Text(I18n.t("settings.page_animation"))
+                        val animations = listOf("Realistic", "Slide", "Cover", "None")
+                        SettingChoices(listOf("settings.realistic", "settings.slide", "settings.cover", "settings.none").map {I18n.t(it)}, animations.indexOf(pageAnimation)) { onPageAnimationChange(animations[it]) }
+                    }
+                    SettingsGroup(I18n.t("settings.font_group")) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                            TextButton(onClick = { onFontSizeChange((fontSize - 1).coerceAtLeast(12f)) }, enabled = manualTypography && fontSize > 12, modifier = Modifier.size(48.dp).semantics { contentDescription = I18n.t("settings.font_smaller") }) { Text("A", style = MaterialTheme.typography.titleMedium) }
+                            Text(fontSize.toInt().toString(), style = MaterialTheme.typography.titleLarge)
+                            TextButton(onClick = { onFontSizeChange((fontSize + 1).coerceAtMost(40f)) }, enabled = manualTypography && fontSize < 40, modifier = Modifier.size(48.dp).semantics { contentDescription = I18n.t("settings.font_larger") }) { Text("A", style = MaterialTheme.typography.headlineMedium) }
                         }
-                }
-
-                // Model status
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (cscModelReady) {
-                        Icon(
-                            Icons.Default.CheckCircle,
-                            null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(I18n.t("csc.model_ready"), style = MaterialTheme.typography.bodySmall)
-                    } else if (cscModelLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                        )
-                        Text(
-                            I18n.t("csc.loading_model"),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    } else {
-                        Icon(
-                            Icons.Default.Warning,
-                            null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            I18n.t("csc.model_not_downloaded"),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        TextButton(
-                            onClick = onDownloadCscModel,
-                            shape = ReaderGeometry.Shape,
-                            contentPadding = ReaderGeometry.ButtonPadding,
-                        ) {
-                            Text(I18n.t("csc.download_model"))
+                        Slider(value = fontSize.coerceIn(12f,40f), onValueChange = onFontSizeChange, valueRange = 12f..40f, enabled = manualTypography)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = manualTypography) { fontPicker = true }, verticalAlignment = Alignment.CenterVertically) {
+                            Text(I18n.t("settings.font").trim().trimEnd(':','：')); Spacer(Modifier.width(12.dp))
+                            Text(friendlyFontLabel(fontFamilyName), modifier = Modifier.weight(1f).padding(end = 8.dp), textAlign = TextAlign.End, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.Default.ChevronRight, null)
+                        }
+                        if (!manualTypography) Text(I18n.t("settings.publisher_locked"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    SettingsGroup(I18n.t("settings.layout_style")) {
+                        SettingChoices(listOf(I18n.t("settings.layout_native"), I18n.t("settings.layout_mixed"), I18n.t("settings.layout_classic")), listOf("none", "mixed", "publisher").indexOf(cssPolicy)) { onCssPolicyChange(listOf("none", "mixed", "publisher")[it]) }
+                        Text(when(cssPolicy) { "none" -> I18n.t("settings.layout_native_desc"); "publisher" -> I18n.t("settings.layout_classic_desc_short"); else -> I18n.t("settings.layout_mixed_desc_short") }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    SettingsGroup(I18n.t("settings.layout_group")) {
+                        SettingValueSlider(I18n.t("settings.line_spacing"), "%.1f".format(I18n.locale, lineSpacing), lineSpacing, 1f..3f, manualTypography, onLineSpacingChange)
+                        SettingValueSlider(I18n.t("settings.para_spacing"), "%.1f".format(I18n.locale, paraSpacing), paraSpacing, 0f..2f, manualTypography, onParaSpacingChange)
+                        SettingValueSlider(I18n.t("settings.text_indent"), "$textIndent ${I18n.t("settings.chars")}", textIndent.toFloat(), 0f..4f, cssPolicy == "none") { onTextIndentChange(it.toInt()) }
+                        SettingValueSlider(I18n.t("settings.heading_scale"), "%.1f".format(I18n.locale, titleFontScale), titleFontScale, 1f..2.5f, cssPolicy == "none", onTitleFontScaleChange)
+                    }
+                    SettingsGroup("") {
+                        Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clickable { more = true }, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) { Text(I18n.t("settings.more")); Text(I18n.t("settings.more_summary"), style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                            Icon(Icons.Default.ChevronRight, null)
                         }
                     }
+
                 }
             }
+        }
+    }
+    if(confirmReset) AlertDialog(
+        onDismissRequest={confirmReset=false},
+        title={Text(I18n.t("settings.reset_title"))},
+        text={Text(I18n.t("settings.reset_message"))},
+        confirmButton={TextButton(onClick={
+                        onFontSizeChange(18f); onFontFamilyChange("Sans"); onCssPolicyChange("mixed"); onScrollModeChange(false); onPageAnimationChange("Realistic")
+                        onAppearanceChange(com.zhongbai233.epub.reader.model.ReadingAppearance()); onBgColorChange(0); onFontColorChange(0); onLineSpacingChange(1.5f); onParaSpacingChange(0.5f); onTextIndentChange(2); onTitleFontScaleChange(1.5f); onClearBackgroundImage()
+            confirmReset=false
+        }) {Text(I18n.t("settings.reset_confirm"))}},
+        dismissButton={TextButton(onClick={confirmReset=false}) {Text(I18n.t("common.cancel"))}},
+    )
+    if(fontPicker) ReaderSettingFontPicker(fontFamilyName, systemFonts, onDismiss = { fontPicker = false }, onSelect = onFontFamilyChange)
+}
 
-            Spacer(Modifier.height(20.dp))
+@Composable
+private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if(title.isNotEmpty()) Text(title, modifier=Modifier.padding(start=4.dp), style=MaterialTheme.typography.labelLarge, color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(shape=RoundedCornerShape(16.dp), color=MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement=Arrangement.spacedBy(8.dp), content=content)
+        }
+    }
+}
+@Composable
+private fun SettingChoices(labels: List<String>, selected: Int, onSelect: (Int)->Unit) {
+    Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) { labels.forEachIndexed { index, label ->
+        OutlinedButton(onClick={onSelect(index)}, modifier=Modifier.weight(1f).heightIn(min=44.dp), shape=RoundedCornerShape(10.dp),
+            contentPadding=PaddingValues(horizontal=6.dp), colors=ButtonDefaults.outlinedButtonColors(containerColor=if(selected==index) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent),
+            border=androidx.compose.foundation.BorderStroke(1.dp, if(selected==index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)) { Text(label,maxLines=1) }
+    } }
+}
+@Composable
+private fun ThemeChoice(label: String, paper: Color, selected: Boolean, modifier: Modifier, onClick: ()->Unit) {
+    Column(modifier.clickable(onClick=onClick),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.fillMaxWidth().height(66.dp).background(paper,RoundedCornerShape(10.dp)).border(if(selected) 2.dp else 1.dp,if(selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,RoundedCornerShape(10.dp)),contentAlignment=Alignment.Center) {
+            Text("Aa",style=MaterialTheme.typography.headlineSmall,fontFamily=FontFamily.Serif,color=if(paper.luminance()<0.45f) Color(0xFFE8E8E8) else Color(0xFF252525))
+            if(selected) Icon(Icons.Default.CheckCircle,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.align(Alignment.BottomEnd).padding(4.dp).size(18.dp))
+        }
+        Text(label,style=MaterialTheme.typography.labelMedium,maxLines=1,overflow=TextOverflow.Ellipsis)
+    }
+}
+@Composable
+private fun SettingValueSlider(title:String, label:String, value:Float, range:ClosedFloatingPointRange<Float>, enabled:Boolean, onChange:(Float)->Unit) {
+    Column { Row(Modifier.fillMaxWidth()) { Text(title,style=MaterialTheme.typography.bodyMedium,modifier=Modifier.weight(1f)); Text(label,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+        Slider(value=value.coerceIn(range.start,range.endInclusive),onValueChange=onChange,valueRange=range,enabled=enabled)
+    }
+}
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReaderSettingFontPicker(selected:String, fonts:List<FontItem>, onDismiss:()->Unit,onSelect:(String)->Unit) {
+    var search by rememberSaveable {mutableStateOf("")}
+    val catalog = remember(fonts) { (listOf(FontItem("Sans",""),FontItem("Serif",""),FontItem("Monospace",""))+fonts).distinctBy {it.displayName} }
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val closeSheet = rememberReaderSheetDismiss(sheet, onDismiss)
+    ModalBottomSheet(onDismissRequest=onDismiss,sheetState=sheet,sheetMaxWidth=560.dp) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.9f).padding(horizontal=16.dp)) {
+            Row(verticalAlignment=Alignment.CenterVertically) { Text(I18n.t("settings.font"),style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f)); TextButton(onClick=closeSheet){Text(I18n.t("settings.done"))} }
+            OutlinedTextField(value=search,onValueChange={search=it},placeholder={Text(I18n.t("settings.search_font"))},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(12.dp))
+            val filtered = catalog.filter {it.displayName.contains(search,ignoreCase=true)||friendlyFontLabel(it.displayName).contains(search,ignoreCase=true)}
+            if(filtered.isEmpty()) Text(I18n.t("settings.no_font_match"),modifier=Modifier.padding(16.dp))
+            LazyColumn { items(filtered,key={it.displayName}) { item ->
+                ListItem(headlineContent={Text(friendlyFontLabel(item.displayName),maxLines=1,overflow=TextOverflow.Ellipsis)},supportingContent={Text(fontPreviewText(item.displayName),fontFamily=previewFontFamily(item.displayName,item.path.takeIf {it.isNotEmpty()}))},trailingContent={if(selected==item.displayName)Icon(Icons.Default.Check,null)},modifier=Modifier.clickable{onSelect(item.displayName);closeSheet()})
+            } }
         }
     }
 }
 
 private fun friendlyFontLabel(name: String): String =
     when (name) {
-        "Sans" -> "系统无衬线"
-        "Serif" -> "系统衬线"
-        "Monospace" -> "等宽字体"
+        "Sans" -> I18n.t("settings.font_system_sans")
+        "Serif" -> I18n.t("settings.font_system_serif")
+        "Monospace" -> I18n.t("settings.font_monospace")
         else -> name
     }
 
@@ -785,6 +427,45 @@ private fun ColorEditorRow(
                 },
                 valueRange = 0f..1f,
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ReaderCorrectionSheet(
+    cscMode: String, cscThreshold: String,
+    onCscModeChange: (String) -> Unit, onCscThresholdChange: (String) -> Unit,
+    cscModelReady: Boolean, cscModelLoading: Boolean, onDownloadCscModel: () -> Unit,
+    contributionContent: @Composable () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val closeSheet = rememberReaderSheetDismiss(sheet, onDismiss)
+    ModalBottomSheet(onDismissRequest=onDismiss, sheetState=sheet, sheetMaxWidth=560.dp) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(.92f)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically) {
+                Text(I18n.t("settings.csc_settings"),style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f))
+                TextButton(onClick=closeSheet) {Text(I18n.t("settings.done"))}
+            }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                SettingsGroup(I18n.t("settings.csc_settings")) {
+                    Text(I18n.t("settings.csc_mode"))
+                    val modes=listOf("none","readonly","readwrite")
+                    SettingChoices(listOf("csc.mode_none","csc.mode_readonly","csc.mode_readwrite").map {I18n.t(it)},modes.indexOf(cscMode)) {onCscModeChange(modes[it])}
+                    if(cscMode!="none") {
+                        Text(I18n.t("settings.csc_threshold"))
+                        val thresholds=listOf("conservative","standard","aggressive")
+                        SettingChoices(listOf("csc.conservative","csc.standard","csc.aggressive").map {I18n.t(it)},thresholds.indexOf(cscThreshold)) {onCscThresholdChange(thresholds[it])}
+                        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                            if(cscModelLoading) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
+                            Text(I18n.t(if(cscModelReady) "csc.model_ready" else if(cscModelLoading) "csc.loading_model" else "csc.model_not_downloaded"),style=MaterialTheme.typography.bodySmall)
+                        }
+                        if(!cscModelReady && !cscModelLoading) TextButton(onClick=onDownloadCscModel) {Text(I18n.t("csc.download_model"))}
+                    }
+                }
+                SettingsGroup(I18n.t("account.contribution")) {contributionContent()}
+            }
         }
     }
 }

@@ -3,26 +3,6 @@ use crate::app::ReaderApp;
 use eframe::egui;
 
 impl ReaderApp {
-    pub fn render_github_account_summary(&mut self, ui: &mut egui::Ui) {
-        if let Some(username) = self
-            .github_username
-            .as_ref()
-            .filter(|_| self.github_token.is_some())
-        {
-            ui.label(self.i18n.tf1("account.logged_in", username));
-        } else {
-            ui.label(self.i18n.t("account.signed_out"));
-        }
-        ui.small(self.i18n.t(if self.github_sync_enabled {
-            "cloud.enabled"
-        } else {
-            "cloud.disabled"
-        }));
-        if ui.button(self.i18n.t("sync.multiplatform")).clicked() {
-            self.show_github_login = true;
-        }
-    }
-
     pub fn render_github_account_content(&mut self, ui: &mut egui::Ui) {
         if self.github_auth_busy() {
             ui.strong(self.i18n.t("account.auth_title"));
@@ -56,7 +36,7 @@ impl ReaderApp {
                 });
             }
             if !self.github_oauth_status.is_empty() {
-                ui.label(&self.github_oauth_status);
+                ui.label(self.i18n.message(&self.github_oauth_status));
             }
             if ui.button(self.i18n.t("account.cancel_auth")).clicked() {
                 self.github_cancel_login();

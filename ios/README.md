@@ -29,6 +29,11 @@ cargo test -p reader_ios
 cargo test -p reader_core --features github-sync
 ios/scripts/check-layout.sh
 ios/scripts/check-oauth.sh
+ios/scripts/check-appearance.sh
+ios/scripts/check-reading-mode.sh
+ios/scripts/check-speech.sh
+ios/scripts/check-contents.sh
+ios/scripts/check-i18n.sh
 ```
 
 Open the project, choose ReaderPreview and an iPhone/iPad simulator, then Run.
@@ -44,7 +49,8 @@ with Xcode 26.3 selected explicitly. Rustup installs both iOS target standard
 libraries; the build phase preserves that toolchain instead of preferring
 Homebrew Rust. The shared scheme and pinned `Package.resolved` must be committed.
 
-The workflow runs core/bridge tests and the host layout/OAuth checks, builds an
+The workflow runs core/bridge tests and all seven host check groups (layout,
+OAuth, appearance, reading mode, speech, contents and localization), builds an
 ad-hoc signed arm64 simulator app, and archives an **unsigned arm64 Release** for
 physical iPhone/iPad. Normal CI, `run-build` PR builds and release validation reuse
 this workflow; it also supports manual dispatch. Logs and build provenance are
@@ -106,7 +112,7 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
   reading progress first, then background EPUB transfers, 20 MiB/book, bounded
   upload/download batches, size/hash checks,
   per-device journal and SHA compare-and-set retries. Public or unmarked unrelated
-  repositories are rejected. Annotations/settings/stats are not in this schema.
+  repositories are rejected. Annotations and settings are not in this schema. Daily reading/listening activity is included in the device snapshot; see [reading activity](../docs/READING_ACTIVITY.md).
 - Failed books have a persistent account/device retry queue and do not prevent
   other books from completing. A manual retry targets queued files after refreshing
   progress; automatic retries back off and still respect global rate limits.
@@ -127,19 +133,72 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
   decrypted EPUBs are bounded, hashed and parsed before managed-library insertion.
   Incoming progress for the open book is offered, never applied silently.
 
+## Private sensor API and distribution
+
+The current ambient-light implementation dynamically calls private IOHID APIs
+on physical devices in both Debug and Release. See
+[appearance behavior](../docs/READING_APPEARANCE.md). A successful unsigned archive
+only confirms compilation: this implementation is not declared App Store ready,
+and sensor access may change across OS versions. [App Review section 2.5.1](https://developer.apple.com/app-store/review/guidelines/#software-requirements) requires public APIs. This review preserves the
+existing sensor behavior; it does not substitute public APIs or validate store
+acceptance.
+
 ## Native reader and remaining scope
 
 Library and sync remain peer destinations (iPhone tabs / iPad sidebar). Reading is
-fullscreen. Menus, forms and compact TOC rows are native. Defaults remain PingFang
-SC; Songti is offered when resolved. Paper/light/dark themes and curl/scroll modes
-are available. Equal top/bottom safe insets and minimum 24pt horizontal text inset
-are independent of tool visibility; hiding controls does not repaginate.
+fullscreen. Menus, forms and compact TOC rows are native. Chinese and English
+fonts have independent preferences (defaults: PingFang SC and Helvetica). Font
+choices are filtered by actual glyph coverage; Songti is offered when resolved.
+Legacy single-font preferences migrate once without overwriting later choices.
+The reading entry now uses UIKit/CoreText for all three modes: vertical continuous
+scrolling, paper curl, and horizontal sliding. The old native/sliding preferences
+migrate once into `preview.readingMode`. Switching modes and rotating restore the
+chapter/block/Unicode-scalar anchor; visibility of controls does not repaginate.
 
-The public `UIPageViewController.pageCurl` data source supplies physical leaves,
-including adjacent chapters. Wide iPad (at least 1000pt, body size at most24pt)
-uses `.mid` spine/double-sided content; smaller windows use one leaf. An odd final
-spread gets one blank sentinel. Reduce Motion chooses public scroll transition.
-No private `_UIPageCurl` access or custom curl shader is used.
+Continuous scrolling virtualizes paper surfaces in a native scroll view, shortens chapter-ending
+rows to their measured text height, and continues into the next chapter without
+loading another reader. Heights are exact after reflow, and visible text-line
+coordinates drive progress and restoration. Scroll mode fills a window by viewport
+height, with neighboring chapters and a small warm cache. Several short chapters
+can share one screen; the next chapter stays reachable even when it is shorter
+than the viewport. Overlapping paper views keep their coordinates as the window
+moves, without reloading a table or resetting the pan offset. The resident window
+is also extended when either
+visible edge approaches its loaded boundary, even if the chapter at the top has
+not changed. This covers a long chapter followed by a short bridge and another
+long chapter while a single drag remains held. Measured line maps
+are reused while scrolling. A common-mode display link and immediate backing
+draws for new paper rows keep rendering active while a finger remains down;
+the link stops after dragging/deceleration or detaching the view. Progress writes are coalesced and flushed at
+gesture completion, backgrounding and reader exit. The parsed publication remains
+in memory; exceptionally large individual chapters still need chapter-level layout.
+The two paginated modes currently typeset the entire book.
+
+Both paginated modes show two leaves in landscape when each body column is at
+least `max(280pt, 12 * fontSize)` after margins and symmetric horizontal safe areas.
+Narrow windows or larger type use one leaf. Curl uses the public `.mid` spine and
+double-sided content; sliding moves a two-leaf container. An odd final spread has
+one blank leaf. Reduce Motion uses the public sliding transition and an inline
+settings explanation. No private page-curl API or custom curl shader is used.
+This change does not implement the planned native CSS/JavaScript emulation.
+
+`ios/scripts/check-reading-mode.sh` verifies preference migration and spread
+thresholds. `ios/scripts/check-layout.sh` includes continuous row coverage and
+within-page position restoration. In Debug, `--verify-reading-modes` reads
+Documents/reading-modes.epub (fixture: Tests/fixtures/native-reading-modes.epub),
+exercises the actual UIKit controller, and writes
+Library/Caches/reading-modes-verification.json with screenshots. The diagnostic
+also exercises 32/320/3200-chapter publications, reports initial layout counts and
+timings, checks the five-chapter cache for the long-chapter fixture, forward/reverse
+pixel continuity, coalesced progress, far jumps and background flushing. A separate
+3200-short-chapter fixture checks 240 continuous offset steps with drawing active,
+display callbacks in UITrackingRunLoopMode, unchanged pan coordinates and native
+animated scrolling in both directions. Simulator timings do not
+establish physical-device frame rates.
+
+The mixed long/short fixture checks that the following long chapter is loaded
+and has drawn backing contents while the top stays in the preceding chapter,
+before any drag-end callback. It also checks uninterrupted offset continuity.
 
 Long-press and held drag select text on the current leaf. The system dictionary,
 copy, four highlight colors, notes and bookmarks use native controls. Annotations
@@ -165,9 +224,39 @@ release notice. iOS checks release metadata but never installs an app update.
 
 This integration is not complete EPUB feature parity: arbitrary CSS/fixed-layout,
 image-only chapters previously excluded by the canonical parser, interactive links,
-TXT conversion UI and TTS are still outside this change. Existing tables retain
+TXT conversion UI is still outside this change. Existing tables retain
 the core's text-row representation. Custom online dictionaries/translation and
 correction-contribution UI are not yet ported; the system dictionary is available.
+
+## Read aloud
+
+The reading menu opens a native read-aloud sheet. Edge online voices are the
+initial default (`zh-CN-XiaoxiaoNeural`), using the same service as desktop and
+Android; system voices are an explicit alternative. Retired service presets are
+omitted. Online mode sends the current and prefetched next text chunk to that
+service. It does not silently switch voice sources after a failure.
+
+Playback starts at the current logical text position, skips media-only blocks,
+and continues across chapters. Pause/resume, previous/next readable block, rate,
+application volume and follow controls share one state store. Source, voice,
+rate and volume persist locally. Manual page turns, native scrolling or navigation
+detach following; the recovery control returns to the speech position. Native
+online highlighting uses returned word boundaries; system speech and publisher
+layout highlight bounded text units/paragraphs. These highlights are transient.
+The publisher view adds an overlay without changing publication layout.
+
+This version supports foreground playback. Leaving the book stops the session;
+inactive scenes, audio interruptions and disconnected headphones pause it.
+Background/lock-screen playback and physical-device audio acceptance remain
+outside the verified scope. See [third-party notices](ThirdParty/README.md)
+for the protocol checksum adapter's license and source.
+
+`ios/scripts/check-speech.sh` checks Unicode chunking, scalar coordinates,
+inline-image fragments, protocol frames, word offsets and checksum vectors.
+A Debug app launched with `--verify-speech` also writes
+`Library/Caches/speech-verification.json`: state transitions use generated WAV
+with the real player, while online/system synthesis checks use actual returned
+audio. The diagnostic uses an isolated preferences suite, not reader settings.
 
 ## Verification
 

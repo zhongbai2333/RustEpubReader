@@ -18,17 +18,8 @@ fun TranslateDialog(
     translateApiKey: String,
     onDismiss: () -> Unit,
 ) {
-    var translatedText by remember {
-        mutableStateOf(I18n.t("selection.translating") ?: "Translating...")
-    }
-
-    LaunchedEffect(selectedText) {
-        if (translateApiUrl.isNotEmpty()) {
-            translatedText = "[] of translation from API (Mock)"
-        } else {
-            translatedText = I18n.t("settings.translate_api_url") + " not set."
-        }
-    }
+    val translatedText = if (translateApiUrl.isNotEmpty()) I18n.t("selection.translation_placeholder")
+        else I18n.tf1("selection.api_not_set", I18n.t("settings.translate_api_url"))
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -38,7 +29,7 @@ fun TranslateDialog(
         ) {
             Column(modifier = Modifier.padding(ReaderGeometry.CardInset)) {
                 Text(
-                    I18n.t("selection.translate") ?: "Translate",
+                    I18n.t("selection.translate"),
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -53,7 +44,7 @@ fun TranslateDialog(
                         shape = ReaderGeometry.DialogShape,
                         contentPadding = ReaderGeometry.ButtonPadding,
                     ) {
-                        Text(I18n.t("common.close") ?: "Close")
+                        Text(I18n.t("common.close"))
                     }
                 }
             }
@@ -68,15 +59,8 @@ fun DictionaryDialog(
     dictionaryApiKey: String,
     onDismiss: () -> Unit,
 ) {
-    var meaning by remember { mutableStateOf(I18n.t("selection.loading") ?: "Loading...") }
-
-    LaunchedEffect(selectedText) {
-        if (dictionaryApiUrl.isNotEmpty()) {
-            meaning = "Dictionary meaning for: selectedText (Mock)"
-        } else {
-            meaning = I18n.t("settings.dictionary_api_url") + " not set."
-        }
-    }
+    val meaning = if (dictionaryApiUrl.isNotEmpty()) I18n.t("selection.dictionary_placeholder")
+        else I18n.tf1("selection.api_not_set", I18n.t("settings.dictionary_api_url"))
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -86,7 +70,7 @@ fun DictionaryDialog(
         ) {
             Column(modifier = Modifier.padding(ReaderGeometry.CardInset)) {
                 Text(
-                    I18n.t("selection.dictionary") ?: "Dictionary",
+                    I18n.t("selection.dictionary"),
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -101,7 +85,7 @@ fun DictionaryDialog(
                         shape = ReaderGeometry.DialogShape,
                         contentPadding = ReaderGeometry.ButtonPadding,
                     ) {
-                        Text(I18n.t("common.close") ?: "Close")
+                        Text(I18n.t("common.close"))
                     }
                 }
             }
@@ -114,13 +98,7 @@ fun CorrectionDialog(
     selectedText: String,
     onDismiss: () -> Unit,
 ) {
-    var correctedText by remember {
-        mutableStateOf(I18n.t("selection.correcting") ?: "Correcting...")
-    }
-
-    LaunchedEffect(selectedText) {
-        correctedText = "Mock Correction for: selectedText"
-    }
+    val correctedText = I18n.t("selection.correction_placeholder")
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -130,7 +108,7 @@ fun CorrectionDialog(
         ) {
             Column(modifier = Modifier.padding(ReaderGeometry.CardInset)) {
                 Text(
-                    I18n.t("selection.correct") ?: "Correction",
+                    I18n.t("selection.correct"),
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -145,7 +123,7 @@ fun CorrectionDialog(
                         shape = ReaderGeometry.DialogShape,
                         contentPadding = ReaderGeometry.ButtonPadding,
                     ) {
-                        Text(I18n.t("common.close") ?: "Close")
+                        Text(I18n.t("common.close"))
                     }
                 }
             }
@@ -169,7 +147,7 @@ fun NoteDialog(
         ) {
             Column(modifier = Modifier.padding(ReaderGeometry.CardInset)) {
                 Text(
-                    I18n.t("selection.note") ?: "Note",
+                    I18n.t("selection.note"),
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -184,7 +162,7 @@ fun NoteDialog(
                 OutlinedTextField(
                     value = noteContent,
                     onValueChange = { noteContent = it },
-                    label = { Text(I18n.t("selection.note_content") ?: "Enter your note") },
+                    label = { Text(I18n.t("selection.note_content")) },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
                     shape = ReaderGeometry.DialogShape,
@@ -196,7 +174,7 @@ fun NoteDialog(
                         shape = ReaderGeometry.DialogShape,
                         contentPadding = ReaderGeometry.ButtonPadding,
                     ) {
-                        Text(I18n.t("common.cancel") ?: "Cancel")
+                        Text(I18n.t("common.cancel"))
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
@@ -204,7 +182,7 @@ fun NoteDialog(
                         shape = ReaderGeometry.DialogShape,
                         contentPadding = ReaderGeometry.ButtonPadding,
                     ) {
-                        Text(I18n.t("common.save") ?: "Save")
+                        Text(I18n.t("common.save"))
                     }
                 }
             }

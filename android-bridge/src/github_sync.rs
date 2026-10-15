@@ -211,6 +211,7 @@ fn apply(
     let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut journal = journal(data_dir);
     journal.own.merge_own(&prepared.own)?;
+    reader_core::reading_activity::import(data_dir, &journal.own.device_id, &prepared.snapshots)?;
     journal.seen.extend(prepared.own.progress.keys().cloned());
     let latest = latest_progress(&prepared.snapshots, &journal.own);
     let mut library = Library::load_from(data_dir);

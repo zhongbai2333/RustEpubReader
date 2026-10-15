@@ -130,7 +130,7 @@ actor MacBERTEngine {
                 try await engine.load(directory)
                 guard generation == intent && !Task.isCancelled else { await engine.unload(); return }
                 ready = true; available = true
-            } catch { if generation == intent && !Task.isCancelled { self.error = "模型下载或加载失败，请稍后重试。" } }
+            } catch { if generation == intent && !Task.isCancelled { self.error = L("common.error_model_load_failed") } }
             if generation == intent { busy = false }
         }
     }
@@ -140,7 +140,7 @@ actor MacBERTEngine {
         let blocks = chapter.blocks.filter { $0.type == "Paragraph" || $0.type == "Heading" }.map { ($0.core_block ?? 0, ($0.spans ?? []).map(\.text).joined()) }
         operation = Task {
             do { let result = try await engine.check(blocks, threshold: level); if generation == intent && !Task.isCancelled { suggestions = result } }
-            catch { if generation == intent && !Task.isCancelled { self.error = "模型下载或加载失败，请稍后重试。" } }
+            catch { if generation == intent && !Task.isCancelled { self.error = L("common.error_model_load_failed") } }
             if generation == intent { busy = false }
         }
     }
