@@ -6,6 +6,7 @@ use scraper::{ElementRef, Html, Selector};
 use super::image::{image_src, native_image_bytes, resolve_image_data};
 use crate::epub::{ContentBlock, InlineStyle, TextSpan};
 
+#[cfg(test)]
 pub(super) fn parse_html_blocks(
     html: &str,
     chapter_path: &str,
@@ -20,6 +21,7 @@ pub(super) fn parse_html_blocks(
 /// Supplement media for rendering without renumbering persisted content blocks.
 /// Images inside a paragraph are displayed before its original text; the shared
 /// anchor still refers to that original text block (or the preceding block's end).
+#[cfg(test)]
 pub(super) fn parse_render_blocks(
     html: &str,
     chapter_path: &str,
@@ -28,21 +30,29 @@ pub(super) fn parse_render_blocks(
     parse_blocks(html, chapter_path, image_resources, true)
 }
 
-pub(super) fn supplemental_images(
-    html: &str,
+pub(super) fn supplemental_document_images(
+    document: &Html,
     chapter_path: &str,
     resources: &HashMap<String, Vec<u8>>,
+    canonical: &[(usize, usize, ContentBlock)],
 ) -> Vec<super::SupplementalImage> {
-    let canonical = parse_html_blocks(html, chapter_path, resources);
+    // Text-only chapters need no second traversal or duplicate text allocation.
+    if document
+        .select(&Selector::parse("img, image, svg").unwrap())
+        .next()
+        .is_none()
+    {
+        return Vec::new();
+    }
     let mut next_block = 0;
-    parse_render_blocks(html, chapter_path, resources)
+    parse_document_blocks(document, chapter_path, resources, true)
         .into_iter()
         .filter_map(|(block, _, rendered)| {
             // Canonical images occur once in both streams. All other images
             // are supplemental and must not shift text/highlight coordinates.
             if let ContentBlock::Image { data, alt, .. } = rendered {
                 if block == next_block
-                    && matches!(canonical.get(block), Some(ContentBlock::Image { data: original, alt: original_alt, .. }) if original == &data && original_alt == &alt)
+                    && matches!(canonical.get(block).map(|(_,_,b)| b), Some(ContentBlock::Image { data: original, alt: original_alt, .. }) if original == &data && original_alt == &alt)
                 {
                     next_block += 1;
                     None
@@ -56,13 +66,26 @@ pub(super) fn supplemental_images(
         })
         .collect()
 }
+#[cfg(test)]
 fn parse_blocks(
     html: &str,
     chapter_path: &str,
     image_resources: &HashMap<String, Vec<u8>>,
     render: bool,
 ) -> Vec<(usize, usize, ContentBlock)> {
-    let document = Html::parse_document(html);
+    parse_document_blocks(
+        &Html::parse_document(html),
+        chapter_path,
+        image_resources,
+        render,
+    )
+}
+pub(super) fn parse_document_blocks(
+    document: &Html,
+    chapter_path: &str,
+    image_resources: &HashMap<String, Vec<u8>>,
+    render: bool,
+) -> Vec<(usize, usize, ContentBlock)> {
     let body_sel = Selector::parse("body").expect("valid selector");
     let start_elem = document
         .select(&body_sel)

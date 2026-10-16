@@ -58,6 +58,7 @@ pub struct NativeNote {
 fn compact(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
+#[cfg(test)]
 pub fn matches_compact_source(source: &str, tag: &str, text: &str) -> bool {
     if source == text {
         return true;

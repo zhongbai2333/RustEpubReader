@@ -19,7 +19,7 @@ enum ReadingModesRuntimeCheck {
                 let files = FileManager.default
                 let documents = files.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let caches = files.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                let root = files.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("ReaderLibrary")
+                let root = caches.appendingPathComponent("ReadingModesLibrary")
                 let client = CoreClient(root: root.path, device: "reading-modes-check")
                 let entry: LibraryEntry = try client.call("import", ["path": documents.appendingPathComponent("reading-modes.epub").path])
                 let book: PreviewBook = try client.call("open", ["id": entry.id])
@@ -30,6 +30,7 @@ enum ReadingModesRuntimeCheck {
                     try data.write(to: caches.appendingPathComponent("page-footers-verification.json"), options: .atomic)
                     return
                 }
+                report["lazy_paging"] = try await verifyLazyPaging(scene: scene, entry: entry)
                 report["full_book_search"] = try verifySearch(entry: entry)
                 report["background_image"] = try verifyBackground(scene: scene, book: book)
                 report["mixed_held_pan"] = try verifyMixedHeldPan(scene: scene, entry: entry)
@@ -138,12 +139,13 @@ enum ReadingModesRuntimeCheck {
                 let highlight = SpeechHighlight(start: .init(chapter: 23, block: 1), end: .init(chapter: 23, block: 2))
                 controller.updateSpeech(highlight, following: true)
                 try require(controller.anchor == highlight.start, "Native scroll speech follow failed")
+                let lazy = report["lazy_paging"]!
                 let search = report["full_book_search"]!
                 let background = report["background_image"]!
                 let bounded = report["bounded_scroll"]!
                 let short = report["short_chapters"]!
                 let mixed = report["mixed_held_pan"]!
-                report = ["full_book_search": search, "background_image": background, "mixed_held_pan": mixed, "short_chapters": short, "bounded_scroll": bounded, "passed": true, "paged_chapter_cache": true, "chapter_count": book.chapters.count, "continuous_boundary": true, "styled_row_coverage": true, "footer_reserved": true,
+                report = ["lazy_paging": lazy, "full_book_search": search, "background_image": background, "mixed_held_pan": mixed, "short_chapters": short, "bounded_scroll": bounded, "passed": true, "paged_chapter_cache": true, "chapter_count": book.chapters.count, "continuous_boundary": true, "styled_row_coverage": true, "footer_reserved": true,
                     "forward_and_reverse": true, "saved_progress": true, "directory_jump": true,
                     "mode_round_trips": 15, "cover_forward_reverse": true, "no_animation_forward_reverse": true, "landscape_slide": true, "landscape_curl": true,
                     "large_font_single_page": true, "portrait_anchor": true, "cancelled_turn": true, "speech_follow": true]
@@ -152,6 +154,125 @@ enum ReadingModesRuntimeCheck {
             if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: caches.appendingPathComponent(CommandLine.arguments.contains("--verify-page-footers") ? "page-footers-verification.json" : "reading-modes-verification.json"), options: .atomic) }
             window?.isHidden = true
         }
+    }
+    @MainActor private static func pageInfo(_ leaf: PaperController, reader: NativeReadingController) -> String {
+        guard let chapter=leaf.page?.chapter else {return ""}
+        let chapterPages=reader.pages.enumerated().filter {$0.element.chapter == chapter}
+        return L("reader.page_info", chapterPages.firstIndex(where: {$0.offset == leaf.index})!+1, chapterPages.count)
+    }
+    @MainActor private static func verifyLazyPaging(scene: UIWindowScene, entry: LibraryEntry) async throws -> [[String: Any]] {
+        func require(_ value: Bool, _ message: String) throws { if !value { throw CoreFailure(message: message) } }
+        let block = BookBlock(type: "Paragraph", core_block: 0, core_char_offset: 0, level: nil,
+            spans: [BookSpan(text: "短章测试。Native paging retains every chapter.", style: "Normal", link_url: nil)], data: nil, alt: nil)
+        let chapter = BookChapter(title: "Paging chapter", blocks: [block])
+        let book = PreviewBook(entry: entry, chapters: Array(repeating: chapter, count: 3200), toc: [], cover: nil)
+        let host = UIViewController(), window = UIWindow(windowScene: scene)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        var results = [[String: Any]]()
+        for width: CGFloat in [402, 874] {
+            for mode in [ReadingMode.curl, .slide, .cover, .none] {
+                var options = ReaderOptions(fontSize: 18, lineHeight: 1.65, fontName: "Helvetica", theme: "light", sliding: mode != .curl, cjkFontName: "PingFangSC-Regular", readingMode: mode)
+                let reader = NativeReadingController(book: book, anchor: .init(chapter: 1600), options: options)
+                host.addChild(reader); host.view.addSubview(reader.view); reader.didMove(toParent: host)
+                reader.view.frame = CGRect(x: 0, y: 0, width: width, height: width == 402 ? 874 : 402)
+                let start = CACurrentMediaTime(); reader.view.layoutIfNeeded()
+                let elapsed = (CACurrentMediaTime()-start)*1000
+                try require(reader.pagingTypesetCount < 8, "Initial paging typeset the whole book")
+                let stride = reader.dual ? 2 : 1
+                for _ in 0..<4 {
+                    let before = reader.anchor
+                    if mode.customTransition {
+                        reader.turnSpread(forward: false)
+                        for _ in 0..<100 {
+                            if reader.anchor.chapter != before.chapter { break }
+                            try await Task.sleep(for: .milliseconds(20))
+                        }
+                    } else {
+                        guard let pager = reader.pager, let visible = pager.viewControllers?.first else {throw CoreFailure(message: "Missing lazy pager")}
+                        guard var previous = reader.pageViewController(pager, viewControllerBefore: visible) else {throw CoreFailure(message: "Missing preceding chapter")}
+                        var right: UIViewController?
+                        if reader.dual && !options.sliding {
+                            right = previous
+                            previous = reader.pageViewController(pager, viewControllerBefore: previous)!
+                        }
+                        let leaves = (previous as? SpreadController)?.leaves ?? [previous as! PaperController]
+                        try require(leaves.first?.page?.chapter == before.chapter-stride, "Prepend skipped a chapter")
+                        reader.pageViewController(pager, didFinishAnimating: true, previousViewControllers: [visible], transitionCompleted: false)
+                        try require(reader.anchor == before, "Cancelled boundary turn saved progress")
+                        if reader.dual && !options.sliding {
+                            pager.setViewControllers([previous, right!], direction: .reverse, animated: false)
+                        } else { pager.setViewControllers([previous], direction: .reverse, animated: false) }
+                        reader.pageViewController(pager, didFinishAnimating: true, previousViewControllers: [visible], transitionCompleted: true)
+                    }
+                    try require(reader.anchor.chapter == before.chapter-stride, "Lazy reverse \(mode.rawValue) width \(width): expected \(before.chapter-stride), got \(reader.anchor.chapter), index \(reader.currentIndex)")
+                    try require(reader.pages[reader.currentIndex].anchor.chapter == reader.anchor.chapter, "Rebased page index lost its content")
+                }
+                for _ in 0..<6 {
+                    let before = reader.anchor
+                    if mode.customTransition {
+                        reader.turnSpread(forward: true)
+                        for _ in 0..<100 { if reader.anchor.chapter != before.chapter { break }; try await Task.sleep(for: .milliseconds(20)) }
+                    } else {
+                        guard let pager = reader.pager, let visible = pager.viewControllers else {throw CoreFailure(message: "Missing forward pager")}
+                        let source = reader.dual && !options.sliding ? visible.last! : visible.first!
+                        guard let next = reader.pageViewController(pager, viewControllerAfter: source) else {throw CoreFailure(message: "Missing following chapter")}
+                        if reader.dual && !options.sliding {
+                            let right = reader.pageViewController(pager, viewControllerAfter: next)!
+                            pager.setViewControllers([next, right], direction: .forward, animated: false)
+                        } else { pager.setViewControllers([next], direction: .forward, animated: false) }
+                        reader.pageViewController(pager, didFinishAnimating: true, previousViewControllers: visible, transitionCompleted: true)
+                    }
+                    try require(reader.anchor.chapter == before.chapter+stride, "Append skipped a chapter in \(mode.rawValue)")
+                }
+                let target = ReadingAnchor(chapter: 2400)
+                reader.update(options: options, jump: target, jumpID: 1, annotations: .empty, revision: 0)
+                try require(reader.anchor == target && reader.residentPagedChapters.count < 8, "Directory jump loaded intervening chapters")
+                let builds = reader.pagingTypesetCount
+                options.nativeRevision += 1
+                reader.update(options: options, jump: nil, jumpID: 1, annotations: .empty, revision: 0)
+                try require(reader.pagingTypesetCount == builds, "Unchanged lazy chapter was typeset again")
+                let speech = SpeechHighlight(start: .init(chapter: 2500, block: 0), end: .init(chapter: 2500, block: 0, charOffset: 2))
+                reader.updateSpeech(speech, following: true)
+                try require(reader.anchor == speech.start && reader.pages[reader.currentIndex].chapter == 2500, "Speech follow missed unloaded chapter")
+                // Prepend one odd leaf, then reach the real book start without
+                // displaying the first page twice in a two-page sliding spread.
+                reader.update(options: options, jump: .init(chapter: 1), jumpID: 2, annotations: .empty, revision: 0)
+                if mode.customTransition {
+                    reader.turnSpread(forward: false)
+                    for _ in 0..<100 { if reader.anchor.chapter == 0 { break }; try await Task.sleep(for: .milliseconds(20)) }
+                    try require(reader.anchor.chapter == 0, "Book start \(mode.rawValue) width \(width), anchor \(reader.anchor.chapter), index \(reader.currentIndex), chapters \(reader.residentPagedChapters)")
+                    reader.turnSpread(forward: true)
+                    for _ in 0..<100 { if reader.anchor.chapter == 1 { break }; try await Task.sleep(for: .milliseconds(20)) }
+                    try require(reader.anchor.chapter == 1, "Leading partial spread skipped a chapter")
+                } else if let pager = reader.pager, let visible = pager.viewControllers?.first,
+                          let previous = reader.pageViewController(pager, viewControllerBefore: visible) {
+                    let leaves = (previous as? SpreadController)?.leaves ?? [previous as! PaperController]
+                    try require(leaves.first?.page?.chapter == 0, "Native book start inaccessible")
+                    if let spread = previous as? SpreadController {
+                        let after = reader.pageViewController(pager, viewControllerAfter: spread) as? SpreadController
+                        try require(after?.leaves.first?.page?.chapter == 1, "Partial spread repeated or skipped a chapter")
+                    }
+                    if reader.dual && !options.sliding {
+                        guard let blank = reader.pageViewController(pager, viewControllerBefore: previous) as? PaperController else {throw CoreFailure(message: "No leading curl sentinel")}
+                        try require(blank.page == nil && blank.footerText.isEmpty, "Leading curl sentinel contains duplicated content")
+                        pager.setViewControllers([blank, previous], direction: .reverse, animated: false)
+                        reader.pageViewController(pager, didFinishAnimating: true, previousViewControllers: [visible], transitionCompleted: true)
+                        try require(reader.anchor.chapter == 0 && reader.currentIndex == 0, "Leading curl did not commit first content page")
+                        let next = reader.pageViewController(pager, viewControllerAfter: previous)!
+                        let right = reader.pageViewController(pager, viewControllerAfter: next)!
+                        pager.setViewControllers([next, right], direction: .forward, animated: false)
+                        reader.pageViewController(pager, didFinishAnimating: true, previousViewControllers: [blank, previous], transitionCompleted: true)
+                        try require(reader.anchor.chapter == 1, "Curl skipped after leading blank")
+                    }
+                }
+                results.append(["mode": mode.rawValue, "width": Int(width), "initial_layout_ms": elapsed,
+                    "initial_typeset_chapters_under_8": true, "reverse_boundaries": 4, "forward_boundaries": 6, "cancelled_boundary": true,
+                    "directory_jump": true, "speech_follow": true, "book_start": true])
+                reader.willMove(toParent: nil); reader.view.removeFromSuperview(); reader.removeFromParent()
+            }
+        }
+        return results
     }
     @MainActor private static func verifyPageFooters(scene: UIWindowScene, book: PreviewBook) async throws -> [String: Any] {
         func require(_ value: Bool, _ message: String) throws { if !value { throw CoreFailure(message: message) } }
@@ -180,7 +301,7 @@ enum ReadingModesRuntimeCheck {
                         try require(abs(top-bottom)<0.5, "Reading body has unequal top/bottom margins: \(top)/\(bottom)")
                         try require(top >= max(window.safeAreaInsets.top,window.safeAreaInsets.bottom), "Reading body enters the system safe area")
                     }
-                    try require(footer.isDescendant(of: leaf.view) && footer.text == L("reader.page_info", leaf.index+1, reader.pages.count), "Footer detached from paper or stale page number")
+                    try require(footer.isDescendant(of: leaf.view) && footer.text == pageInfo(leaf, reader: reader), "Footer detached from paper or stale page number")
                     try require(!footer.isHidden && bounds.contains(footer.frame) && abs(bounds.maxX-footer.frame.maxX-16)<1, "Footer not inside bottom-right paper edge")
                     try require(abs(bounds.maxY-footer.frame.maxY-leaf.footerSafeBottom-8)<1, "Footer unsafe or wrong bottom inset")
                     let image = UIGraphicsImageRenderer(bounds: bounds).image { _ in leaf.view.drawHierarchy(in: bounds, afterScreenUpdates: true) }
@@ -212,7 +333,7 @@ enum ReadingModesRuntimeCheck {
                 }
                 try require(reader.currentIndex > start, "Page turn did not complete: \(mode.rawValue), width=\(size.width), index=\(reader.currentIndex), start=\(start)")
                 let visible = pager.viewControllers?.flatMap { ($0 as? SpreadController)?.leaves ?? [($0 as? PaperController)].compactMap { $0 } } ?? []
-                try require(visible.allSatisfy { $0.page == nil ? $0.footerText.isEmpty : $0.footerText == L("reader.page_info", $0.index+1, reader.pages.count) }, "Turn left stale footer")
+                try require(visible.allSatisfy { $0.page == nil ? $0.footerText.isEmpty : $0.footerText == pageInfo($0, reader: reader) }, "Turn left stale footer")
                 results.append(["mode": mode.rawValue, "width": Int(size.width), "dual": reader.dual, "paper_owned": true, "safe_bottom_right": true, "turn_updates": true, "status_on_paper": true, "status_toggle_no_reflow": true, "symmetric_body_margins": true])
             }
             options.theme = "dark"
@@ -463,10 +584,18 @@ enum ReadingModesRuntimeCheck {
             var commits: [ReadingAnchor] = []
             controller.committed = { commits.append($0) }
             let before = controller.scrollTypesetCount
-            for _ in 0..<20 { table.setContentOffset(CGPoint(x: 0, y: table.contentOffset.y + 4), animated: false) }
-            try require(controller.scrollTypesetCount == before && commits.isEmpty, "Within-chapter scroll rebuilt layouts or saved each frame")
+            var changedLines: [ReadingAnchor] = []
+            for _ in 0..<20 {
+                let previous = controller.anchor
+                table.setContentOffset(CGPoint(x: 0, y: table.contentOffset.y + 4), animated: false)
+                if controller.anchor != previous { changedLines.append(controller.anchor) }
+            }
+            // Current sync semantics persist each changed logical line, so an
+            // older queued callback cannot overtake newer remote progress.
+            try require(controller.scrollTypesetCount == before && commits == changedLines && commits.count < 20, "Within-chapter scroll rebuilt layouts or failed logical-line saves")
+            let savedLines = commits.count
             controller.scrollViewDidEndDecelerating(table)
-            try require(commits.last == controller.anchor && commits.count == 1, "Scroll-end save did not coalesce")
+            try require(commits.last == controller.anchor && commits.count == savedLines, "Scroll end duplicated a saved line")
             for direction in [1, -1] {
                 for _ in 0..<10 {
                     let target = controller.anchor.chapter + direction
@@ -499,7 +628,7 @@ enum ReadingModesRuntimeCheck {
             try require(commits.last == controller.anchor, "Background did not flush final anchor")
             results.append(["chapters": count, "initial_layouts": initialBuilds, "initial_ms": elapsed,
                 "max_resident_chapters": 5, "visible_chapters": 3, "boundary_checks": 20, "pixel_tolerance": 0.5,
-                "coalesced_save": true, "far_jump": true, "background_flush": true, "native_style_invalidation": true])
+                "logical_line_save": true, "far_jump": true, "background_flush": true, "native_style_invalidation": true])
             checkWindow.isHidden = true
         }
         return results

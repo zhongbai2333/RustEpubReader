@@ -75,6 +75,11 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
     private let pagingCache = ReadingChapterCache<BookChapter, [ReadingPage]>()
     private var pagingCacheOptions: ReaderOptions?
     private var pagingTextRect = CGRect.zero
+    private var pagingLoadedRange = 0..<0
+    // Prepending an odd number of leaves must keep existing two-page pairs.
+    // A partial first spread is shown only when we reach the real book start.
+    private var pagingSpreadParity = 0
+    var residentPagedChapters: [Int] { Array(Set(pages.map(\.chapter))).sorted() }
     var pagingTypesetCount: Int { pagingCache.builds }
     private let scrollCache = ReadingChapterCache<BookChapter, ScrollChapterLayout>()
     private var scrollActive: [Int: ScrollChapterLayout] = [:]
@@ -168,9 +173,13 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
                 restoreScroll(highlight.start, in: table); flushScrollPosition()
             }
         }
-        if following, !transitioning, let highlight, !pages.isEmpty, let pager {
+        if following, !transitioning, let highlight, !pages.isEmpty, pager != nil {
+            if !pagingLoadedRange.contains(highlight.start.chapter) {
+                anchor = highlight.start; layoutOptions = nil; rebuildIfNeeded()
+            }
+            guard let pager else { return }
             var target = ReadingLayout.pageIndex(for: highlight.start, in: pages)
-            if dual { target = target / 2 * 2 }
+            if dual { target = spreadStart(for: target) }
             if target != currentIndex {
                 let direction: UIPageViewController.NavigationDirection = target > currentIndex ? .forward : .reverse
                 anchor = highlight.start; currentIndex = target
@@ -199,7 +208,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         for leaf in paperLeaves.allObjects {
             leaf.backgroundImage = image; leaf.backgroundOpacity = options.backgroundImageOpacity
             leaf.footerInk = options.ink
-            leaf.footerText = pages.indices.contains(leaf.index) ? L("reader.page_info", leaf.index+1, pages.count) : ""
+            leaf.footerText = pageInfo(for: leaf.index)
         }
     }
     private func chapterSource(_ chapter: Int) -> BookChapter {
@@ -228,16 +237,63 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         }
         return LaidOutChapter(text: text, coordinates: content.coordinates)
     }
+    private func pagingLayout(_ chapter: Int) -> [ReadingPage] {
+        let source = chapterSource(chapter)
+        return pagingCache.value(chapter: chapter, source: source) {
+            ReadingLayout.paginate([layoutChapter(source, chapter: chapter, in: pagingTextRect)], in: pagingTextRect, chapterOffset: chapter)
+        }
+    }
     private func pagedChapters(in rect: CGRect) -> [ReadingPage] {
         var signature = options.textLayoutOptions; signature.nativeRevision = 0
-        if pagingCacheOptions != signature || pagingTextRect != rect { pagingCache.clear() }
-        pagingCacheOptions = signature; pagingTextRect = rect
-        return book.chapters.indices.flatMap { chapter in
-            let source = chapterSource(chapter)
-            return pagingCache.value(chapter:chapter,source:source) {
-                ReadingLayout.paginate([layoutChapter(source,chapter:chapter,in:rect)],in:rect,chapterOffset:chapter)
-            }
+        if pagingCacheOptions != signature || pagingTextRect != rect {
+            pagingCache.clear(); pagingLoadedRange = 0..<0; pagingSpreadParity = 0
         }
+        pagingCacheOptions = signature; pagingTextRect = rect
+        guard !book.chapters.isEmpty else { return [] }
+        let chapter = min(book.chapters.count-1, max(0, anchor.chapter))
+        if !pagingLoadedRange.contains(chapter) {
+            pagingLoadedRange = chapter..<(chapter+1); pagingSpreadParity = 0
+            pagingCache.retain(pagingLoadedRange)
+        }
+        var result = pagingLoadedRange.flatMap { pagingLayout($0) }
+        // A hidden/empty chapter must not hide readable content elsewhere.
+        while result.isEmpty && pagingLoadedRange.upperBound < book.chapters.count {
+            let next = pagingLoadedRange.upperBound
+            result += pagingLayout(next); pagingLoadedRange = pagingLoadedRange.lowerBound..<(next+1)
+        }
+        while result.isEmpty && pagingLoadedRange.lowerBound > 0 {
+            let previous = pagingLoadedRange.lowerBound-1
+            result = pagingLayout(previous)+result; pagingLoadedRange = previous..<pagingLoadedRange.upperBound
+        }
+        return result
+    }
+    private func ensurePagingBefore(_ index: Int, count: Int) {
+        var available = index
+        while available < count && pagingLoadedRange.lowerBound > 0 {
+            let chapter = pagingLoadedRange.lowerBound-1
+            let prefix = pagingLayout(chapter)
+            pagingLoadedRange = chapter..<pagingLoadedRange.upperBound
+            pages.insert(contentsOf: prefix, at: 0)
+            currentIndex += prefix.count; available += prefix.count
+            pagingSpreadParity = (pagingSpreadParity + prefix.count) % 2
+            // UIPageViewController may already cache neighbouring controllers.
+            // Rebase all of them, not just the visible leaf, without resetting a pan.
+            for leaf in paperLeaves.allObjects { leaf.index += prefix.count }
+        }
+    }
+    private func ensurePagingThrough(_ index: Int) {
+        while index >= pages.count && pagingLoadedRange.upperBound < book.chapters.count {
+            let chapter = pagingLoadedRange.upperBound
+            pages += pagingLayout(chapter)
+            pagingLoadedRange = pagingLoadedRange.lowerBound..<(chapter+1)
+        }
+    }
+    func pageInfo(for index: Int) -> String {
+        guard pages.indices.contains(index) else { return "" }
+        let chapter = pages[index].chapter
+        let first = pages.firstIndex(where: {$0.chapter == chapter}) ?? index
+        let last = pages.lastIndex(where: {$0.chapter == chapter}) ?? index
+        return L("reader.page_info", index-first+1, last-first+1)
     }
     private func rebuildIfNeeded() {
         guard view.window != nil else { return }
@@ -298,7 +354,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         pages = pagedChapters(in: textRect)
         guard !pages.isEmpty else { return }
         currentIndex = ReadingLayout.pageIndex(for: anchor, in: pages)
-        if dual { currentIndex = currentIndex / 2 * 2 }
+        if dual { currentIndex = spreadStart(for: currentIndex) }
         if let old = pager {
             old.dataSource = nil; old.delegate = nil
             old.willMove(toParent: nil); old.view.removeFromSuperview(); old.removeFromParent()
@@ -325,30 +381,48 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         reportVisible()
     }
     private func leaf(_ index: Int) -> PaperController {
+        ensurePagingThrough(index)
         let page = pages.indices.contains(index) ? pages[index] : nil
         let leaf = PaperController(index: index, page: page, paper: options.paper, selected: { [weak self] in self?.selected?($0) })
         leaf.speechHighlight = speechHighlight
-        leaf.footerText = page == nil ? "" : L("reader.page_info", index+1, pages.count)
+        leaf.footerText = pageInfo(for: index)
         leaf.footerInk = options.ink; leaf.footerSafeBottom = footerSafeBottom
         leaf.statusInfo = immersiveStatus
         leaf.backgroundImage = options.backgroundImage; leaf.backgroundOpacity = options.backgroundImageOpacity
         paperLeaves.add(leaf)
         return leaf
     }
+    private func spreadStart(for index: Int) -> Int {
+        max(0, index - (index + pagingSpreadParity) % 2)
+    }
     private func controllers(at index: Int) -> [UIViewController] {
+        if dual && index == 0 && pagingSpreadParity == 1 {
+            return options.sliding ? [SpreadController(index: 0, leaves: [leaf(0)])] : [leaf(-1), leaf(0)]
+        }
         if dual && options.sliding { return [SpreadController(index: index, leaves: [leaf(index), leaf(index + 1)])] }
         return dual ? [leaf(index), leaf(index + 1)] : [leaf(index)]
     }
-    private var leafCount: Int { dual ? pages.count + pages.count % 2 : pages.count }
+    private var leafCount: Int { dual ? pages.count + (pages.count + pagingSpreadParity) % 2 : pages.count }
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
-        if let spread = viewController as? SpreadController { return spread.index > 0 ? controllers(at: spread.index - 2).first : nil }
-        guard let leaf = viewController as? PaperController, leaf.index > 0 else { return nil }
-        return self.leaf(leaf.index-1)
+        guard pageViewController === pager else { return nil }
+        if let spread = viewController as? SpreadController {
+            ensurePagingBefore(spread.index, count: 2)
+            return spread.index > 0 ? controllers(at: max(0,spread.index-2)).first : nil
+        }
+        guard let leaf = viewController as? PaperController else { return nil }
+        ensurePagingBefore(leaf.index, count: 1)
+        return leaf.index > 0 || (dual && leaf.index == 0 && pagingSpreadParity == 1) ? self.leaf(leaf.index-1) : nil
     }
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
-        if let spread = viewController as? SpreadController { return spread.index + 2 < leafCount ? controllers(at: spread.index + 2).first : nil }
-        guard let leaf = viewController as? PaperController, leaf.index+1 < leafCount else { return nil }
-        return self.leaf(leaf.index+1)
+        guard pageViewController === pager else { return nil }
+        if let spread = viewController as? SpreadController {
+            let next = spread.index + spread.leaves.count
+            ensurePagingThrough(next)
+            return next < pages.count ? controllers(at: next).first : nil
+        }
+        guard let leaf = viewController as? PaperController else { return nil }
+        ensurePagingThrough(leaf.index+1)
+        return leaf.index+1 < leafCount ? self.leaf(leaf.index+1) : nil
     }
     func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) { transitioning = true; turning?() }
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
@@ -356,12 +430,13 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         transitioning = false
         let indices = pageViewController.viewControllers?.compactMap { ($0 as? PaperController)?.index ?? ($0 as? SpreadController)?.index } ?? []
         guard let next = ReadingLayout.completedAnchor(completed: completed, visible: indices, pages: pages) else { return }
-        anchor = next; currentIndex = indices.min() ?? currentIndex
+        anchor = next; currentIndex = indices.filter { pages.indices.contains($0) }.min() ?? currentIndex
         committed?(next); reportVisible(); rebuildIfNeeded()
     }
     private func reportVisible() {
         guard pages.indices.contains(currentIndex) else { return }
-        let visibleEnd=min(pages.count,currentIndex+(dual ? 2 : 1))
+        let count = dual && !(currentIndex == 0 && pagingSpreadParity == 1) ? 2 : 1
+        let visibleEnd=min(pages.count,currentIndex+count)
         let firstPages=Array(pages[currentIndex..<visibleEnd])
         let imagesReady=firstPages.allSatisfy {BookTypesetter.prefetch($0)}
         if !firstContentReported && !imagesReady {
@@ -374,8 +449,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         firstContentReported=true
         for index in max(0,currentIndex-1)..<min(pages.count,currentIndex+4) { _ = BookTypesetter.prefetch(pages[index]) }
         let current = anchor
-        let end = min(pages.count, currentIndex+(dual ? 2 : 1))
-        let label = options.readingMode == .scroll ? L("reader.chapter_indicator", current.chapter+1, book.chapters.count) : dual ? "\(currentIndex+1)–\(end) / \(pages.count)" : "\(currentIndex+1) / \(pages.count)"
+        let label = options.readingMode == .scroll ? L("reader.chapter_indicator", current.chapter+1, book.chapters.count) : pageInfo(for: currentIndex)
         let callback = visible
         DispatchQueue.main.async { callback?(current, label) }
     }
@@ -547,14 +621,21 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
     }
     func turnSpread(forward: Bool) {
         guard let pager, !transitioning else { return }
-        let next = currentIndex + (forward ? 1 : -1) * (dual ? 2 : 1)
+        var step = dual ? 2 : 1
+        if forward && dual && currentIndex == 0 && pagingSpreadParity == 1 { step = 1 }
+        if forward { ensurePagingThrough(currentIndex+step) }
+        else { ensurePagingBefore(currentIndex, count: step) }
+        let next = forward ? currentIndex + step : max(0, currentIndex - step)
+        guard next != currentIndex else { return }
         guard pages.indices.contains(next) else { return }
         transitioning = true; turning?()
         let finish: (Bool) -> Void = { [weak self, weak pager] completed in
             guard let self, pager === self.pager else { return }
             self.transitioning = false
             guard completed else { return }
-            self.currentIndex = next; self.anchor = self.pages[next].anchor
+            let indices = pager?.viewControllers?.compactMap { ($0 as? PaperController)?.index ?? ($0 as? SpreadController)?.index } ?? []
+            guard let shown = indices.filter({ self.pages.indices.contains($0) }).min() else { return }
+            self.currentIndex = shown; self.anchor = self.pages[shown].anchor
             self.committed?(self.anchor); self.reportVisible(); self.rebuildIfNeeded()
         }
         if options.readingMode == .cover && !UIAccessibility.isReduceMotionEnabled,
@@ -570,9 +651,14 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             } completion: { _ in
                 previous.removeFromSuperview(); pager.view.transform = .identity; finish(true)
             }
+        } else if options.readingMode.customTransition {
+            // A just-rebuilt pager may not have a snapshot yet. Do not wait for
+            // UIKit's scroll completion for our own nonanimated fallback.
+            pager.setViewControllers(controllers(at: next), direction: forward ? .forward : .reverse, animated: false)
+            finish(true)
         } else {
             pager.setViewControllers(controllers(at: next), direction: forward ? .forward : .reverse,
-                                     animated: options.readingMode != .none && !UIAccessibility.isReduceMotionEnabled, completion: finish)
+                                     animated: !UIAccessibility.isReduceMotionEnabled, completion: finish)
         }
     }
 
@@ -589,9 +675,9 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
 }
 
 final class SpreadController: UIViewController {
-    let index: Int
+    var index: Int { leaves.first?.index ?? 0 }
     let leaves: [PaperController]
-    init(index: Int, leaves: [PaperController]) { self.index = index; self.leaves = leaves; super.init(nibName: nil, bundle: nil) }
+    init(index: Int, leaves: [PaperController]) { self.leaves = leaves; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -599,7 +685,7 @@ final class SpreadController: UIViewController {
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        for (offset, leaf) in leaves.enumerated() { leaf.view.frame = CGRect(x: CGFloat(offset) * view.bounds.width / 2, y: 0, width: view.bounds.width / 2, height: view.bounds.height) }
+        for (offset, leaf) in leaves.enumerated() { leaf.view.frame = CGRect(x: CGFloat(leaves.count == 1 ? 1 : offset) * view.bounds.width / 2, y: 0, width: view.bounds.width / 2, height: view.bounds.height) }
     }
 }
 
@@ -613,7 +699,7 @@ final class PaperController: UIViewController {
     var footerText = "" { didSet { guard oldValue != footerText else { return }; pageFooter.text = footerText; pageFooter.isHidden = footerText.isEmpty; surface?.accessibilityValue = footerText } }
     var footerInk: UIColor = .secondaryLabel { didSet { pageFooter.textColor = footerInk.withAlphaComponent(0.38); immersiveFooter.update(statusInfo, ink: footerInk) } }
     var footerSafeBottom: CGFloat = 0
-    let index: Int
+    var index: Int
     let page: ReadingPage?
     let paper: UIColor
     var backgroundImage: UIImage? { didSet { surface?.backgroundImage = backgroundImage } }

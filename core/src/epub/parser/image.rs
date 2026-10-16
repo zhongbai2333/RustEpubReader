@@ -221,13 +221,12 @@ pub(super) fn lookup_image_by_path<'a>(
 /// Load only the images referenced by `<img>`/`<image>` tags in this chapter's HTML.
 /// This avoids eagerly loading all images in the EPUB into memory.
 pub(super) fn load_referenced_images(
-    html: &str,
+    document: &Html,
     chapter_path: &str,
     image_resource_paths: &[String],
     image_resources: &mut HashMap<String, Vec<u8>>,
     mut read_resource_bytes: impl FnMut(&str) -> Option<Vec<u8>>,
 ) {
-    let document = Html::parse_document(html);
     let img_sel = Selector::parse("img, image").expect("valid selector");
     let chapter_dir = Path::new(chapter_path)
         .parent()

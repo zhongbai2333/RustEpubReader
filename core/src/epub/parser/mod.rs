@@ -9,7 +9,6 @@ use rbook::ebook::resource::ResourceKey;
 use rbook::epub::Epub as RbookEpub;
 
 use super::{Chapter, TocEntry};
-use html::parse_html_blocks;
 use image::load_referenced_images;
 
 /// Render blocks grouped by chapter, with shared block and scalar coordinates.
@@ -169,6 +168,8 @@ impl EpubBook {
         let mut image_resources: HashMap<String, Vec<u8>> = HashMap::new();
 
         let toc_items = collect_toc_items(&epub);
+        let mut text_resources: HashMap<String, Option<String>> = HashMap::new();
+        let mut cached_text_bytes = 0usize;
 
         for spine_entry in epub.spine().iter() {
             let Some(manifest_entry) = spine_entry.manifest_entry() else {
@@ -187,16 +188,25 @@ impl EpubBook {
                 .read_str()
                 .map_err(|e| format!("无法读取资源: {path_str}: {e}"))?;
 
-            // Lazy-load: only fetch images referenced by this chapter (not all EPUB images)
+            let document = scraper::Html::parse_document(&html);
+            // Reuse this DOM for media, canonical blocks and native style bindings.
             load_referenced_images(
-                &html,
+                &document,
                 &path_str,
                 &image_resource_paths,
                 &mut image_resources,
                 |resolved| epub.read_resource_bytes(resolved).ok(),
             );
 
-            let blocks = parse_html_blocks(&html, &path_str, &image_resources);
+            let canonical =
+                html::parse_document_blocks(&document, &path_str, &image_resources, false);
+            let chapter_media = html::supplemental_document_images(
+                &document,
+                &path_str,
+                &image_resources,
+                &canonical,
+            );
+            let blocks: Vec<_> = canonical.into_iter().map(|(_, _, block)| block).collect();
 
             let chapter_title = toc_items
                 .iter()
@@ -208,40 +218,44 @@ impl EpubBook {
                 // Previously omitted image-only spine items must not renumber
                 // saved text chapters. Display their media beside the next
                 // canonical chapter while retaining the original shared indices.
-                pending_images.extend(
-                    html::parse_render_blocks(&html, &path_str, &image_resources)
-                        .into_iter()
-                        .filter_map(|(_, _, block)| match block {
-                            super::ContentBlock::Image { data, alt, .. } => {
-                                Some(SupplementalImage {
-                                    block: 0,
-                                    after: false,
-                                    data,
-                                    alt,
-                                })
-                            }
-                            _ => None,
-                        }),
-                );
+                pending_images.extend(chapter_media.into_iter().map(|mut image| {
+                    image.block = 0;
+                    image.after = false;
+                    image
+                }));
                 continue;
             }
 
             let chapter_idx = chapters.len();
 
             let mut media = std::mem::take(&mut pending_images);
-            media.extend(html::supplemental_images(
-                &html,
-                &path_str,
-                &image_resources,
-            ));
+            media.extend(chapter_media);
             if !media.is_empty() {
                 supplemental_images.insert(chapter_idx, media);
             }
 
-            let native_document =
-                super::native::NativeDocument::parse(&html, &path_str, &blocks, |p| {
-                    epub.read_resource_str(p).ok().map(|s| s.to_string())
-                });
+            let native_document = super::native::NativeDocument::parse_document(
+                &html,
+                &path_str,
+                &blocks,
+                |p| {
+                    if let Some(cached) = text_resources.get(p) {
+                        return cached.clone();
+                    }
+                    let value = epub.read_resource_str(p).ok().map(|s| s.to_string());
+                    let bytes = value.as_ref().map_or(0, String::len);
+                    // Share common styles/scripts without retaining an unbounded
+                    // cache for books that give every chapter different resources.
+                    if text_resources.len() < 128
+                        && cached_text_bytes.saturating_add(bytes) <= 8 * 1024 * 1024
+                    {
+                        cached_text_bytes += bytes;
+                        text_resources.insert(p.into(), value.clone());
+                    }
+                    value
+                },
+                &document,
+            );
             chapters.push(Chapter {
                 native_document: std::sync::Arc::new(native_document),
                 title: chapter_title.clone(),

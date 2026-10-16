@@ -34,7 +34,7 @@ pub fn dispatch(root: &str, v: &Value) -> Result<Value, String> {
             "bookmark" => {
                 let chapter = number(v, "chapter")?;
                 let block = number(v, "block")?;
-                validate_position(&book(root, &e)?, chapter, block, 0)?;
+                validate_position(book(root, &e)?.as_ref(), chapter, block, 0)?;
                 if config
                     .bookmarks
                     .iter()

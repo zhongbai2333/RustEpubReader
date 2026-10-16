@@ -63,7 +63,7 @@ pub extern "C" fn reader_ios_stop_nearby() {
 
 #[cfg(test)]
 static TEST_SESSION_LOCK: Mutex<()> = Mutex::new(());
-static BOOK: Mutex<Option<(String, String, EpubBook)>> = Mutex::new(None);
+static BOOK: Mutex<Option<(String, String, Arc<EpubBook>)>> = Mutex::new(None);
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
     v[key].as_str().ok_or_else(|| format!("Missing {key}"))
 }
@@ -92,7 +92,7 @@ fn entry_value(_root: &str, entry: &BookEntry) -> Value {
     value["cover_path"] = Value::Null;
     value
 }
-fn book(root: &str, entry: &BookEntry) -> Result<EpubBook, String> {
+fn book(root: &str, entry: &BookEntry) -> Result<Arc<EpubBook>, String> {
     let mut cached = BOOK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((r, id, b)) = &*cached {
         if r == root && id == &entry.id {
@@ -103,6 +103,7 @@ fn book(root: &str, entry: &BookEntry) -> Result<EpubBook, String> {
     if parsed.chapters.is_empty() {
         return Err("EPUB has no readable chapters".into());
     }
+    let parsed = Arc::new(parsed);
     *cached = Some((root.into(), entry.id.clone(), parsed.clone()));
     Ok(parsed)
 }
@@ -330,7 +331,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     let before = lib.clone();
                     let e = lib.add_or_update(
                         root,
-                        parsed.title,
+                        parsed.title.clone(),
                         scratch.0.to_string_lossy().into_owned(),
                         0,
                         None,
@@ -351,6 +352,10 @@ fn dispatch(v: Value) -> Result<Value, String> {
                         );
                         return Err("Cannot copy EPUB into library storage".into());
                     }
+                    // Validation already parsed these exact, hash-checked bytes.
+                    // Opening the newly imported book must not parse it again.
+                    *BOOK.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((root.into(), e.id.clone(), Arc::new(parsed)));
                     Ok(entry_value(root, &e))
                 }
                 "native_link" => {
@@ -421,7 +426,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     }
                     nearby::opened(root, &e.path);
                     Ok(
-                        json!({"entry":entry_value(root,&e),"chapters":chapters,"toc":parsed.toc,"cover":parsed.cover_data.map(|d| reader_core::base64_encode(&d))}),
+                        json!({"entry":entry_value(root,&e),"chapters":chapters,"toc":parsed.toc,"cover":parsed.cover_data.as_ref().map(|d| reader_core::base64_encode(d))}),
                     )
                 }
                 "save" => {
@@ -560,6 +565,23 @@ mod tests {
         reader_core::txt::convert_txt_to_epub(&text, &PathBuf::from(root), &Default::default())
             .unwrap()
             .epub_path
+    }
+    #[test]
+    fn imported_book_and_repeated_reads_share_the_same_parsed_publication() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let source = fixture(root);
+        let imported = request(root, "import", json!({"path":source}));
+        assert_eq!(imported["ok"], true, "{imported}");
+        let id = imported["result"]["id"].as_str().unwrap();
+        let cached = BOOK.lock().unwrap().as_ref().unwrap().2.clone();
+        let entry = entry(root, id).unwrap();
+        let first = book(root, &entry).unwrap();
+        let second = book(root, &entry).unwrap();
+        assert!(Arc::ptr_eq(&cached, &first));
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(!first.chapters.is_empty());
     }
     #[test]
     fn body_links_resolve_book_local_targets_without_opening_external_resources() {

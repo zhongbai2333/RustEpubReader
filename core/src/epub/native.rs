@@ -214,6 +214,152 @@ fn stylesheet(
     output.push_str(&imports.replace_all(source, ""));
     output
 }
+// Every queue is in DOM order. Removing already-used fronts is amortized linear,
+// including books with thousands of identical paragraphs or duplicate anchor IDs.
+fn bind_blocks(
+    blocks: &[ContentBlock],
+    nodes: &[NativeNode],
+    texts: &[String],
+) -> Vec<Option<usize>> {
+    use std::collections::VecDeque;
+    type Index<'a> = HashMap<&'a str, VecDeque<usize>>;
+    fn first(index: &mut Index<'_>, key: &str, used: &[bool]) -> Option<usize> {
+        let queue = index.get_mut(key)?;
+        while queue.front().is_some_and(|i| used[*i]) {
+            queue.pop_front();
+        }
+        queue.front().copied()
+    }
+    let mut ids = Index::new();
+    let mut exact = Index::new();
+    let mut plain = Index::new();
+    let mut lists = Index::new();
+    let mut rows = Index::new();
+    // A rolling suffix fingerprint is only a lookup filter; full text lookup
+    // verifies every hit. Avoid hashing every suffix from scratch on long text.
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+    let mut list_suffixes = std::collections::HashSet::new();
+    let mut images = VecDeque::new();
+    let mut image_indices = Vec::new();
+    let mut ends: Vec<_> = (1..=nodes.len()).collect();
+    for i in (0..nodes.len()).rev() {
+        if let Some(parent) = nodes[i].parent {
+            ends[parent] = ends[parent].max(ends[i]);
+        }
+    }
+    for (i, node) in nodes.iter().enumerate() {
+        if let Some(id) = node.attrs.get("id") {
+            ids.entry(id).or_default().push_back(i);
+        }
+        if matches!(node.tag.as_str(), "img" | "svg" | "image") {
+            images.push_back(i);
+            image_indices.push(i);
+        }
+        if matches!(
+            node.tag.as_str(),
+            "html"
+                | "head"
+                | "body"
+                | "div"
+                | "section"
+                | "article"
+                | "script"
+                | "style"
+                | "table"
+                | "title"
+                | "meta"
+                | "link"
+        ) {
+            continue;
+        }
+        let text = texts[i].as_str();
+        exact.entry(text).or_default().push_back(i);
+        match node.tag.as_str() {
+            "li" => {
+                lists.entry(text).or_default().push_back(i);
+                let hash = text.bytes().rev().fold(OFFSET, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(PRIME)
+                });
+                list_suffixes.insert((hash, text.len()));
+            }
+            "tr" => {
+                rows.entry(text).or_default().push_back(i);
+            }
+            _ => {
+                plain.entry(text).or_default().push_back(i);
+            }
+        }
+    }
+    let mut used = vec![false; nodes.len()];
+    blocks
+        .iter()
+        .map(|block| {
+            let selected = match block {
+                ContentBlock::Paragraph {
+                    anchor_id, spans, ..
+                }
+                | ContentBlock::Heading {
+                    anchor_id, spans, ..
+                } => {
+                    let source =
+                        compact(&spans.iter().map(|s| s.text.as_str()).collect::<String>());
+                    let mut candidate = anchor_id
+                        .as_deref()
+                        .and_then(|id| first(&mut ids, id, &used));
+                    let mut take = |value: Option<usize>| {
+                        if let Some(value) = value {
+                            candidate = Some(candidate.map_or(value, |old| old.min(value)));
+                        }
+                    };
+                    if !source.is_empty() {
+                        take(first(&mut exact, &source, &used));
+                        if let Some(text) = source.strip_prefix('│') {
+                            take(first(&mut plain, text, &used));
+                        }
+                        if !rows.is_empty() {
+                            take(first(&mut rows, &source.replace('|', ""), &used));
+                        }
+                        if !lists.is_empty() {
+                            let mut hash = OFFSET;
+                            for (at, byte) in source.bytes().enumerate().rev() {
+                                hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
+                                if source.is_char_boundary(at)
+                                    && list_suffixes.contains(&(hash, source.len() - at))
+                                {
+                                    take(first(&mut lists, &source[at..], &used));
+                                }
+                            }
+                            take(first(&mut lists, "", &used));
+                        }
+                    }
+                    candidate
+                }
+                ContentBlock::Image { .. } => {
+                    while images.front().is_some_and(|i| used[*i]) {
+                        images.pop_front();
+                    }
+                    images.front().copied()
+                }
+                _ => None,
+            };
+            if let Some(i) = selected {
+                used[i] = true;
+                // Only descendants can belong to this block. Do not rescan all later
+                // siblings (the former quadratic cost on long chapters).
+                let begin = image_indices.partition_point(|child| *child <= i);
+                for child in image_indices[begin..]
+                    .iter()
+                    .take_while(|child| **child < ends[i])
+                {
+                    used[*child] = true;
+                }
+            }
+            selected
+        })
+        .collect()
+}
+
 impl NativeDocument {
     /// Resolve IDs on paragraphs, containers and inline/empty anchors without
     /// introducing render-only block numbers or UTF-16 offsets.
@@ -291,9 +437,17 @@ impl NativeDocument {
         html: &str,
         path: &str,
         blocks: &[ContentBlock],
-        mut read: impl FnMut(&str) -> Option<String>,
+        read: impl FnMut(&str) -> Option<String>,
     ) -> Self {
-        let document = Html::parse_document(html);
+        Self::parse_document(html, path, blocks, read, &Html::parse_document(html))
+    }
+    pub(crate) fn parse_document(
+        html: &str,
+        path: &str,
+        blocks: &[ContentBlock],
+        mut read: impl FnMut(&str) -> Option<String>,
+        document: &Html,
+    ) -> Self {
         let selector = Selector::parse("*").unwrap();
         let mut nodes = Vec::new();
         let mut ids = HashMap::new();
@@ -357,109 +511,7 @@ impl NativeDocument {
             css.truncate(limit);
         }
         let compact_texts: Vec<_> = nodes.iter().map(|node| compact(&node.text)).collect();
-        let mut used = std::collections::HashSet::new();
-        let bindings = blocks
-            .iter()
-            .map(|b| {
-                let (anchor, text) = match b {
-                    ContentBlock::Paragraph {
-                        anchor_id, spans, ..
-                    }
-                    | ContentBlock::Heading {
-                        anchor_id, spans, ..
-                    } => (
-                        anchor_id.as_deref(),
-                        compact(&spans.iter().map(|s| s.text.as_str()).collect::<String>()),
-                    ),
-                    ContentBlock::Image { .. } => {
-                        let index = nodes
-                            .iter()
-                            .enumerate()
-                            .find(|(i, n)| {
-                                !used.contains(i)
-                                    && matches!(n.tag.as_str(), "img" | "svg" | "image")
-                            })
-                            .map(|(i, _)| i);
-                        if let Some(i) = index {
-                            used.insert(i);
-                            for (child, n) in nodes.iter().enumerate().skip(i + 1) {
-                                let mut parent = n.parent;
-                                while let Some(p) = parent {
-                                    if p == i {
-                                        if matches!(n.tag.as_str(), "img" | "svg" | "image") {
-                                            used.insert(child);
-                                        }
-                                        break;
-                                    }
-                                    parent = nodes[p].parent;
-                                }
-                            }
-                        }
-                        return index;
-                    }
-                    _ => return None,
-                };
-                let index = nodes
-                    .iter()
-                    .enumerate()
-                    .find(|(i, n)| {
-                        !used.contains(i)
-                            && (anchor.is_some_and(|a| n.attrs.get("id").is_some_and(|id| id == a))
-                                || (!text.is_empty()
-                                    && !matches!(
-                                        n.tag.as_str(),
-                                        "html"
-                                            | "head"
-                                            | "body"
-                                            | "div"
-                                            | "section"
-                                            | "article"
-                                            | "script"
-                                            | "style"
-                                            | "table"
-                                            | "title"
-                                            | "meta"
-                                            | "link"
-                                    )
-                                    && super::native_typography::matches_compact_source(
-                                        &text,
-                                        &n.tag,
-                                        &compact_texts[*i],
-                                    )
-                                    && !matches!(
-                                        n.tag.as_str(),
-                                        "html"
-                                            | "head"
-                                            | "body"
-                                            | "div"
-                                            | "section"
-                                            | "article"
-                                            | "script"
-                                            | "style"
-                                            | "table"
-                                    )))
-                    })
-                    .map(|(i, _)| i);
-                if let Some(i) = index {
-                    used.insert(i);
-                    // Supplemental media is attached to this text block; do not bind
-                    // that same image again when locating later canonical images.
-                    for (child, n) in nodes.iter().enumerate().skip(i + 1) {
-                        let mut parent = n.parent;
-                        while let Some(p) = parent {
-                            if p == i {
-                                if matches!(n.tag.as_str(), "img" | "svg" | "image") {
-                                    used.insert(child);
-                                }
-                                break;
-                            }
-                            parent = nodes[p].parent;
-                        }
-                    }
-                }
-                index
-            })
-            .collect();
+        let bindings = bind_blocks(blocks, &nodes, &compact_texts);
         Self {
             html: html.into(),
             nodes,
@@ -773,5 +825,119 @@ impl NativeDocument {
                     .join(" ")
             })
             .filter(|s| !s.is_empty() && s.len() <= 32768)
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    // Historical matching serves as a compatibility oracle for the optimized
+    // index. It intentionally scans, and is only run on small mixed fixtures.
+    fn reference(document: &NativeDocument, blocks: &[ContentBlock]) -> Vec<Option<usize>> {
+        let nodes = &document.nodes;
+        let texts: Vec<_> = nodes.iter().map(|n| compact(&n.text)).collect();
+        let mut used = std::collections::HashSet::new();
+        blocks.iter().map(|block| {
+            let index = match block {
+                ContentBlock::Paragraph {anchor_id,spans,..} | ContentBlock::Heading {anchor_id,spans,..} => {
+                    let source=compact(&spans.iter().map(|s|s.text.as_str()).collect::<String>());
+                    nodes.iter().enumerate().find(|(i,node)| !used.contains(i) && (
+                        anchor_id.as_ref().is_some_and(|id| node.attrs.get("id")==Some(id)) ||
+                        (!source.is_empty() && !matches!(node.tag.as_str(),"html"|"head"|"body"|"div"|"section"|"article"|"script"|"style"|"table"|"title"|"meta"|"link") &&
+                         super::super::native_typography::matches_compact_source(&source,&node.tag,&texts[*i]))
+                    )).map(|(i,_)|i)
+                }
+                ContentBlock::Image{..} => nodes.iter().enumerate().find(|(i,node)| !used.contains(i) && matches!(node.tag.as_str(),"img"|"svg"|"image")).map(|(i,_)|i),
+                _ => None,
+            };
+            if let Some(i)=index {
+                used.insert(i);
+                for (child,node) in nodes.iter().enumerate().skip(i+1) {
+                    let mut parent=node.parent;
+                    while let Some(p)=parent {
+                        if p==i {
+                            if matches!(node.tag.as_str(),"img"|"svg"|"image") {used.insert(child);}
+                            break;
+                        }
+                        parent=nodes[p].parent;
+                    }
+                }
+            }
+            index
+        }).collect()
+    }
+    fn paragraph(text: &str, anchor: Option<&str>) -> ContentBlock {
+        ContentBlock::Paragraph {
+            spans: vec![super::super::TextSpan {
+                text: text.into(),
+                style: super::super::InlineStyle::Normal,
+                link_url: None,
+                correction: None,
+            }],
+            anchor_id: anchor.map(str::to_owned),
+            native_style: Default::default(),
+        }
+    }
+    #[test]
+    fn indexed_bindings_preserve_dom_order_ids_duplicates_lists_tables_and_images() {
+        for file in [
+            "native-typography.epub",
+            "original-layout.epub",
+            "illustrations.epub",
+        ] {
+            let book = super::super::EpubBook::open(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(file),
+            )
+            .unwrap();
+            for chapter in &book.chapters {
+                assert_eq!(
+                    chapter.native_document.bindings,
+                    reference(&chapter.native_document, &chapter.blocks),
+                    "{file}: {}",
+                    chapter.title
+                );
+            }
+        }
+        let html="<section id='container'><p id='duplicate'>相同</p><p id='duplicate'>相同</p><p>末尾</p><ul><li>列表😀</li><li></li></ul><table><tr><td>甲</td><td>乙</td></tr></table><blockquote>引用</blockquote><p id='media'>插图<img src='a.png'/><svg><image href='b.png'/></svg></p><img src='last.png'/></section>";
+        let mut blocks = vec![
+            paragraph("相同", None),
+            paragraph("相同", Some("duplicate")),
+            paragraph("• 列表😀", None),
+            paragraph("|甲|乙|", None),
+            paragraph("│引用", None),
+            paragraph("插图", Some("media")),
+            ContentBlock::Image {
+                native_style: Default::default(),
+                data: std::sync::Arc::new(vec![]),
+                alt: None,
+            },
+            paragraph("末尾", None),
+            paragraph("irrelevant", Some("container")),
+        ];
+        for _ in 0..3 {
+            let doc = NativeDocument::parse(html, "chapter.xhtml", &blocks, |_| None);
+            assert_eq!(doc.bindings, reference(&doc, &blocks));
+            blocks.reverse();
+        }
+    }
+    #[test]
+    fn repeated_paragraphs_and_a_long_list_prefix_keep_distinct_bindings() {
+        let count = 8000;
+        let html = format!(
+            "<html><body>{}<ul><li>列表😀</li></ul></body></html>",
+            "<p>重复段落</p>".repeat(count)
+        );
+        let mut blocks = vec![paragraph("重复段落", None); count];
+        blocks.push(paragraph(
+            &format!("{}列表😀", "很长的列表标记".repeat(4000)),
+            None,
+        ));
+        let doc = NativeDocument::parse(&html, "chapter.xhtml", &blocks, |_| None);
+        assert_eq!(doc.bindings.len(), count + 1);
+        let indices: std::collections::HashSet<_> =
+            doc.bindings.iter().copied().flatten().collect();
+        assert_eq!(indices.len(), count + 1);
     }
 }
