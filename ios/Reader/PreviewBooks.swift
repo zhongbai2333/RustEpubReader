@@ -59,7 +59,15 @@ final class BookChapterSource: @unchecked Sendable {
         if let value = cache[index] { order.removeAll {$0 == index}; order.append(index); return value }
         let value: BookChapter = try client.call("chapter", ["id":id,"chapter":index])
         cache[index] = value; order.append(index)
-        costs[index]=value.blocks.reduce(0) {sum,block in sum+192+(block.data?.utf8.count ?? 0)+(block.spans ?? []).reduce(0) {$0+$1.text.utf8.count+96} }
+        var cost = 0
+        for block in value.blocks {
+            cost += 192
+            cost += block.data?.utf8.count ?? 0
+            for span in block.spans ?? [] {
+                cost += span.text.utf8.count + 96
+            }
+        }
+        costs[index] = cost
         while order.count > 1 && (order.count > 32 || costs.values.reduce(0,+)>16*1024*1024) {
             let oldest=order.removeFirst();cache.removeValue(forKey:oldest);costs.removeValue(forKey:oldest)
         }

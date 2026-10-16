@@ -509,6 +509,14 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_githubSyncEpoch(
     EPOCH.load(Ordering::SeqCst) as jni::sys::jlong
 }
 
+pub(super) fn opened(data_dir: &str, path: &str) {
+    let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut library = Library::load_from(data_dir);
+    library.set_last_opened(data_dir, path, reader_core::now_millis());
+    let journal = journal(data_dir);
+    let _ = journal.save(data_dir);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,12 +682,4 @@ mod tests {
         assert_eq!(Library::load_from(root).books[0].last_chapter, 0);
         assert_eq!(SyncJournal::load(root, "android-test").applied[&hash], 30);
     }
-}
-
-pub(super) fn opened(data_dir: &str, path: &str) {
-    let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut library = Library::load_from(data_dir);
-    library.set_last_opened(data_dir, path, reader_core::now_millis());
-    let journal = journal(data_dir);
-    let _ = journal.save(data_dir);
 }
