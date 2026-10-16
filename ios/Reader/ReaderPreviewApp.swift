@@ -470,7 +470,7 @@ struct LibraryDesignView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(L("library.continue_reading")).font(.caption).foregroundStyle(.secondary)
                                 Text(book.title).font(.headline).foregroundStyle(.primary)
-                                Text(L("annotations.chapter", (library.anchors[book.id]?.chapter ?? 0)+1)).font(.subheadline).foregroundStyle(.secondary)
+                                Text(book.readingChapterTitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                             }
                             Spacer()
                             Image(systemName: "chevron.right").font(.subheadline).foregroundStyle(.secondary)
@@ -499,7 +499,7 @@ struct LibraryDesignView: View {
                                         BookCover(book: book, covers: library.covers, compact: true, iconPlaceholder: true).frame(width: 52, height: 78).bookCoverFrame("shelf:" + book.id)
                                         VStack(alignment: .leading, spacing: 6) {
                                             Text(book.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
-                                            Text(L("annotations.chapter", (library.anchors[book.id]?.chapter ?? 0)+1)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                            Text(book.readingChapterTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                         }.frame(maxWidth: .infinity, alignment: .leading)
                                         if managing { Image(systemName: selected.contains(book.id) ? "checkmark.circle.fill" : "circle").font(.title2).foregroundStyle(selected.contains(book.id) ? Color.accentColor : Color.secondary).frame(width: 44, height: 44) }
                                     }.padding(.vertical, 8).padding(.trailing, managing ? 0 : 44).frame(maxWidth: .infinity).contentShape(Rectangle())
@@ -508,7 +508,7 @@ struct LibraryDesignView: View {
                                     BookCover(book: book, covers: library.covers).aspectRatio(2/3, contentMode: .fit).bookCoverFrame("shelf:" + book.id)
                                         .overlay(alignment: .topTrailing) { if managing { Image(systemName: selected.contains(book.id) ? "checkmark.circle.fill" : "circle").font(.title2).symbolRenderingMode(.palette).foregroundStyle(.white, .blue).padding(8).background(.regularMaterial, in: Circle()).padding(6) } }
                                     Text(book.title).font(.subheadline).fontWeight(.medium).foregroundStyle(.primary).lineLimit(2).padding(.trailing, managing ? 0 : 44)
-                                    Text(L("annotations.chapter", (library.anchors[book.id]?.chapter ?? 0)+1)).font(.caption).foregroundStyle(.secondary).padding(.trailing, managing ? 0 : 44)
+                                    Text(book.readingChapterTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).padding(.trailing, managing ? 0 : 44)
                                 }
                                 }
                             }.buttonStyle(.plain)

@@ -175,14 +175,18 @@ struct ReadingWorkspace: View {
                             ReaderChromeButton(symbol:"xmark",label:L("nav.back_to_library"),tint:chromeInk,nativeGlass:false,action:close)
                                 .frame(width:44,height:44)
                                 .readerChromeGlass(in: Circle(), id: "close", namespace: chromeGlass)
-                            VStack(spacing: 2) {
-                                Text(book.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                                Text("\(current.chapter+1)/\(book.chapters.count) · \(book.chapters.indices.contains(current.chapter) ? book.chapters[current.chapter].title : "")")
-                                    .font(.system(size: 11)).foregroundStyle(Color(uiColor: chromeInk).opacity(0.65)).lineLimit(1)
-                            }.padding(.horizontal, 12).padding(.vertical, 7)
-                                .frame(maxWidth: .infinity)
+                            HStack(spacing: 0) {
+                                Spacer(minLength: 0)
+                                VStack(spacing: 2) {
+                                    Text(book.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                                    Text("\(current.chapter+1)/\(book.chapters.count) · \(book.chapters.indices.contains(current.chapter) ? book.chapters[current.chapter].title : "")")
+                                        .font(.system(size: 11)).foregroundStyle(Color(uiColor: chromeInk).opacity(0.65)).lineLimit(1)
+                                }.padding(.horizontal, 12).padding(.vertical, 7)
                                 .readerChromeTitleGlass(namespace: chromeGlass)
-                                .allowsHitTesting(false).accessibilityElement(children: .combine)
+                                .accessibilityElement(children: .combine)
+                                Spacer(minLength: 0)
+                            }.frame(maxWidth: 420).frame(maxWidth: .infinity)
+                                .allowsHitTesting(false)
                             ReaderChromeButton(symbol:bookmarked ? "bookmark.fill" : "bookmark",
                                 label:bookmarked ? L("reader.remove_bookmark") : L("context.bookmark"),
                                 tint:chromeInk,enabled:!annotations.busy,nativeGlass:false) {

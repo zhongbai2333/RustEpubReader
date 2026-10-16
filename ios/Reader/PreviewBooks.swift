@@ -7,15 +7,21 @@ struct LibraryEntry: Codable, Identifiable {
     let path: String
     let coverPath: String?
     let lastChapter: Int
+    let lastChapterTitle: String?
     let lastBlock: Int?
     let lastCharOffset: Int?
     let lastOpened: UInt64
     enum CodingKeys: String, CodingKey {
         case id, title, path
         case coverPath = "cover_path"
+        case lastChapterTitle = "last_chapter_title"
         case lastChapter = "last_chapter", lastBlock = "last_block", lastCharOffset = "last_char_offset", lastOpened = "last_opened"
     }
     var anchor: ReadingAnchor { .init(chapter: lastChapter, block: lastBlock ?? 0, charOffset: lastCharOffset ?? 0) }
+    var readingChapterTitle: String {
+        let title = lastChapterTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return title.isEmpty ? L("ui.chapter", lastChapter + 1) : title
+    }
     var color: Color { Color(red: 0.33, green: 0.31, blue: 0.40) }
 }
 struct BookSpan: Decodable, Equatable { let text: String; let style: String; let link_url: String? }
