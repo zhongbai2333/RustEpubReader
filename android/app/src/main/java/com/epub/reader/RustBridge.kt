@@ -14,6 +14,7 @@ object RustBridge {
         }
     }
 
+    external fun chapterCacheStats(path: String): String?
     external fun openBook(path: String): String?
     external fun getChapter(path: String, chapterIndex: Int): String?
     external fun nativeNote(path: String, chapter: Int, href: String): String?

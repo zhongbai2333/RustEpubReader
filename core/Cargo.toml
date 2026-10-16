@@ -15,7 +15,7 @@ csc = ["libloading"]
 
 [dependencies]
 sys-locale = "0.3.2"
-rbook = { version = "0.7.6", default-features = false }
+rbook = { version = "0.7.6", default-features = false, features = ["threadsafe"] }
 scraper = "0.21"
 ego-tree = "0.9"
 rquickjs = { version = "0.11", default-features = false }

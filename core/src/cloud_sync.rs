@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_BOOK_BYTES: u64 = 20 * 1024 * 1024;
+/// Upper bound for chunk-backed documents; independent of legacy wire limits.
+pub const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CloudBook {
@@ -18,6 +20,8 @@ pub struct DeviceSnapshot {
     pub schema_version: u32,
     pub device_id: String,
     pub books: BTreeMap<String, CloudBook>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub large_books: BTreeMap<String, CloudBook>,
     pub progress: BTreeMap<String, ProgressEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub progress_versions: BTreeMap<String, crate::cloud_progress::ProgressVersion>,
@@ -48,6 +52,7 @@ impl DeviceSnapshot {
             schema_version: SCHEMA_VERSION,
             device_id,
             books: BTreeMap::new(),
+            large_books: BTreeMap::new(),
             progress: BTreeMap::new(),
             progress_versions: BTreeMap::new(),
             lifecycle: BTreeMap::new(),
@@ -58,7 +63,7 @@ impl DeviceSnapshot {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != SCHEMA_VERSION
             || !valid_device_id(&self.device_id)
-            || self.books.len() > 5000
+            || self.books.len().saturating_add(self.large_books.len()) > 5000
             || self.progress.len() > 5000
             || self.progress_versions.len() > 5000
             || self.activity.len() > 5000
@@ -73,6 +78,17 @@ impl DeviceSnapshot {
                 || book.title.len() > 4096
             {
                 return Err("Invalid remote book metadata".into());
+            }
+        }
+        for (hash, book) in &self.large_books {
+            if !valid_hash(hash)
+                || hash != &book.hash
+                || book.size <= MAX_BOOK_BYTES
+                || book.size > MAX_DOCUMENT_BYTES
+                || book.title.len() > 4096
+                || self.books.contains_key(hash)
+            {
+                return Err("Invalid chunked book metadata".into());
             }
         }
         for (hash, p) in &self.progress {
@@ -114,6 +130,11 @@ impl DeviceSnapshot {
         crate::library::archive::merge_states(&mut self.lifecycle, &other.lifecycle);
         for (hash, book) in &other.books {
             self.books
+                .entry(hash.clone())
+                .or_insert_with(|| book.clone());
+        }
+        for (hash, book) in &other.large_books {
+            self.large_books
                 .entry(hash.clone())
                 .or_insert_with(|| book.clone());
         }
@@ -221,6 +242,34 @@ mod tests {
         assert_eq!(a.progress[&"a".repeat(64)].chapter, 3);
         b.device_id = "b".into();
         assert!(a.merge_own(&b).is_err());
+    }
+    #[test]
+    fn large_files_are_optional_metadata_and_do_not_break_v1_progress_readers() {
+        let mut state = DeviceSnapshot::new("device".into());
+        let p = progress(2, 10);
+        state.progress.insert(p.book_hash.clone(), p);
+        let book = CloudBook {
+            hash: "a".repeat(64),
+            title: "Large".into(),
+            size: 21 * 1024 * 1024,
+        };
+        state.large_books.insert(book.hash.clone(), book.clone());
+        state.validate().unwrap();
+        #[derive(Deserialize)]
+        struct Legacy {
+            schema_version: u32,
+            books: BTreeMap<String, CloudBook>,
+            progress: BTreeMap<String, ProgressEntry>,
+        }
+        let legacy: Legacy = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(legacy.schema_version, 1);
+        assert!(legacy.books.is_empty());
+        assert_eq!(legacy.progress.len(), 1);
+        let mut merged = DeviceSnapshot::new("device".into());
+        merged.merge_own(&state).unwrap();
+        assert_eq!(merged.large_books[&book.hash], book);
+        state.books.insert(book.hash.clone(), book);
+        assert!(state.validate().is_err());
     }
     #[test]
     fn journal_round_trips_and_does_not_restore_another_device_identity() {

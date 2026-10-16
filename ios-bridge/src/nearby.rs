@@ -169,7 +169,7 @@ fn apply(
         {
             continue;
         }
-        let parsed = EpubBook::open(&entry.path)?;
+        let parsed = EpubBook::open_lazy(&entry.path)?;
         if parsed.chapters.is_empty() {
             return Err("EPUB has no readable chapters".into());
         }

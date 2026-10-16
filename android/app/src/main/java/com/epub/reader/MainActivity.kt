@@ -552,7 +552,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                                 highlights = vm.bookConfig?.highlights ?: emptyList(),
                                 notes = vm.bookConfig?.notes ?: emptyList(),
                                 corrections = vm.bookConfig?.corrections ?: emptyList(),
-                                chapters = book.chapters.map { it.title },
+                                chapters = book.chapterTitles,
                                 onNavigateToChapter = { ch ->
                                     vm.goToChapter(ch)
                                     vm.showAnnotationsPanel = false

@@ -4,7 +4,7 @@ enum ReaderErrors {
     static func display(_ raw: String) -> String {
         if raw.hasPrefix("无法打开 EPUB 文件:") || raw.hasPrefix("无法读取资源:") { return L("reader.error_epub_read_failed") }
         if raw == "EPUB has no readable chapters" { return L("reader.error_epub_no_readable_chapters") }
-        if raw == "EPUB exceeds the local 100 MiB limit" { return L("reader.error_file_exceeds_limit") }
+        if raw == "EPUB exceeds the local 100 MiB limit" || raw == "EPUB exceeds the local 1 GiB limit" { return L("reader.error_file_exceeds_limit") }
         if raw.contains("rendered content exceeds") { return L("reader.error_content_too_large") }
         if raw == "Cannot copy EPUB into library storage" || raw == "Cannot save downloaded book" { return L("reader.error_save_book_failed") }
         if raw == "Book is no longer in the library" { return L("reader.error_book_not_in_library") }

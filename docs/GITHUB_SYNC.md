@@ -27,8 +27,18 @@ interrupted before the marker was written, rename that incomplete repository
 before retrying. The client never deletes or changes repository visibility.
 
 - `epub-reader.json`: application/schema marker.
-- `books/<sha256>.epub`: immutable EPUB bytes (20 MiB maximum per file).
+- `books/<sha256>.epub`: legacy immutable EPUB bytes, up to 20 MiB.
+- `books-v2/<sha256>.json`: ordered chunk manifest for files above 20 MiB,
+  up to 1 GiB. Each part records its asset ID, byte count and SHA-256.
+- Private draft releases tagged `reader-file-v2-<sha256>`: 8 MiB binary assets
+  for each large file, with a shorter final part. They remain unpublished so
+  repository release immutability cannot prevent repair or permanent deletion.
 - `devices/<device-id>.json`: device-specific book inventory, reading positions and daily reading/listening activity.
+
+The existing private repository and authorization are reused; users configure no
+additional storage. Device snapshots retain schema version 1 and add an optional
+`large_books` inventory. Older clients can exchange progress and small books while
+ignoring this field; large files require an updated client on each device.
 
 EPUB files, reading progress and per-device daily reading/listening activity are
 synchronized. Bookmarks, highlights and notes remain local, along with settings.
@@ -57,13 +67,25 @@ already-running sync. Mobile clients cancel further requests when
 backgrounded, disabled, signed out, or when the account changes. Network
 failures retain local records and retry; missing permissions require renewed
 authorization. GitHub rate-limit delays are respected. Background downloads are
-bounded to 20 attempts / 100 MiB per pass; uploads also have a 20-attempt limit.
+bounded to 20 attempts and 100 MiB of legacy downloads per pass. Chunk downloads
+have a separate 100 MiB budget, shared with large-file archive verification.
+Uploads also have a 20-attempt limit, with a separate 100 MiB budget for newly
+uploaded chunks. These are separate budgets, not a total network-traffic cap.
 Additional batches resume after 15 seconds. A failed book does not stop other
 books: its account/device-specific retry record is saved locally, with exponential
 backoff from 30 seconds up to one hour. **Retry failed books** retries only the
 queued files, after refreshing progress, and still respects GitHub rate limits.
 Completed uploads are retained in the manifest; download failures are cleared
 only after EPUB validation and a successful library save.
+Large transfers retain verified parts across batches, failures and app restarts.
+Uploads reuse verified remote assets and publish a manifest only after all parts
+exist. Downloads use account-scoped disk caches and a streamed assembly; both
+each part and the assembled file must pass size/SHA-256 checks before library
+import. Only the failing or missing parts transfer again. Platform staging and
+archive restoration copy from files rather than allocating an entire large book.
+Signed GitHub asset redirects are restricted to GitHub's asset hosts and never
+receive the repository token. Completed cache files are removed after successful
+import, or after archive verification has finished.
 Downloads are verified by size and SHA-256 before import. Unreadable/oversized
 local books are skipped and counted. Disabling sync or signing out cancels future
 requests without deleting local books or the repository; an already sent request
@@ -90,7 +112,8 @@ uses the original local UUID/config when available and downloads missing EPUBs o
 the next sync.
 
 Permanent deletion publishes a durable tombstone before deleting only the
-hash-named EPUB from the private sync repository. Other updated clients suppress
+hash-named EPUB, or that large file's storage drafts/assets and chunk manifest,
+from the private sync repository. Other updated clients suppress
 stale uploads/downloads and remove local copies on their next sync. Failed cloud
 deletions are retried separately. Deleting a file does not rewrite Git history;
 old commits may retain the bytes. The deletion record remains to prevent stale
@@ -102,7 +125,8 @@ understands lifecycle records and progress revisions for these rules to hold.
 The shelf and sync settings show the same current stage, processed book count
 and per-stage progress. Unknown work uses an indeterminate indicator. Counts
 represent processed files (including attempts), not elapsed-time estimates;
-individual failures remain visible and retryable. iOS device authorization shows
+large-file transfers additionally report verified bytes for the current book.
+Individual failures remain visible and retryable. iOS device authorization shows
 an inline copied confirmation and browser-opening feedback.
 
 `reader_core` exposes the portable schema and the optional `github-sync` API
@@ -119,3 +143,6 @@ repository creation, public/unrelated repository refusal, upload/download hashes
 progress conflicts, cancellation, progress-first ordering, per-book failure
 isolation, persistent retries and rate-limit stopping. Real-account OAuth, remote creation and
 multi-device acceptance require an authorized live run.
+Chunk tests also cover interrupted uploads/downloads, damaged chunks and starter
+assets, untrusted redirects, whole-file integrity, disk-backed import, permanent
+deletion and a 129 MiB file progressing across multiple bounded passes.

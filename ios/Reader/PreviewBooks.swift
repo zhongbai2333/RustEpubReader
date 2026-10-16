@@ -45,14 +45,58 @@ struct NativePresentation: Decodable, Sendable { let styles: [NativeStyle]; let 
 struct BookBlock: Decodable, Equatable { var native_style: NativeStyle? = nil; let type: String; let core_block: Int?; let core_char_offset: Int?; let level: Int?; let spans: [BookSpan]?; let data: String?; let alt: String? }
 struct BookChapter: Decodable, Equatable { let title: String; let blocks: [BookBlock] }
 struct BookTOC: Decodable { let title: String; let chapter_index: Int }
+// The chapter catalogue stays small; decoded bodies are retained in a bounded
+// cache shared by the reader, search and speech without copying the publication.
+final class BookChapterSource: @unchecked Sendable {
+    let client: CoreClient; let id: String
+    private let lock = NSLock()
+    private var cache: [Int: BookChapter] = [:]
+    private var order: [Int] = []
+    private var costs: [Int:Int] = [:]
+    init(client: CoreClient, id: String) { self.client = client; self.id = id }
+    func chapter(_ index: Int) throws -> BookChapter {
+        lock.lock(); defer { lock.unlock() }
+        if let value = cache[index] { order.removeAll {$0 == index}; order.append(index); return value }
+        let value: BookChapter = try client.call("chapter", ["id":id,"chapter":index])
+        cache[index] = value; order.append(index)
+        costs[index]=value.blocks.reduce(0) {sum,block in sum+192+(block.data?.utf8.count ?? 0)+(block.spans ?? []).reduce(0) {$0+$1.text.utf8.count+96} }
+        while order.count > 1 && (order.count > 32 || costs.values.reduce(0,+)>16*1024*1024) {
+            let oldest=order.removeFirst();cache.removeValue(forKey:oldest);costs.removeValue(forKey:oldest)
+        }
+        return value
+    }
+    var residentCount: Int { lock.lock(); defer {lock.unlock()}; return cache.count }
+}
 struct PreviewBook: Decodable, Identifiable {
     let entry: LibraryEntry
+    // Catalogue entries contain titles, with no body for a chapter-backed book.
     let chapters: [BookChapter]
     let toc: [BookTOC]
     let cover: String?
+    let chapterSource: BookChapterSource?
     var id: String { entry.id }
     var title: String { entry.title }
     var chapterTitles: [String] { chapters.map(\.title) }
+    var loadsChapters: Bool { chapterSource != nil }
+    func chapter(at index: Int) throws -> BookChapter {
+        guard chapters.indices.contains(index) else { throw CoreFailure(message:"Reading chapter is out of range") }
+        return try chapterSource?.chapter(index) ?? chapters[index]
+    }
+    init(entry: LibraryEntry, chapters: [BookChapter], toc: [BookTOC], cover: String?) {
+        self.entry=entry;self.chapters=chapters;self.toc=toc;self.cover=cover;chapterSource=nil
+    }
+    enum CodingKeys: String,CodingKey {case entry,chapters,toc,cover;case loading="chapter_loading"}
+    init(from decoder: Decoder) throws {
+        let values=try decoder.container(keyedBy:CodingKeys.self)
+        entry=try values.decode(LibraryEntry.self,forKey:.entry)
+        chapters=try values.decode([BookChapter].self,forKey:.chapters)
+        toc=try values.decode([BookTOC].self,forKey:.toc)
+        cover=try values.decodeIfPresent(String.self,forKey:.cover)
+        if try values.decodeIfPresent(Bool.self,forKey:.loading) == true {
+            guard let client=decoder.userInfo[.readerCoreClient] as? CoreClient else {throw CoreFailure(message:"Missing chapter source")}
+            chapterSource=BookChapterSource(client:client,id:entry.id)
+        } else {chapterSource=nil}
+    }
 }
 struct CloudProgress: Decodable, Identifiable {
     let book_hash: String
@@ -80,6 +124,11 @@ struct ArchivedEntry: Decodable, Identifiable {
 }
 struct SyncMeter: Decodable {
     let phase: String; let completed: Int; let total: Int; let title: String
+    var bytes: Bool? = nil
+    var amount: String {
+        if bytes == true {return ByteCountFormatter.string(fromByteCount:Int64(completed),countStyle:.file) + " / " + ByteCountFormatter.string(fromByteCount:Int64(total),countStyle:.file)}
+        return L("cloud.processed",completed,total)
+    }
     var label: String {
         switch phase {
         case "progress": L("cloud.phase_progress")

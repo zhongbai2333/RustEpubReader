@@ -30,11 +30,14 @@ enum SpeechSource: String { case online, system }
     private var utteranceUnit: SpeechTextUnit?
     private var observers: [NSObjectProtocol] = []
     private var correctionKeys: [String]?
+    private var chapterCorrections: [ReaderCorrection] = []
+    private var speechChapter: Int?
+    private var chapterFailure: Error?
     private let defaults: UserDefaults
     private let synthesisOverride: ((String, String, Double) async throws -> SpeechAudio)?
     var hasSession: Bool { state == .preparing || state == .playing || state == .paused || state == .failed }
-    var canPrevious: Bool { previousIndex != nil }
-    var canNext: Bool { nextIndex != nil }
+    var canPrevious: Bool { previousIndex != nil || (book.loadsChapters && (speechChapter ?? 0) > 0) }
+    var canNext: Bool { nextIndex != nil || (book.loadsChapters && (speechChapter ?? book.chapters.count)+1 < book.chapters.count) }
     var preview: String { utteranceUnit?.text ?? (units.indices.contains(index) ? units[index].text : "") }
     var chapterTitle: String {
         let chapter = highlight?.start.chapter ?? (units.indices.contains(index) ? units[index].anchor.chapter : 0)
@@ -89,8 +92,15 @@ enum SpeechSource: String { case online, system }
         let restore = highlight?.start
         let active = state == .playing || state == .preparing || state == .paused
         let wasPaused = paused
-        let sources = book.chapters.enumerated().flatMap { chapter, content in
-            content.blocks.enumerated().compactMap { index, block -> SpeechSourceBlock? in
+        chapterCorrections=corrections
+        units=makeUnits(indices:book.loadsChapters ? speechChapter.map {[$0]} ?? [] : Array(book.chapters.indices),corrections:corrections)
+        if active, let restore { start(at: restore, remainPaused: wasPaused) }
+    }
+    private func makeUnits(indices:[Int],corrections:[ReaderCorrection]) -> [SpeechTextUnit] {
+        let sources = indices.flatMap { chapter -> [SpeechSourceBlock] in
+            let content:BookChapter
+            do {content=try book.chapter(at:chapter)} catch {chapterFailure=error;return []}
+            return content.blocks.enumerated().compactMap { index, block -> SpeechSourceBlock? in
                 guard block.type == "Paragraph" || block.type == "Heading" else { return nil }
                 var scalars = Array((block.spans ?? []).map(\.text).joined().unicodeScalars)
                 let blockIndex = block.core_block ?? index, base = block.core_char_offset ?? 0
@@ -104,8 +114,19 @@ enum SpeechSource: String { case online, system }
                 return .init(text: String(String.UnicodeScalarView(scalars)), anchor: .init(chapter: chapter, block: blockIndex, charOffset: base))
             }
         }
-        units = SpeechText.units(sources, from: .init(chapter: 0))
-        if active, let restore { start(at: restore, remainPaused: wasPaused) }
+        return SpeechText.units(sources,from:.init(chapter:0))
+    }
+    private func prepareChapter(_ chapter:Int, direction:Int = 1) {
+        guard book.loadsChapters else {return}
+        chapterFailure=nil
+        var next=chapter
+        while book.chapters.indices.contains(next) {
+            speechChapter=next;units=makeUnits(indices:[next],corrections:chapterCorrections)
+            if let chapterFailure {fail(chapterFailure);return}
+            if !units.isEmpty {return}
+            next += direction
+        }
+        units=[]
     }
 
     func startingIndex(at anchor: ReadingAnchor) -> Int? {
@@ -115,14 +136,16 @@ enum SpeechSource: String { case online, system }
         }
     }
     func preview(at anchor: ReadingAnchor) -> String {
-        guard let index = startingIndex(at: anchor) else { return "" }
-        let unit = units[index]
+        let available = book.loadsChapters ? makeUnits(indices:[anchor.chapter],corrections:chapterCorrections) : units
+        guard let unit = available.first(where: {$0.end.chapter > anchor.chapter || $0.end.chapter == anchor.chapter && ($0.end.block > anchor.block || $0.end.block == anchor.block && $0.end.charOffset > anchor.charOffset)}) else {return ""}
         return SpeechText.units([.init(text: unit.text, anchor: unit.anchor)], from: anchor).first?.text ?? unit.text
     }
     func title(at anchor: ReadingAnchor) -> String {
         book.chapters.indices.contains(anchor.chapter) ? book.chapters[anchor.chapter].title : book.title
     }
     func start(at anchor: ReadingAnchor, remainPaused: Bool = false) {
+        if book.loadsChapters && speechChapter != anchor.chapter { prepareChapter(anchor.chapter) }
+        if chapterFailure != nil {return}
         guard let target = startingIndex(at: anchor) else { stop(); state = .finished; return }
         play(target, from: anchor, remainPaused: remainPaused)
     }
@@ -147,8 +170,17 @@ enum SpeechSource: String { case online, system }
         paused = false; highlight = nil; utteranceUnit = nil; state = .idle
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
-    func previous() { if let target = previousIndex { play(target, remainPaused: paused) } }
-    func next() { if let target = nextIndex { play(target, remainPaused: paused) } }
+    func previous() {
+        if let target=previousIndex {play(target,remainPaused:paused)}
+        else if book.loadsChapters, let chapter=speechChapter, chapter > 0 {
+            prepareChapter(chapter-1,direction:-1)
+            if let last=units.last {play(units.firstIndex(where: {$0.anchor.block == last.anchor.block}) ?? 0,remainPaused:paused)}
+        }
+    }
+    func next() {
+        if let target=nextIndex {play(target,remainPaused:paused)}
+        else if book.loadsChapters, let chapter=speechChapter, chapter+1 < book.chapters.count {prepareChapter(chapter+1);play(0,remainPaused:paused)}
+    }
     func follow() { following = true }
     func detach() { if hasSession { following = false } }
     func setSource(_ value: SpeechSource) { source = value; defaults.set(value.rawValue, forKey: "reader.speech.source"); restart() }
@@ -181,6 +213,10 @@ enum SpeechSource: String { case online, system }
         return try await SystemSpeech.synthesize(text: text, voice: voice, rate: rate)
     }
     private func play(_ target: Int, from anchor: ReadingAnchor? = nil, remainPaused: Bool = false) {
+        if book.loadsChapters, target >= units.count, let chapter=speechChapter, chapter+1 < book.chapters.count {
+            prepareChapter(chapter+1);play(0,remainPaused:remainPaused);return
+        }
+        if chapterFailure != nil {return}
         guard units.indices.contains(target) else { stop(); state = .finished; return }
         let promoted = prefetchIndex == target && anchor == nil ? prefetch : nil
         if promoted != nil { prefetch = nil; prefetchIndex = nil }

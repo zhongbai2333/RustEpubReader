@@ -75,8 +75,10 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
 - Owned UUID EPUBs, per-book configs, index and sync journal live under
   `Library/Application Support/ReaderLibrary`. Documents is an optional Files
   transfer area, not the managed library. Re-import uses SHA-256 identity and keeps
-  existing position. Local compressed-file limit is 100 MiB; rendered chapter
-  payload limit is 64 MiB. The distinct cloud book limit is 20 MiB.
+  existing position. Local compressed-file limit is 1 GiB; each rendered chapter
+  payload remains bounded at 64 MiB. Open returns a body-free catalogue; decoded
+  chapter bodies use a bounded cache. Native stylesheet/script structures are
+  created only on demand.
 - The owned JSON C ABI in `ios-bridge` has an explicit C header and matching free
   function. Swift frees each Rust result exactly once. Errors return an envelope;
   debug unwinds are caught before FFI. Release inherits the workspace's panic-abort
@@ -111,10 +113,14 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
   destination. `repo` access is broader than one repository; purpose-first UI explains the fixed sync destination and offers the full scope disclosure before and during authorization.
   Sign-out removes this app's local Keychain credential and stops sync; it does not
   revoke the OAuth App's grant on GitHub or delete a remote repository.
-- Reuses `github_sync`/`cloud_sync`: private marked `EpubReaderInfo`, EPUB files and
-  reading progress first, then background EPUB transfers, 20 MiB/book, bounded
-  upload/download batches, size/hash checks,
-  per-device journal and SHA compare-and-set retries. Public or unmarked unrelated
+- Reuses `github_sync`/`cloud_sync` and the private marked `EpubReaderInfo`.
+  Reading progress is reconciled before background EPUB transfers, up to 1 GiB
+  per book, with bounded batches and size/hash checks. Files above 20 MiB use
+  8 MiB private draft-release assets and account-scoped resumable chunk caches;
+  v1 blobs stay readable. Large-file metadata is optional so older clients can
+  still exchange progress. Files are staged on disk and promoted only after
+  complete hash verification, with per-device journals and SHA compare-and-set
+  retries. Public or unmarked unrelated
   repositories are rejected. Annotations and settings are not in this schema. Daily reading/listening activity is included in the device snapshot; see [reading activity](../docs/READING_ACTIVITY.md).
 - Failed books have a persistent account/device retry queue and do not prevent
   other books from completing. A manual retry targets queued files after refreshing

@@ -1,6 +1,6 @@
 use super::*;
 
-fn listed(snapshot: &DeviceSnapshot) -> Vec<Step> {
+pub(super) fn listed(snapshot: &DeviceSnapshot) -> Vec<Step> {
     vec![
         step(
             "GET",
@@ -17,7 +17,7 @@ fn listed(snapshot: &DeviceSnapshot) -> Vec<Step> {
         ),
     ]
 }
-fn empty_devices() -> Step {
+pub(super) fn empty_devices() -> Step {
     step(
         "GET",
         "/repos/tester/EpubReaderInfo/contents/devices",

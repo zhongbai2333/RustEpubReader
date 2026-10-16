@@ -161,7 +161,7 @@ impl SyncJournal {
     }
 }
 pub fn validate_position(book: &crate::epub::EpubBook, progress: &ProgressEntry) -> bool {
-    let Some(chapter) = book.chapters.get(progress.chapter) else {
+    let Ok(chapter) = book.chapter(progress.chapter) else {
         return false;
     };
     if chapter.blocks.is_empty() {

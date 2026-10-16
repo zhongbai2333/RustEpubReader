@@ -84,6 +84,7 @@ data class ChapterReviewEntry(
 data class BookMetadataDto(
     val title: String,
     val chapterCount: Int,
+    val chapterTitles: List<String> = emptyList(),
     val toc: List<TocEntryDto>,
     val hasCover: Boolean,
     @SerialName("chapterReviews") val chapterReviews: List<ChapterReviewEntry> = emptyList(),
@@ -103,15 +104,17 @@ data class EpubBook(
     val title: String,
     var chapters: List<Chapter>,
     val toc: List<Pair<String, Int>>,
-    val coverData: ByteArray? = null
+    val coverData: ByteArray? = null,
+    val chapterTitles: List<String> = emptyList()
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is EpubBook) return false
-        return title == other.title && chapters == other.chapters
+        // Publication bodies are lazy: structural equality would fetch every chapter.
+        return title == other.title && chapters === other.chapters
     }
 
-    override fun hashCode(): Int = title.hashCode() * 31 + chapters.hashCode()
+    override fun hashCode(): Int = title.hashCode() * 31 + System.identityHashCode(chapters)
 }
 
 /** 书库条目 — 用于持久化 */

@@ -69,9 +69,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Global cache for parsed EPUB books to prevent re-parsing the ZIP file and HTML
-// every time Java requests a chapter or cover. Cache size is 3 to prevent OOM.
+// every time Java requests a chapter. Keep only the current publication: a
+// single very large novel can otherwise multiply memory use across book opens.
 static BOOK_CACHE: Lazy<Mutex<LruCache<String, Arc<EpubBook>>>> =
-    Lazy::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(3).unwrap())));
+    Lazy::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(1).unwrap())));
 
 fn get_book(path: &str) -> std::result::Result<Arc<EpubBook>, String> {
     let mut cache = BOOK_CACHE
@@ -82,7 +83,13 @@ fn get_book(path: &str) -> std::result::Result<Arc<EpubBook>, String> {
     }
 
     // We need to parse it if not in cache
-    match EpubBook::open(path) {
+    match EpubBook::open_cached(
+        path,
+        &std::path::Path::new(path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(".chapter-index"),
+    ) {
         Ok(book) => {
             let arc_book = Arc::new(book);
             cache.put(path.to_string(), arc_book.clone());
@@ -161,6 +168,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_openBook(
     let json = serde_json::json!({
         "title": book.title,
         "chapterCount": book.chapters.len(),
+        "chapterTitles": book.chapters.iter().map(|ch| &ch.title).collect::<Vec<_>>(),
         "toc": book.toc.iter().map(|t| serde_json::json!({
             "title": t.title,
             "chapterIndex": t.chapter_index,
@@ -196,7 +204,11 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
         return std::ptr::null_mut();
     }
 
-    let chapter = &book.chapters[idx];
+    let loaded = match book.loaded_chapter(idx) {
+        Ok(v) => v,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let chapter = &loaded.chapter;
     let blocks: Vec<serde_json::Value> = chapter
         .blocks
         .iter()
@@ -251,7 +263,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
         "title": chapter.title,
         "sourceHref": chapter.source_href,
         "blocks": blocks,
-        "images": book.supplemental_images.get(&idx).into_iter().flatten().map(|image| serde_json::json!({
+        "images": loaded.images.iter().map(|image| serde_json::json!({
             "block": image.block, "after": image.after, "data": base64_encode(&image.data), "alt": image.alt
         })).collect::<Vec<_>>(),
     });
@@ -1639,7 +1651,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_searchBook(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let results = reader_core::search::search_book(&book, &query, false);
+    let results = match reader_core::search::search_book_checked(&book, &query, false, || false) {
+        Ok(results) => results,
+        Err(_) => return std::ptr::null_mut(),
+    };
     let json: Vec<_> = results
         .iter()
         .map(|r| {
@@ -1980,9 +1995,9 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_collectCscSamples(
 
     let mut lines = String::new();
     for rec in &accepted {
-        let chapter = match book.chapters.get(rec.chapter) {
-            Some(ch) => ch,
-            None => continue,
+        let chapter = match book.chapter(rec.chapter) {
+            Ok(ch) => ch,
+            Err(_) => continue,
         };
         let block = match chapter.blocks.get(rec.block_idx) {
             Some(b) => b,
@@ -2116,10 +2131,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_nativePresentation
         let policy =
             serde_json::from_value(serde_json::json!(policy)).map_err(|e| e.to_string())?;
         let book = get_book(&path)?;
-        let chapter = book
-            .chapters
-            .get(chapter as usize)
-            .ok_or("Invalid chapter")?;
+        let chapter = book.chapter(chapter as usize)?;
         serde_json::to_string(
             &chapter
                 .native_document
@@ -2193,4 +2205,25 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_githubSyncStatus(
     env.new_string(serde_json::to_string(&reader_core::github_sync::sync_meter(&root)).unwrap())
         .map(|s| s.into_raw())
         .unwrap_or(std::ptr::null_mut())
+}
+
+/// Bounded cache counters for renderer/performance verification.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_chapterCacheStats(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+) -> jstring {
+    let result = (|| -> std::result::Result<String, String> {
+        let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
+        let stats = get_book(&path)?.chapter_cache_stats();
+        Ok(
+            serde_json::json!({"resident":stats.0,"body_loads":stats.1,"index_probes":stats.2})
+                .to_string(),
+        )
+    })();
+    match result {
+        Ok(value) => jni_string_or_null!(env, value),
+        Err(_) => std::ptr::null_mut(),
+    }
 }

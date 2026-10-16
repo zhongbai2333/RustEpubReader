@@ -161,6 +161,7 @@ pub fn complete_transfer(
     }
     let mut queue = RetryQueue::load(root, owner, device)?;
     queue.succeeded(direction, hash)?;
+    chunks::cleanup(root, owner, hash);
     Ok(queue.failures.into_values().collect())
 }
 
@@ -185,7 +186,7 @@ pub fn sync_phase(
             archive
                 .retained()
                 .into_iter()
-                .filter(|(info, _)| info.size <= MAX_BOOK_BYTES)
+                .filter(|(info, _)| info.size <= MAX_DOCUMENT_BYTES)
                 .map(|(info, path)| LocalBook { info, path }),
         );
     }
@@ -338,6 +339,14 @@ fn upload(
     }
     Ok(false)
 }
+fn data_dir_for(retries: &RetryQueue) -> &str {
+    retries
+        .path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.to_str())
+        .expect("Validated retry directory")
+}
 pub(super) fn files(
     api: &Api,
     own: &mut DeviceSnapshot,
@@ -353,7 +362,7 @@ pub(super) fn files(
         if snapshot.device_id == own.device_id {
             own.merge_own(snapshot)?;
         }
-        for (hash, info) in &snapshot.books {
+        for (hash, info) in snapshot.books.iter().chain(&snapshot.large_books) {
             known.entry(hash.clone()).or_insert_with(|| info.clone());
         }
     }
@@ -432,7 +441,11 @@ pub(super) fn files(
         if !retries.due("delete", &record.book.hash, retry_failed) {
             continue;
         }
-        match api.delete_book(&record.book.hash) {
+        match if record.book.size > MAX_BOOK_BYTES {
+            chunks::delete(api, &record.book.hash)
+        } else {
+            api.delete_book(&record.book.hash)
+        } {
             Ok(()) => {
                 retries.succeeded("delete", &record.book.hash)?;
                 retries
@@ -440,6 +453,7 @@ pub(super) fn files(
                     .insert(record.book.hash.clone(), record.revision);
                 retries.save()?;
                 own.books.remove(&record.book.hash);
+                own.large_books.remove(&record.book.hash);
                 known.remove(&record.book.hash);
             }
             Err(message) if message == "Sync cancelled" || global_error(&message) => {
@@ -463,6 +477,7 @@ pub(super) fn files(
     let mut remaining = delete_remaining;
     let mut changed = false;
     let mut terminal_error = None;
+    let mut upload_budget = 100 * 1024 * 1024;
     for book in books {
         if api.cancel.load(Ordering::SeqCst) {
             return Err("Sync cancelled".into());
@@ -495,11 +510,38 @@ pub(super) fn files(
                 );
             }
         }
-        match upload(api, &book, &known) {
-            Ok(wrote) => {
+        let outcome = if book.info.size > MAX_BOOK_BYTES {
+            if !crate::cloud_sync::valid_hash(&book.info.hash)
+                || book.info.size > MAX_DOCUMENT_BYTES
+                || book.info.title.len() > 4096
+            {
+                Err("Invalid local book".into())
+            } else if let Some(remote) = known.get(&book.info.hash) {
+                if remote.size == book.info.size {
+                    Ok(Some(false))
+                } else {
+                    Err("Remote book size mismatch".into())
+                }
+            } else {
+                chunks::upload(api, &book, &mut upload_budget)
+            }
+        } else {
+            upload(api, &book, &known).map(Some)
+        };
+        match outcome {
+            Ok(None) => {
+                remaining += 1;
+                continue;
+            }
+            Ok(Some(wrote)) => {
                 uploaded += usize::from(wrote);
-                changed |= !own.books.contains_key(&book.info.hash);
-                own.books.insert(book.info.hash.clone(), book.info.clone());
+                let index = if book.info.size > MAX_BOOK_BYTES {
+                    &mut own.large_books
+                } else {
+                    &mut own.books
+                };
+                changed |= !index.contains_key(&book.info.hash);
+                index.insert(book.info.hash.clone(), book.info.clone());
                 known.insert(book.info.hash.clone(), book.info.clone());
                 retries.succeeded("upload", &book.info.hash)?;
             }
@@ -537,12 +579,13 @@ pub(super) fn files(
         .filter(|r| {
             r.state == crate::library::archive::BookState::Archived
                 && local.contains(&r.book.hash)
-                && r.book.size <= MAX_BOOK_BYTES
+                && r.book.size <= MAX_DOCUMENT_BYTES
                 && retries.due("archive", &r.book.hash, retry_failed)
         })
         .cloned()
         .collect();
     let mut confirmed_archives = BTreeSet::new();
+    let mut download_budget = 100 * 1024 * 1024;
     for (index, record) in archives.iter().enumerate() {
         if index >= 20 || terminal_error.is_some() {
             remaining += 1;
@@ -555,6 +598,29 @@ pub(super) fn files(
                 archives.len().min(20),
                 &record.book.title,
             );
+        }
+        if record.book.size > MAX_BOOK_BYTES {
+            match chunks::download(
+                api,
+                &record.book,
+                data_dir_for(retries),
+                &mut download_budget,
+            ) {
+                Ok(Some(_)) => {
+                    confirmed_archives.insert(record.book.hash.clone());
+                    retries.succeeded("archive", &record.book.hash)?;
+                    chunks::cleanup(data_dir_for(retries), &api.owner, &record.book.hash);
+                }
+                Ok(None) => remaining += 1,
+                Err(message) if message == "Sync cancelled" => return Err(message),
+                Err(message) => {
+                    if global_error(&message) {
+                        terminal_error = Some(message.clone());
+                    }
+                    retries.failed("archive", &record.book, message)?;
+                }
+            }
+            continue;
         }
         let checked = (|| {
             let bytes = api
@@ -611,7 +677,7 @@ pub(super) fn files(
             continue;
         }
         if attempted >= 20
-            || total_bytes + info.size > 100 * 1024 * 1024
+            || (info.size <= MAX_BOOK_BYTES && total_bytes + info.size > 100 * 1024 * 1024)
             || terminal_error.is_some()
         {
             remaining += 1;
@@ -629,6 +695,25 @@ pub(super) fn files(
                 &info.title,
             );
         }
+        if info.size > MAX_BOOK_BYTES {
+            match chunks::download(api, &info, data_dir_for(retries), &mut download_budget) {
+                Ok(Some(path)) => downloaded.push(DownloadedBook {
+                    info: info.clone(),
+                    bytes: Vec::new(),
+                    path: Some(path),
+                }),
+                Ok(None) => remaining += 1,
+                Err(message) if message == "Sync cancelled" => return Err(message),
+                Err(message) => {
+                    if global_error(&message) {
+                        terminal_error = Some(message.clone());
+                    }
+                    retries.failed("download", &info, message)?;
+                }
+            }
+            download_completed += 1;
+            continue;
+        }
         let result = (|| {
             let bytes = api
                 .read(&format!("books/{hash}.epub"), MAX_BOOK_BYTES)?
@@ -641,7 +726,11 @@ pub(super) fn files(
         match result {
             Ok(bytes) => {
                 total_bytes += info.size;
-                downloaded.push(DownloadedBook { info, bytes });
+                downloaded.push(DownloadedBook {
+                    info,
+                    bytes,
+                    path: None,
+                });
             }
             Err(message) => {
                 if message == "Sync cancelled" {

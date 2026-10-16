@@ -5,7 +5,7 @@ use jni::{
     JNIEnv,
 };
 use reader_core::{
-    cloud_sync::{valid_hash, CloudBook, DeviceSnapshot, SyncJournal, MAX_BOOK_BYTES},
+    cloud_sync::{valid_hash, CloudBook, DeviceSnapshot, SyncJournal, MAX_DOCUMENT_BYTES},
     epub::EpubBook,
     github_sync::{
         complete_transfer, record_transfer_failure, sync_phase, LocalBook, SyncPhase,
@@ -141,7 +141,7 @@ fn run(
             skipped += 1;
             continue;
         };
-        if metadata.len() > MAX_BOOK_BYTES {
+        if metadata.len() > MAX_DOCUMENT_BYTES {
             skipped += 1;
             continue;
         }
@@ -200,8 +200,9 @@ fn run(
         let staged = (|| {
             std::fs::create_dir_all(path.parent().unwrap())
                 .map_err(|_| "Cannot create sync staging directory")?;
-            std::fs::write(&path, &book.bytes).map_err(|_| "Cannot stage downloaded book")?;
-            EpubBook::open(&path).map_err(|_| "Downloaded file is not a valid EPUB")?;
+            book.save_to(&path)?;
+            EpubBook::open_cached(&path, &PathBuf::from(data_dir).join(".cache/chapter-index"))
+                .map_err(|_| "Downloaded file is not a valid EPUB")?;
             Ok::<_, String>(())
         })();
         if let Err(error) = staged {
@@ -281,14 +282,18 @@ fn apply(
                 {
                     return Err("Staged book integrity check failed".into());
                 }
-                EpubBook::open(&staged)?;
+                EpubBook::open_cached(
+                    &staged,
+                    &PathBuf::from(data_dir).join(".cache/chapter-index"),
+                )?;
                 let previous = library.clone();
-                let entry = if let Some(restored) = reader_core::library::archive::restore_download(
-                    data_dir,
-                    &mut library,
-                    &book.info.hash,
-                    &std::fs::read(&staged).map_err(|_| "Cannot read staged book")?,
-                )? {
+                let entry = if let Some(restored) =
+                    reader_core::library::archive::restore_download_file(
+                        data_dir,
+                        &mut library,
+                        &book.info.hash,
+                        &staged,
+                    )? {
                     restored
                 } else {
                     library.add_or_update(
@@ -360,7 +365,7 @@ fn apply(
                     != (p.chapter, p.block, p.char_offset)
             });
         if changed
-            && !EpubBook::open(path)
+            && !EpubBook::open_cached(path, &PathBuf::from(data_dir).join(".cache/chapter-index"))
                 .is_ok_and(|book| reader_core::cloud_progress::validate_position(&book, p))
         {
             continue;

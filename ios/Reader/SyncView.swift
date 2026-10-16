@@ -136,7 +136,7 @@ struct SyncProgressContent: View {
                 Text(meter.label).font(compact ? .caption2 : .subheadline).foregroundStyle(.secondary)
                 if meter.total > 0 {
                     ProgressView(value: Double(meter.completed), total: Double(meter.total))
-                    Text(L("cloud.processed", meter.completed, meter.total)).font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                    Text(meter.amount).font(.caption2).monospacedDigit().foregroundStyle(.secondary)
                 }
                 if !compact && !meter.title.isEmpty { Text(meter.title).font(.caption).lineLimit(2).foregroundStyle(.secondary) }
             } else { Text(LM(account.syncStatus)).font(.caption).foregroundStyle(.secondary) }

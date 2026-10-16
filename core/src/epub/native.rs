@@ -127,8 +127,165 @@ struct NativeNode {
     #[serde(default)]
     changed: Option<String>,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+// Share one archive and bounded stylesheet/script cache. Only visited chapters
+// build DOM bindings and native rules; chapter-backed books preserve legacy coordinates.
+#[derive(Debug)]
+pub(crate) struct NativeResources {
+    epub: std::sync::Mutex<std::sync::Arc<rbook::epub::Epub>>,
+    cache: std::sync::Mutex<(HashMap<String, Option<String>>, usize)>,
+}
+impl NativeResources {
+    pub(crate) fn new(epub: std::sync::Arc<rbook::epub::Epub>) -> Self {
+        Self {
+            epub: std::sync::Mutex::new(epub),
+            cache: Default::default(),
+        }
+    }
+    pub(crate) fn relocate(&self, path: &std::path::Path) -> Result<(), String> {
+        let epub =
+            rbook::epub::Epub::open(path).map_err(|_| "Cannot open managed EPUB resources")?;
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        *self.epub.lock().unwrap_or_else(|e| e.into_inner()) = std::sync::Arc::new(epub);
+        cache.0.clear();
+        cache.1 = 0;
+        Ok(())
+    }
+    fn read(&self, path: &str) -> Option<String> {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(value) = cache.0.get(path) {
+            return value.clone();
+        }
+        let value = super::parser::read_bounded(
+            &self.epub.lock().unwrap_or_else(|e| e.into_inner()),
+            path,
+            8 * 1024 * 1024,
+        )
+        .ok()
+        .and_then(|v| String::from_utf8(v).ok());
+        let bytes = value.as_ref().map_or(0, String::len);
+        if cache.0.len() < 128 && cache.1.saturating_add(bytes) <= 8 * 1024 * 1024 {
+            cache.1 += bytes;
+            cache.0.insert(path.into(), value.clone());
+        }
+        value
+    }
+}
+#[derive(Clone, Debug)]
+enum BindingSource {
+    Text {
+        anchor: Option<String>,
+        text: String,
+    },
+    Image,
+    Other,
+}
+impl BindingSource {
+    fn from_block(block: &ContentBlock) -> Self {
+        match block {
+            ContentBlock::Paragraph {
+                anchor_id, spans, ..
+            }
+            | ContentBlock::Heading {
+                anchor_id, spans, ..
+            } => Self::Text {
+                anchor: anchor_id.clone(),
+                text: spans.iter().map(|s| s.text.as_str()).collect(),
+            },
+            ContentBlock::Image { .. } => Self::Image,
+            _ => Self::Other,
+        }
+    }
+}
+#[derive(Debug)]
+struct NativeSource {
+    html: String,
+    path: String,
+    blocks: Vec<BindingSource>,
+    resources: std::sync::Arc<NativeResources>,
+}
+#[derive(Clone, Debug, Default)]
 pub struct NativeDocument {
+    parsed: std::sync::Arc<std::sync::OnceLock<ParsedNativeDocument>>,
+    source: std::sync::Arc<std::sync::Mutex<Option<NativeSource>>>,
+}
+impl NativeDocument {
+    pub fn parse(
+        html: &str,
+        path: &str,
+        blocks: &[ContentBlock],
+        read: impl FnMut(&str) -> Option<String>,
+    ) -> Self {
+        Self::ready(ParsedNativeDocument::parse(html, path, blocks, read))
+    }
+    fn ready(value: ParsedNativeDocument) -> Self {
+        Self {
+            parsed: std::sync::Arc::new(std::sync::OnceLock::from(value)),
+            source: Default::default(),
+        }
+    }
+    pub(crate) fn deferred(
+        html: String,
+        path: String,
+        blocks: &[ContentBlock],
+        resources: std::sync::Arc<NativeResources>,
+    ) -> Self {
+        Self {
+            parsed: Default::default(),
+            source: std::sync::Arc::new(std::sync::Mutex::new(Some(NativeSource {
+                html,
+                path,
+                blocks: blocks.iter().map(BindingSource::from_block).collect(),
+                resources,
+            }))),
+        }
+    }
+    pub(crate) fn relocate_source(&self, path: &std::path::Path) -> Result<bool, String> {
+        let resources = self
+            .source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|source| source.resources.clone());
+        if let Some(resources) = resources {
+            resources.relocate(path)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    pub fn is_materialized(&self) -> bool {
+        self.parsed.get().is_some()
+    }
+}
+impl std::ops::Deref for NativeDocument {
+    type Target = ParsedNativeDocument;
+    fn deref(&self) -> &Self::Target {
+        self.parsed.get_or_init(|| {
+            let source = self.source.lock().unwrap_or_else(|e| e.into_inner()).take();
+            source.map_or_else(ParsedNativeDocument::default, |source| {
+                ParsedNativeDocument::parse_sources(
+                    &source.html,
+                    &source.path,
+                    &source.blocks,
+                    |path| source.resources.read(path),
+                    &Html::parse_document(&source.html),
+                )
+            })
+        })
+    }
+}
+impl Serialize for NativeDocument {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        std::ops::Deref::deref(self).serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for NativeDocument {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        ParsedNativeDocument::deserialize(decoder).map(Self::ready)
+    }
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ParsedNativeDocument {
     html: String,
     nodes: Vec<NativeNode>,
     bindings: Vec<Option<usize>>,
@@ -198,8 +355,10 @@ fn stylesheet(
     if depth > 4 || source.len() > 512 * 1024 {
         return String::new();
     }
-    let imports =
-        regex::Regex::new(r#"@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?\s*;"#).unwrap();
+    static IMPORTS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?\s*;"#).unwrap()
+    });
+    let imports = &*IMPORTS;
     let mut output = String::new();
     for caps in imports.captures_iter(source) {
         if let Some(path) = resolve(path, &caps[1]) {
@@ -217,7 +376,7 @@ fn stylesheet(
 // Every queue is in DOM order. Removing already-used fronts is amortized linear,
 // including books with thousands of identical paragraphs or duplicate anchor IDs.
 fn bind_blocks(
-    blocks: &[ContentBlock],
+    blocks: &[BindingSource],
     nodes: &[NativeNode],
     texts: &[String],
 ) -> Vec<Option<usize>> {
@@ -296,17 +455,9 @@ fn bind_blocks(
         .iter()
         .map(|block| {
             let selected = match block {
-                ContentBlock::Paragraph {
-                    anchor_id, spans, ..
-                }
-                | ContentBlock::Heading {
-                    anchor_id, spans, ..
-                } => {
-                    let source =
-                        compact(&spans.iter().map(|s| s.text.as_str()).collect::<String>());
-                    let mut candidate = anchor_id
-                        .as_deref()
-                        .and_then(|id| first(&mut ids, id, &used));
+                BindingSource::Text { anchor, text } => {
+                    let source = compact(text);
+                    let mut candidate = anchor.as_deref().and_then(|id| first(&mut ids, id, &used));
                     let mut take = |value: Option<usize>| {
                         if let Some(value) = value {
                             candidate = Some(candidate.map_or(value, |old| old.min(value)));
@@ -335,7 +486,7 @@ fn bind_blocks(
                     }
                     candidate
                 }
-                ContentBlock::Image { .. } => {
+                BindingSource::Image => {
                     while images.front().is_some_and(|i| used[*i]) {
                         images.pop_front();
                     }
@@ -360,7 +511,7 @@ fn bind_blocks(
         .collect()
 }
 
-impl NativeDocument {
+impl ParsedNativeDocument {
     /// Resolve IDs on paragraphs, containers and inline/empty anchors without
     /// introducing render-only block numbers or UTF-16 offsets.
     pub fn anchor(&self, id: &str) -> Option<(usize, usize)> {
@@ -439,12 +590,13 @@ impl NativeDocument {
         blocks: &[ContentBlock],
         read: impl FnMut(&str) -> Option<String>,
     ) -> Self {
-        Self::parse_document(html, path, blocks, read, &Html::parse_document(html))
+        let sources: Vec<_> = blocks.iter().map(BindingSource::from_block).collect();
+        Self::parse_sources(html, path, &sources, read, &Html::parse_document(html))
     }
-    pub(crate) fn parse_document(
+    fn parse_sources(
         html: &str,
         path: &str,
-        blocks: &[ContentBlock],
+        blocks: &[BindingSource],
         mut read: impl FnMut(&str) -> Option<String>,
         document: &Html,
     ) -> Self {
@@ -521,9 +673,7 @@ impl NativeDocument {
             sources: blocks
                 .iter()
                 .map(|b| match b {
-                    ContentBlock::Paragraph { spans, .. } | ContentBlock::Heading { spans, .. } => {
-                        spans.iter().map(|s| s.text.as_str()).collect()
-                    }
+                    BindingSource::Text { text, .. } => text.clone(),
                     _ => String::new(),
                 })
                 .collect(),
@@ -811,7 +961,7 @@ pub(super) fn color(value: &str) -> Option<String> {
     }
 }
 
-impl NativeDocument {
+impl ParsedNativeDocument {
     pub fn note(&self, id: &str) -> Option<String> {
         let dom = Html::parse_document(&self.html);
         dom.select(&Selector::parse("[id]").ok()?)

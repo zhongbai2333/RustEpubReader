@@ -23,6 +23,13 @@ enum ReadingModesRuntimeCheck {
                 let client = CoreClient(root: root.path, device: "reading-modes-check")
                 let entry: LibraryEntry = try client.call("import", ["path": documents.appendingPathComponent("reading-modes.epub").path])
                 let book: PreviewBook = try client.call("open", ["id": entry.id])
+                if CommandLine.arguments.contains("--verify-chapter-loading") {
+                    report=try await verifyChapterLoading(scene:scene,book:book)
+                    report["passed"]=true
+                    let data=try JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys])
+                    try data.write(to:caches.appendingPathComponent("chapter-loading-verification.json"),options:.atomic)
+                    return
+                }
                 if CommandLine.arguments.contains("--verify-page-footers") {
                     report = try await verifyPageFooters(scene: scene, book: book)
                     report["passed"] = true
@@ -151,9 +158,40 @@ enum ReadingModesRuntimeCheck {
                     "large_font_single_page": true, "portrait_anchor": true, "cancelled_turn": true, "speech_follow": true]
             } catch { report = ["passed": false, "error": String(describing: error)] }
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: caches.appendingPathComponent(CommandLine.arguments.contains("--verify-page-footers") ? "page-footers-verification.json" : "reading-modes-verification.json"), options: .atomic) }
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: caches.appendingPathComponent(CommandLine.arguments.contains("--verify-chapter-loading") ? "chapter-loading-verification.json" : CommandLine.arguments.contains("--verify-page-footers") ? "page-footers-verification.json" : "reading-modes-verification.json"), options: .atomic) }
             window?.isHidden = true
         }
+    }
+    @MainActor private static func verifyChapterLoading(scene:UIWindowScene,book:PreviewBook) async throws -> [String:Any] {
+        func require(_ value:Bool,_ message:String)throws {if !value {throw CoreFailure(message:message)}}
+        try require(book.loadsChapters,"Open returned an eager publication")
+        try require(book.chapters.allSatisfy {$0.blocks.isEmpty},"Catalogue contained chapter bodies")
+        let source=book.chapterSource!
+        try require(source.residentCount==0,"Open preloaded every chapter")
+        let speech=ReadingSpeech(book:book)
+        try require(source.residentCount==0 && speech.units.isEmpty,"Speech eagerly loaded publication")
+        let host=UIViewController(),window=UIWindow(windowScene:scene)
+        window.rootViewController=host;window.makeKeyAndVisible();defer {window.isHidden=true;speech.stop()}
+        var cases=[[String:Any]]()
+        let targets=Array(Set([min(1,book.chapters.count-1),book.chapters.count/2,book.chapters.count-1])).sorted()
+        for mode in [ReadingMode.curl,.slide,.cover,.none,.scroll] {
+            for target in targets {
+                let options=ReaderOptions(fontSize:18,lineHeight:1.65,fontName:"Helvetica",theme:"light",sliding:mode != .curl,cjkFontName:"PingFangSC-Regular",readingMode:mode)
+                let chapter=try book.chapter(at:target)
+                try require(!chapter.blocks.isEmpty,"Real chapter body missing")
+                let reader=NativeReadingController(book:book,anchor:.init(chapter:target),options:options)
+                host.addChild(reader);host.view.addSubview(reader.view);reader.didMove(toParent:host)
+                reader.view.frame=CGRect(x:0,y:0,width:402,height:874);reader.view.layoutIfNeeded()
+                try require(reader.anchor.chapter==target && reader.pages.contains(where:{$0.chapter==target}),"Reader lost requested chapter")
+                try require(source.residentCount<=32,"Decoded chapter cache grew without bound")
+                cases.append(["mode":mode.rawValue,"chapter":target,"pages":reader.pages.count,"resident_chapters":source.residentCount])
+                reader.willMove(toParent:nil);reader.view.removeFromSuperview();reader.removeFromParent()
+            }
+        }
+        let last=book.chapters.count-1
+        try require(!speech.preview(at:.init(chapter:last)).isEmpty,"Lazy speech cannot preview last chapter")
+        try require(source.residentCount<=32,"Speech loaded all chapters")
+        return ["chapter_count":book.chapters.count,"catalogue_only":true,"bounded_body_cache":true,"speech_not_eager":true,"last_chapter_speech_preview":true,"cases":cases]
     }
     @MainActor private static func pageInfo(_ leaf: PaperController, reader: NativeReadingController) -> String {
         guard let chapter=leaf.page?.chapter else {return ""}

@@ -5,7 +5,7 @@ use crate::{
 };
 use eframe::egui;
 use reader_core::{
-    cloud_sync::{CloudBook, MAX_BOOK_BYTES},
+    cloud_sync::{CloudBook, MAX_DOCUMENT_BYTES},
     sharing::ProgressEntry,
 };
 use std::{
@@ -214,7 +214,7 @@ impl ReaderApp {
                         skipped += 1;
                         continue;
                     };
-                    if metadata.len() > MAX_BOOK_BYTES {
+                    if metadata.len() > MAX_DOCUMENT_BYTES {
                         skipped += 1;
                         continue;
                     }
@@ -257,18 +257,50 @@ impl ReaderApp {
                         path: PathBuf::from(entry.path),
                     });
                 }
+                let device_id = own.device_id.clone();
                 github_sync::sync_phase(
                     token,
-                    owner,
+                    owner.clone(),
                     own,
                     books,
-                    cancel,
+                    cancel.clone(),
                     count_contributions,
                     phase,
                     &data_dir,
                     retry_failed,
                 )
-                .map(|result| (result, skipped))
+                .and_then(|mut result| {
+                    let mut validated = Vec::new();
+                    for book in std::mem::take(&mut result.downloaded) {
+                        if cancel.load(Ordering::SeqCst) {
+                            return Err("Sync cancelled".into());
+                        }
+                        let checked = (|| {
+                            let temporary = tempfile::NamedTempFile::new()
+                                .map_err(|_| "Cannot stage downloaded book")?;
+                            let path = if let Some(path) = &book.path {
+                                path.as_path()
+                            } else {
+                                book.save_to(temporary.path())?;
+                                temporary.path()
+                            };
+                            reader_core::epub::EpubBook::open_lazy(path)
+                                .map_err(|_| "Downloaded file is not a valid EPUB")?;
+                            Ok::<_, String>(())
+                        })();
+                        match checked {
+                            Ok(()) => validated.push(book),
+                            Err(error) => {
+                                result.failed = github_sync::record_transfer_failure(
+                                    &data_dir, &owner, &device_id, "download", &book.info, error,
+                                )?;
+                                result.next_retry_after = Some(30);
+                            }
+                        }
+                    }
+                    result.downloaded = validated;
+                    Ok((result, skipped))
+                })
             })();
             let _ = tx.send(result);
             if let Some(ctx) = ctx {
@@ -377,37 +409,38 @@ impl ReaderApp {
                             continue;
                         }
                         let import = (|| {
-                            let mut checked = tempfile::NamedTempFile::new()
+                            let checked = tempfile::NamedTempFile::new()
                                 .map_err(|_| "Cannot stage downloaded book")?;
-                            std::io::Write::write_all(&mut checked, &book.bytes)
+                            book.save_to(checked.path())
                                 .map_err(|_| "Cannot stage downloaded book")?;
-                            reader_core::epub::EpubBook::open(checked.path())
-                                .map_err(|_| "Downloaded file is not a valid EPUB")?;
+                            // Worker already validated EPUB structure off the UI thread.
                             let p = latest.get(&book.info.hash);
                             let previous = self.library.clone();
                             let entry = if let Some(restored) =
-                                reader_core::library::archive::restore_download(
+                                reader_core::library::archive::restore_download_file(
                                     &self.data_dir,
                                     &mut self.library,
                                     &book.info.hash,
-                                    &book.bytes,
+                                    checked.path(),
                                 )
                                 .map_err(|_| "Cannot restore archived book")?
                             {
                                 restored
                             } else {
-                                self.library.add_or_update_from_bytes(
+                                self.library.add_or_update(
                                     &self.data_dir,
                                     book.info.title.clone(),
-                                    &book.bytes,
+                                    checked.path().to_string_lossy().into_owned(),
                                     p.map_or(0, |p| p.chapter),
                                     p.and_then(|p| p.chapter_title.clone()),
                                 )
                             };
-                            if reader_core::epub::EpubBook::file_hash(&entry.path)
-                                .ok()
-                                .as_ref()
-                                != Some(&book.info.hash)
+                            if !std::path::Path::new(&entry.path)
+                                .starts_with(std::path::Path::new(&self.data_dir).join("books"))
+                                || reader_core::epub::EpubBook::file_hash(&entry.path)
+                                    .ok()
+                                    .as_ref()
+                                    != Some(&book.info.hash)
                             {
                                 self.library = previous;
                                 self.library.save_to(&self.data_dir);
@@ -477,7 +510,7 @@ impl ReaderApp {
                                         != (p.chapter, p.block, p.char_offset)
                                 });
                             if changed
-                                && !reader_core::epub::EpubBook::open(path).is_ok_and(|book| {
+                                && !reader_core::epub::EpubBook::open_lazy(path).is_ok_and(|book| {
                                     reader_core::cloud_progress::validate_position(&book, p)
                                 })
                             {
@@ -600,7 +633,18 @@ impl ReaderApp {
         if meter.total > 0 {
             let text = self.i18n.tf(
                 "cloud.processed",
-                &[&meter.completed.to_string(), &meter.total.to_string()],
+                &[
+                    &if meter.bytes {
+                        format!("{:.1} MiB", meter.completed as f64 / 1048576.0)
+                    } else {
+                        meter.completed.to_string()
+                    },
+                    &if meter.bytes {
+                        format!("{:.1} MiB", meter.total as f64 / 1048576.0)
+                    } else {
+                        meter.total.to_string()
+                    },
+                ],
             );
             ui.add(
                 egui::ProgressBar::new(meter.completed as f32 / meter.total as f32)

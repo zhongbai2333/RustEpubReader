@@ -33,6 +33,8 @@ openssl = { version = "0.10", features = ["vendored"], optional = true }
 # dynamic library at runtime. Safe to enable by default.
 default = ["csc"]
 csc = ["reader_core/csc"]
+# Local native-window measurements; never enabled by normal release packaging.
+performance-checks = []
 vendored-openssl = ["openssl/vendored"]
 
 [target.'cfg(windows)'.build-dependencies]

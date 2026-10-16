@@ -1,5 +1,5 @@
 //! GitHub API transport. No git checkout, public repositories, or arbitrary download URLs.
-use crate::cloud_sync::{CloudBook, DeviceSnapshot, MAX_BOOK_BYTES};
+use crate::cloud_sync::{CloudBook, DeviceSnapshot, MAX_BOOK_BYTES, MAX_DOCUMENT_BYTES};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::{
     blocking::{Client, Response},
@@ -17,6 +17,7 @@ use std::{
     },
     time::Duration,
 };
+mod chunks;
 mod meter;
 mod staged;
 pub use meter::{sync_meter, SyncMeter};
@@ -35,6 +36,18 @@ pub struct LocalBook {
 pub struct DownloadedBook {
     pub info: CloudBook,
     pub bytes: Vec<u8>,
+    /// Chunk-backed downloads stay on disk until the platform commits the import.
+    pub path: Option<PathBuf>,
+}
+impl DownloadedBook {
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
+        if let Some(source) = &self.path {
+            std::fs::copy(source, path).map_err(|_| "Cannot stage downloaded book")?;
+        } else {
+            std::fs::write(path, &self.bytes).map_err(|_| "Cannot stage downloaded book")?;
+        }
+        Ok(())
+    }
 }
 pub struct SyncResult {
     pub snapshots: Vec<DeviceSnapshot>,
@@ -119,7 +132,41 @@ impl Api {
         body: Option<Value>,
         raw: bool,
     ) -> Result<Response, String> {
-        if method != reqwest::Method::GET {
+        self.request_with_accept(
+            method,
+            path,
+            body,
+            if raw {
+                "application/vnd.github.raw+json"
+            } else {
+                "application/vnd.github+json"
+            },
+        )
+    }
+    fn request_with_accept(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        accept: &str,
+    ) -> Result<Response, String> {
+        self.before_request(method != reqwest::Method::GET)?;
+        let mut request = self
+            .client
+            .request(method, format!("{}{path}", self.base))
+            .bearer_auth(&self.token)
+            .header("User-Agent", "RustEpubReader")
+            .header("Accept", accept)
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        request
+            .send()
+            .map_err(|_| "Cannot reach GitHub; local data is retained".into())
+    }
+    fn before_request(&self, write: bool) -> Result<(), String> {
+        if write {
             let mut previous = self.last_write.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(time) = *previous {
                 if let Some(wait) = Duration::from_secs(1).checked_sub(time.elapsed()) {
@@ -131,26 +178,7 @@ impl Api {
         if self.cancel.load(Ordering::SeqCst) {
             return Err("Sync cancelled".into());
         }
-        let mut request = self
-            .client
-            .request(method, format!("{}{path}", self.base))
-            .bearer_auth(&self.token)
-            .header("User-Agent", "RustEpubReader")
-            .header(
-                "Accept",
-                if raw {
-                    "application/vnd.github.raw+json"
-                } else {
-                    "application/vnd.github+json"
-                },
-            )
-            .header("X-GitHub-Api-Version", "2022-11-28");
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        request
-            .send()
-            .map_err(|_| "Cannot reach GitHub; local data is retained".into())
+        Ok(())
     }
     fn repo_path(&self) -> String {
         format!("/repos/{}/{REPOSITORY}", self.owner)
@@ -447,7 +475,11 @@ fn run(api: &Api, own: &mut DeviceSnapshot, books: Vec<LocalBook>) -> Result<Syn
             return Err("Remote book integrity check failed".into());
         }
         total_bytes += info.size;
-        downloaded.push(DownloadedBook { info, bytes });
+        downloaded.push(DownloadedBook {
+            info,
+            bytes,
+            path: None,
+        });
     }
     Ok(SyncResult {
         confirmed_archives: Default::default(),
@@ -464,6 +496,7 @@ fn run(api: &Api, own: &mut DeviceSnapshot, books: Vec<LocalBook>) -> Result<Syn
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod chunks;
     mod stages;
     #[test]
     fn scope_requires_full_repo_not_public_repo_or_repo_status() {
@@ -476,6 +509,8 @@ mod tests {
         status: u16,
         body: Vec<u8>,
         scope: Option<&'static str>,
+        request_hash: Option<String>,
+        location: Option<String>,
     }
     fn step(method: &'static str, path: &str, status: u16, value: Value) -> Step {
         Step {
@@ -484,6 +519,8 @@ mod tests {
             status,
             body: serde_json::to_vec(&value).unwrap(),
             scope: None,
+            request_hash: None,
+            location: None,
         }
     }
     fn raw(path: &str, bytes: Vec<u8>) -> Step {
@@ -493,6 +530,8 @@ mod tests {
             status: 200,
             body: bytes,
             scope: None,
+            request_hash: None,
+            location: None,
         }
     }
     fn prefix(private: bool, scope: &'static str) -> Vec<Step> {
@@ -571,9 +610,27 @@ mod tests {
                     .unwrap_or(0);
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
-                if step.method == "POST" {
+                if let Some(hash) = &step.request_hash {
+                    assert_eq!(&digest(&body), hash);
+                }
+                if step.method == "POST" && step.path == "/user/repos" {
                     let value: Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(value["private"], true);
+                }
+                if step.method == "POST" && step.path.ends_with("/releases") {
+                    let value: Value = serde_json::from_slice(&body).unwrap();
+                    assert!(value["tag_name"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("reader-file-v2-"));
+                    assert_eq!(value["draft"], true);
+                    assert_eq!(value["prerelease"], true);
+                    assert_eq!(value["make_latest"], "false");
+                }
+                if step.method == "POST" && step.path.contains("/assets?") {
+                    assert!(headers
+                        .to_ascii_lowercase()
+                        .contains("content-type: application/octet-stream"));
                 }
                 if step.method == "PUT" {
                     let value: Value = serde_json::from_slice(&body).unwrap();
@@ -599,12 +656,18 @@ mod tests {
                     .scope
                     .map(|s| format!("X-OAuth-Scopes: {s}\r\n"))
                     .unwrap_or_default();
+                let location = step
+                    .location
+                    .as_ref()
+                    .map(|v| format!("Location: {v}\r\n"))
+                    .unwrap_or_default();
                 write!(
                     stream,
-                    "HTTP/1.1 {} OK\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
+                    "HTTP/1.1 {} OK\r\nContent-Length: {}\r\n{}{}Connection: close\r\n\r\n",
                     step.status,
                     step.body.len(),
-                    scopes
+                    scopes,
+                    location
                 )
                 .unwrap();
                 stream.write_all(&step.body).unwrap();

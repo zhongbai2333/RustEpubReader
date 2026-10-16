@@ -232,7 +232,7 @@ impl ReaderApp {
         let chapter = self
             .book
             .as_ref()
-            .and_then(|b| b.chapters.get(review_ch_idx));
+            .and_then(|b| b.chapter(review_ch_idx).ok());
         let Some(chapter) = chapter else {
             return;
         };

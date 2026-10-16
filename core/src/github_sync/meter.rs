@@ -13,6 +13,8 @@ pub struct SyncMeter {
     pub completed: usize,
     pub total: usize,
     pub title: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bytes: bool,
 }
 static METERS: LazyLock<Mutex<BTreeMap<String, (u64, SyncMeter)>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
@@ -51,6 +53,21 @@ impl Reporter {
                     completed,
                     total,
                     title: title.into(),
+                    bytes: false,
+                };
+            }
+        }
+    }
+    pub fn update_bytes(&self, phase: &str, completed: usize, total: usize, title: &str) {
+        let mut meters = METERS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((serial, meter)) = meters.get_mut(&self.root) {
+            if *serial == self.serial {
+                *meter = SyncMeter {
+                    phase: phase.into(),
+                    completed,
+                    total,
+                    title: title.into(),
+                    bytes: true,
                 };
             }
         }

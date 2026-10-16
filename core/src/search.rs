@@ -13,9 +13,19 @@ pub struct SearchResult {
 
 /// Search the full text of an EPUB book for a query string.
 pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<SearchResult> {
+    search_book_checked(book, query, case_sensitive, || false).unwrap_or_default()
+}
+
+/// Sequential, bounded search. A failed chapter must not look like an empty match set.
+pub fn search_book_checked(
+    book: &EpubBook,
+    query: &str,
+    case_sensitive: bool,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<SearchResult>, String> {
     let mut results = Vec::new();
     if query.is_empty() {
-        return results;
+        return Ok(results);
     }
 
     let query_cmp = if case_sensitive {
@@ -24,7 +34,11 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
         query.to_lowercase()
     };
 
-    for (ch_idx, chapter) in book.chapters.iter().enumerate() {
+    for ch_idx in 0..book.chapters.len() {
+        if cancelled() {
+            return Err("Search cancelled".into());
+        }
+        let chapter = book.chapter(ch_idx)?;
         for (blk_idx, block) in chapter.blocks.iter().enumerate() {
             let text = block_text(block);
             if text.is_empty() {
@@ -62,11 +76,14 @@ pub fn search_book(book: &EpubBook, query: &str, case_sensitive: bool) -> Vec<Se
                     match_start: abs_pos,
                     match_len: query.len(),
                 });
+                if results.len() >= 1000 {
+                    return Ok(results);
+                }
                 start = abs_pos + query.len();
             }
         }
     }
-    results
+    Ok(results)
 }
 
 fn block_text(block: &ContentBlock) -> String {

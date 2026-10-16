@@ -2,9 +2,37 @@
 use crate::app::ReaderApp;
 use eframe::egui;
 
+pub(crate) struct SearchTask {
+    path: Option<String>,
+    query: String,
+    receiver: std::sync::mpsc::Receiver<Result<Vec<reader_core::search::SearchResult>, String>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl Drop for SearchTask {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 impl ReaderApp {
     /// Render the search side-panel.
     pub fn render_search_panel(&mut self, ctx: &egui::Context) {
+        if let Some(task) = &self.search_task {
+            if task.path != self.book_path {
+                self.search_task = None;
+            } else if let Ok(result) = task.receiver.try_recv() {
+                if task.query == self.search_query {
+                    match result {
+                        Ok(results) => {
+                            self.search_results = results;
+                            self.search_selected = None;
+                        }
+                        Err(error) => self.error_msg = Some(error),
+                    }
+                }
+                self.search_task = None;
+            }
+        }
         let collapse_label = self.i18n.t("common.collapse").to_owned();
         if super::design::animated_side_panel(
             ctx,
@@ -34,8 +62,30 @@ impl ReaderApp {
 
                 if run_search && !self.search_query.is_empty() {
                     if let Some(book) = &self.book {
-                        self.search_results =
-                            reader_core::search::search_book(book, &self.search_query, false);
+                        drop(self.search_task.take());
+                        let book = book.clone();
+                        let query = self.search_query.clone();
+                        let worker_query = query.clone();
+                        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let worker_cancel = cancel.clone();
+                        let (sender, receiver) = std::sync::mpsc::channel();
+                        let ctx = ctx.clone();
+                        std::thread::spawn(move || {
+                            let result = reader_core::search::search_book_checked(
+                                &book,
+                                &worker_query,
+                                false,
+                                || worker_cancel.load(std::sync::atomic::Ordering::Relaxed),
+                            );
+                            let _ = sender.send(result);
+                            ctx.request_repaint();
+                        });
+                        self.search_task = Some(SearchTask {
+                            path: self.book_path.clone(),
+                            query,
+                            receiver,
+                            cancel,
+                        });
                         self.search_selected = None;
                     }
                 }

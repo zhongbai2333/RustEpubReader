@@ -73,6 +73,11 @@ android {
         }
     }
 
+    // Explicit opt-in diagnostic build; shipping releases do not contain this activity.
+    if (project.hasProperty("READER_PERFORMANCE_CHECKS")) {
+        sourceSets.getByName("release").kotlin.srcDir("src/performance/java")
+        sourceSets.getByName("release").manifest.srcFile("src/performance/AndroidManifest.xml")
+    }
     sourceSets.getByName("androidTest").assets.srcDir("../../core/tests/fixtures")
     sourceSets.getByName("test").resources.srcDir("../../core/tests/fixtures")
     sourceSets.getByName("main").assets.srcDir("../../resources")

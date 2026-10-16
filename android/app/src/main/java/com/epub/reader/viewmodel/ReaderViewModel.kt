@@ -957,23 +957,15 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 reviewPanelChapter = null
             }
             
-            val lazyChapters = object : AbstractList<Chapter>() {
-                val cache = ConcurrentHashMap<Int, Chapter>()
-                override val size: Int get() = metadata.chapterCount
-                
-                override fun get(index: Int): Chapter {
-                    if (index !in 0 until size) throw IndexOutOfBoundsException()
-                    return cache.getOrPut(index) {
-                        try {
-                            val json = RustBridge.getChapter(managedPath, index)
-                                ?: return@getOrPut Chapter("Error", emptyList())
-                            val dto = jsonParser.decodeFromString<ChapterDto>(json)
-                            Chapter(title = dto.title, blocks = dto.blocks, sourceHref = dto.sourceHref, images = dto.images)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            Chapter("Error", emptyList())
-                        }
-                    }
+            val lazyChapters = LazyChapterList(metadata.chapterCount) { index ->
+                try {
+                    val json = RustBridge.getChapter(managedPath, index)
+                        ?: return@LazyChapterList Chapter("Error", emptyList())
+                    val dto = jsonParser.decodeFromString<ChapterDto>(json)
+                    Chapter(title = dto.title, blocks = dto.blocks, sourceHref = dto.sourceHref, images = dto.images)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    Chapter("Error", emptyList())
                 }
             }
 
@@ -991,7 +983,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 title = metadata.title,
                 chapters = lazyChapters,
                 toc = metadata.toc.map { it.title to it.chapterIndex },
-                coverData = coverBytes
+                coverData = coverBytes,
+                chapterTitles = metadata.chapterTitles
             )
         } ?: throw Exception("EPUB ����ʧ��")
 

@@ -23,6 +23,7 @@ struct NativeReader: UIViewControllerRepresentable {
     var publicationEvent: ((Int,Int)->Void)? = nil
     var publicationLink: ((Int,String)->Void)? = nil
     var nativeStyles: [Int: [NativeStyle]] = [:]
+    var failed: (Error) -> Void = { _ in }
     var viewportChanged: (ReaderWindowViewport) -> Void = { _ in }
     var contentVisible = true
     var immersiveStatus: ReadingStatusInfo? = nil
@@ -37,6 +38,7 @@ struct NativeReader: UIViewControllerRepresentable {
         controller.toggleTools = toggleTools; controller.turning = turning
         controller.visible = visible; controller.committed = committed
         controller.selected = selected
+        controller.failed = failed
         controller.book = book; controller.publicationNote = publicationNote; controller.publicationEvent = publicationEvent; controller.publicationLink = publicationLink; controller.nativeStyles = nativeStyles
         controller.update(options: options, jump: jump, jumpID: jumpID, annotations: annotations, revision: annotationRevision)
         controller.updateSpeech(speechHighlight, following: followSpeech)
@@ -45,6 +47,8 @@ struct NativeReader: UIViewControllerRepresentable {
 }
 
 final class NativeReadingController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate, UIScrollViewDelegate {
+    var failed: ((Error)->Void)?
+    private var chapterLoadFailed = false
     var book: PreviewBook
     var contentVisible=true {
         didSet {if isViewLoaded {UIView.performWithoutAnimation {view.alpha=contentVisible ? 1 : 0}}}
@@ -212,7 +216,13 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         }
     }
     private func chapterSource(_ chapter: Int) -> BookChapter {
-        let source = book.chapters[chapter]
+        let source: BookChapter
+        do { source = try book.chapter(at:chapter) }
+        catch {
+            chapterLoadFailed=true
+            let callback=failed; DispatchQueue.main.async {callback?(error)}
+            return BookChapter(title:book.chapters[chapter].title,blocks:[])
+        }
         guard let styles = nativeStyles[chapter] else { return source }
         return BookChapter(title: source.title, blocks: source.blocks.enumerated().map { index, block in
             var value = block
@@ -257,11 +267,11 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         }
         var result = pagingLoadedRange.flatMap { pagingLayout($0) }
         // A hidden/empty chapter must not hide readable content elsewhere.
-        while result.isEmpty && pagingLoadedRange.upperBound < book.chapters.count {
+        while result.isEmpty && !chapterLoadFailed && pagingLoadedRange.upperBound < book.chapters.count {
             let next = pagingLoadedRange.upperBound
             result += pagingLayout(next); pagingLoadedRange = pagingLoadedRange.lowerBound..<(next+1)
         }
-        while result.isEmpty && pagingLoadedRange.lowerBound > 0 {
+        while result.isEmpty && !chapterLoadFailed && pagingLoadedRange.lowerBound > 0 {
             let previous = pagingLoadedRange.lowerBound-1
             result = pagingLayout(previous)+result; pagingLoadedRange = previous..<pagingLoadedRange.upperBound
         }
@@ -272,6 +282,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         while available < count && pagingLoadedRange.lowerBound > 0 {
             let chapter = pagingLoadedRange.lowerBound-1
             let prefix = pagingLayout(chapter)
+            guard !chapterLoadFailed else {return}
             pagingLoadedRange = chapter..<pagingLoadedRange.upperBound
             pages.insert(contentsOf: prefix, at: 0)
             currentIndex += prefix.count; available += prefix.count
@@ -284,7 +295,9 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
     private func ensurePagingThrough(_ index: Int) {
         while index >= pages.count && pagingLoadedRange.upperBound < book.chapters.count {
             let chapter = pagingLoadedRange.upperBound
-            pages += pagingLayout(chapter)
+            let added = pagingLayout(chapter)
+            guard !chapterLoadFailed else {return}
+            pages += added
             pagingLoadedRange = pagingLoadedRange.lowerBound..<(chapter+1)
         }
     }
@@ -303,6 +316,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         if transitioning && size == lastSize { return }
         if let viewport = continuous, (viewport.isDragging || viewport.isDecelerating),
            size == lastSize, layoutOptions?.nativeRevision != options.nativeRevision { return }
+        chapterLoadFailed=false
         let sizeChanged = size != lastSize
         lastSize = size; layoutOptions = options.textLayoutOptions; transitioning = false
         view.backgroundColor = options.paper
@@ -351,7 +365,9 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         }
         scrollCache.clear(); scrollActive.removeAll(); scrollPages.removeAll(); scrollRowIndices.removeAll(); scrollCenter = -1; scrollChapterStarts.removeAll()
         continuous?.delegate = nil; continuous?.removeFromSuperview(); continuous = nil
-        pages = pagedChapters(in: textRect)
+        let preparedPages = pagedChapters(in: textRect)
+        guard !chapterLoadFailed else {return}
+        pages = preparedPages
         guard !pages.isEmpty else { return }
         currentIndex = ReadingLayout.pageIndex(for: anchor, in: pages)
         if dual { currentIndex = spreadStart(for: currentIndex) }
@@ -431,7 +447,14 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         let indices = pageViewController.viewControllers?.compactMap { ($0 as? PaperController)?.index ?? ($0 as? SpreadController)?.index } ?? []
         guard let next = ReadingLayout.completedAnchor(completed: completed, visible: indices, pages: pages) else { return }
         anchor = next; currentIndex = indices.filter { pages.indices.contains($0) }.min() ?? currentIndex
-        committed?(next); reportVisible(); rebuildIfNeeded()
+        committed?(next); reportVisible(); trimPagingWindow(); rebuildIfNeeded()
+    }
+    private func trimPagingWindow() {
+        guard options.readingMode != .scroll, pagingLoadedRange.count>7 else {return}
+        let range=max(0,anchor.chapter-2)..<min(book.chapters.count,anchor.chapter+3)
+        let removed=pages.prefix(while: {$0.chapter<range.lowerBound}).count
+        pagingSpreadParity=(pagingSpreadParity+removed)%2
+        pagingLoadedRange=range;pagingCache.retain(range);layoutOptions=nil
     }
     private func reportVisible() {
         guard pages.indices.contains(currentIndex) else { return }
@@ -477,6 +500,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         guard count > 0 else { return }
         scrollCenter = min(count - 1, max(0, chapter))
         let center = scrollLayout(scrollCenter)
+        guard !chapterLoadFailed else {return}
         if scrollChapterStarts[scrollCenter] == nil { scrollBookStart = nil; scrollBookEnd = nil }
         let centerStart = scrollChapterStarts[scrollCenter] ?? 1_000_000
         let localRow = ReadingLayout.pageIndex(for: target, in: center.pages)
@@ -494,6 +518,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         while last + 1 < count && (last == scrollCenter || end - targetY < table.bounds.height * 2) {
             last += 1; let layout = scrollLayout(last); layouts[last] = layout; end += layout.height
         }
+        guard !chapterLoadFailed else {return}
         scrollLoadedRange = first..<(last + 1)
         scrollCache.retain(max(0, first - 1)..<min(count, last + 2))
         scrollActive = layouts; scrollPages.removeAll(); scrollRowIndices.removeAll()
@@ -625,6 +650,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         if forward && dual && currentIndex == 0 && pagingSpreadParity == 1 { step = 1 }
         if forward { ensurePagingThrough(currentIndex+step) }
         else { ensurePagingBefore(currentIndex, count: step) }
+        guard !chapterLoadFailed else {return}
         let next = forward ? currentIndex + step : max(0, currentIndex - step)
         guard next != currentIndex else { return }
         guard pages.indices.contains(next) else { return }
@@ -636,7 +662,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             let indices = pager?.viewControllers?.compactMap { ($0 as? PaperController)?.index ?? ($0 as? SpreadController)?.index } ?? []
             guard let shown = indices.filter({ self.pages.indices.contains($0) }).min() else { return }
             self.currentIndex = shown; self.anchor = self.pages[shown].anchor
-            self.committed?(self.anchor); self.reportVisible(); self.rebuildIfNeeded()
+            self.committed?(self.anchor); self.reportVisible(); self.trimPagingWindow(); self.rebuildIfNeeded()
         }
         if options.readingMode == .cover && !UIAccessibility.isReduceMotionEnabled,
            let previous = pager.view.snapshotView(afterScreenUpdates: false) {

@@ -382,7 +382,7 @@ pub fn decode(
         }
         work.check()?;
         validate_epub(&path)?;
-        let parsed = EpubBook::open(path.to_str().ok_or("Invalid received book path")?)?;
+        let parsed = EpubBook::open_lazy(path.to_str().ok_or("Invalid received book path")?)?;
         if parsed.chapters.is_empty() {
             return Err("Shared EPUB has no readable chapters".into());
         }

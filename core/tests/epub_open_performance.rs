@@ -42,6 +42,21 @@ fn long_books_cold_open() {
         let book = EpubBook::open(&path).unwrap();
         let open_ms = start.elapsed().as_secs_f64() * 1000.;
         assert_eq!(book.chapters.len(), chapters);
+        assert!(book
+            .chapters
+            .iter()
+            .all(|ch| !ch.native_document.is_materialized()));
+        let _ = book.chapters[0].native_document.present(
+            reader_core::epub::native::CssPolicy::Mixed,
+            false,
+            &[],
+        );
+        assert!(book.chapters[0].native_document.is_materialized());
+        assert!(book
+            .chapters
+            .iter()
+            .skip(1)
+            .all(|ch| !ch.native_document.is_materialized()));
         assert!(book.chapters.iter().all(|ch| ch.blocks.len() == paragraphs));
         let start = Instant::now();
         let clone = book.clone();

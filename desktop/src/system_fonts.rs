@@ -1,5 +1,7 @@
 //! Font locations retain the face index: a TTC is a collection, not one font.
 use eframe::egui::FontData;
+use std::io::{Read, Seek, SeekFrom};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[derive(Clone, Debug)]
 pub(crate) struct SystemFont {
@@ -8,11 +10,128 @@ pub(crate) struct SystemFont {
 }
 
 impl SystemFont {
-    pub fn load(&self) -> Option<FontData> {
-        let mut data = FontData::from_owned(std::fs::read(&self.path).ok()?);
-        data.index = self.index;
-        Some(data)
+    pub fn load(&self) -> Option<Arc<FontData>> {
+        type FontCache = std::collections::HashMap<(String, u32), Weak<FontData>>;
+        static CACHE: OnceLock<Mutex<FontCache>> = OnceLock::new();
+        let mut cache = CACHE.get_or_init(Default::default).lock().ok()?;
+        cache.retain(|_, font| font.strong_count() > 0);
+        let key = (self.path.clone(), self.index);
+        if let Some(font) = cache.get(&key).and_then(Weak::upgrade) {
+            return Some(font);
+        }
+        // epaint's rasterizer uses outlines only. Do not load every face in a TTC,
+        // or hundreds of MB of bitmap strikes it cannot render (Apple Color Emoji).
+        // All outline, metric, naming and shaping tables of this face are retained.
+        let bytes = read_face(&self.path, self.index, false).ok()?;
+        ttf_parser::Face::parse(&bytes, 0).ok()?;
+        let font = Arc::new(FontData::from_owned(bytes));
+        cache.insert(key, Arc::downgrade(&font));
+        Some(font)
     }
+}
+
+pub(crate) fn load_path(path: &str) -> Option<Arc<FontData>> {
+    SystemFont {
+        path: path.into(),
+        index: 0,
+    }
+    .load()
+}
+
+fn read_face(path: &str, index: u32, metadata_only: bool) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind};
+    let invalid = || Error::new(ErrorKind::InvalidData, "invalid font table directory");
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header)?;
+    if &header[..4] == b"ttcf" {
+        let count = u32::from_be_bytes(header[8..12].try_into().unwrap());
+        if index >= count {
+            return Err(invalid());
+        }
+        file.seek(SeekFrom::Start(12 + u64::from(index) * 4))?;
+        let mut offset = [0; 4];
+        file.read_exact(&mut offset)?;
+        file.seek(SeekFrom::Start(u64::from(u32::from_be_bytes(offset))))?;
+        file.read_exact(&mut header)?;
+    } else if index != 0 {
+        return Err(invalid());
+    }
+    if !matches!(&header[..4], b"\0\x01\0\0" | b"OTTO" | b"true") {
+        return Err(invalid());
+    }
+    let count = u16::from_be_bytes(header[4..6].try_into().unwrap()) as usize;
+    if count == 0 || count > 1024 {
+        return Err(invalid());
+    }
+    let mut records = vec![[0u8; 16]; count];
+    for record in &mut records {
+        file.read_exact(record)?;
+    }
+    records.retain(|r| {
+        if metadata_only {
+            matches!(&r[..4], b"head" | b"hhea" | b"maxp" | b"name")
+        } else {
+            !matches!(
+                &r[..4],
+                b"sbix" | b"CBDT" | b"CBLC" | b"EBDT" | b"EBLC" | b"EBSC" | b"SVG " | b"DSIG"
+            )
+        }
+    });
+    if records.is_empty() {
+        return Err(invalid());
+    }
+    records.sort_unstable_by_key(|r| [r[0], r[1], r[2], r[3]]);
+    let total = records
+        .iter()
+        .try_fold(12 + records.len() * 16, |sum, r| {
+            let offset = u32::from_be_bytes(r[8..12].try_into().unwrap()) as u64;
+            let length = u32::from_be_bytes(r[12..16].try_into().unwrap()) as usize;
+            if offset + length as u64 > file_len {
+                return None;
+            }
+            sum.checked_add((length + 3) & !3)
+        })
+        .filter(|size| *size <= 256 * 1024 * 1024)
+        .ok_or_else(invalid)?;
+    let mut output = Vec::with_capacity(total);
+    let count = records.len() as u16;
+    let power = 1u16 << (15 - count.leading_zeros());
+    header[4..6].copy_from_slice(&count.to_be_bytes());
+    header[6..8].copy_from_slice(&(power * 16).to_be_bytes());
+    header[8..10].copy_from_slice(&(power.ilog2() as u16).to_be_bytes());
+    header[10..12].copy_from_slice(&(count * 16 - power * 16).to_be_bytes());
+    output.extend_from_slice(&header);
+    output.resize(12 + records.len() * 16, 0);
+    let mut head_adjustment = None;
+    for (i, mut record) in records.into_iter().enumerate() {
+        let offset = u32::from_be_bytes(record[8..12].try_into().unwrap());
+        let length = u32::from_be_bytes(record[12..16].try_into().unwrap()) as usize;
+        let start = output.len();
+        output.resize(start + length, 0);
+        file.seek(SeekFrom::Start(u64::from(offset)))?;
+        file.read_exact(&mut output[start..])?;
+        if &record[..4] == b"head" && length >= 12 {
+            output[start + 8..start + 12].fill(0);
+            head_adjustment = Some(start + 8);
+        }
+        output.resize((output.len() + 3) & !3, 0);
+        record[4..8].copy_from_slice(&sfnt_checksum(&output[start..]).to_be_bytes());
+        record[8..12].copy_from_slice(&(start as u32).to_be_bytes());
+        output[12 + i * 16..28 + i * 16].copy_from_slice(&record);
+    }
+    if let Some(offset) = head_adjustment {
+        let adjustment = 0xB1B0_AFBAu32.wrapping_sub(sfnt_checksum(&output));
+        output[offset..offset + 4].copy_from_slice(&adjustment.to_be_bytes());
+    }
+    Ok(output)
+}
+
+fn sfnt_checksum(bytes: &[u8]) -> u32 {
+    bytes.as_chunks::<4>().0.iter().fold(0u32, |sum, word| {
+        sum.wrapping_add(u32::from_be_bytes(*word))
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -37,12 +156,22 @@ fn discover_uncached() -> std::collections::HashMap<String, SystemFont> {
         };
         let path = path.to_string_lossy().into_owned();
         let faces = files.entry(path.clone()).or_insert_with(|| {
-            let Ok(bytes) = std::fs::read(&path) else {
+            let Ok(mut file) = std::fs::File::open(&path) else {
                 return Vec::new();
             };
-            (0..ttf_parser::fonts_in_collection(&bytes).unwrap_or(1))
+            let mut header = [0; 12];
+            if file.read_exact(&mut header).is_err() {
+                return Vec::new();
+            }
+            let count = if &header[..4] == b"ttcf" {
+                u32::from_be_bytes(header[8..].try_into().unwrap()).min(4096)
+            } else {
+                1
+            };
+            (0..count)
                 .filter_map(|index| {
-                    let face = ttf_parser::Face::parse(&bytes, index).ok()?;
+                    let bytes = read_face(&path, index, true).ok()?;
+                    let face = ttf_parser::Face::parse(&bytes, 0).ok()?;
                     let name = face.names().into_iter().find_map(|name| {
                         (name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
                             .then(|| name.to_string())
@@ -88,7 +217,7 @@ fn discover_uncached() -> std::collections::HashMap<String, SystemFont> {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn mac_default(bold: bool, serif: bool) -> Option<FontData> {
+pub(crate) fn mac_default(bold: bool, serif: bool) -> Option<Arc<FontData>> {
     static FONTS: std::sync::OnceLock<std::collections::HashMap<String, SystemFont>> =
         std::sync::OnceLock::new();
     let fonts = FONTS.get_or_init(discover);
@@ -111,7 +240,7 @@ pub(crate) fn register_defaults(fonts: &mut eframe::egui::FontDefinitions) {
         ("serif_font", false, true),
     ] {
         if let Some(data) = mac_default(bold, serif) {
-            fonts.font_data.insert(key.to_owned(), data.into());
+            fonts.font_data.insert(key.to_owned(), data);
         }
     }
     if fonts.font_data.contains_key("cjk_font") {
@@ -169,7 +298,7 @@ mod tests {
         for name in ["苹方-简", "宋体-简"] {
             definitions
                 .font_data
-                .insert(name.to_owned(), fonts[name].load().unwrap().into());
+                .insert(name.to_owned(), fonts[name].load().unwrap());
             definitions.families.insert(
                 eframe::egui::FontFamily::Name(name.into()),
                 vec![name.to_owned()],
@@ -193,5 +322,58 @@ mod tests {
         });
         assert!(mac_default(false, false).is_some());
         assert!(mac_default(true, false).is_some());
+    }
+
+    #[test]
+    fn compact_faces_preserve_outline_tables_and_share_live_buffers() {
+        let fonts = discover();
+        for name in ["苹方-简", "苹方-简 Semibold", "宋体-简"] {
+            let selected = &fonts[name];
+            let original = std::fs::read(&selected.path).unwrap();
+            let original = ttf_parser::RawFace::parse(&original, selected.index).unwrap();
+            let data = selected.load().unwrap();
+            assert!(Arc::ptr_eq(&data, &selected.load().unwrap()));
+            let compact = ttf_parser::RawFace::parse(&data.font, 0).unwrap();
+            for record in original.table_records {
+                if record.tag == ttf_parser::Tag::from_bytes(b"head") {
+                    continue; // checksumAdjustment changes after collection extraction.
+                }
+                if let Some(table) = compact.table(record.tag) {
+                    assert_eq!(
+                        original.table(record.tag),
+                        Some(table),
+                        "{name}: {:?}",
+                        record.tag
+                    );
+                } else {
+                    assert!(matches!(
+                        &record.tag.to_bytes(),
+                        b"sbix"
+                            | b"CBDT"
+                            | b"CBLC"
+                            | b"EBDT"
+                            | b"EBLC"
+                            | b"EBSC"
+                            | b"SVG "
+                            | b"DSIG"
+                    ));
+                }
+            }
+            assert_eq!(sfnt_checksum(&data.font), 0xB1B0_AFBA);
+            let temporary = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(temporary.path(), &data.font).unwrap();
+            let isolated = load_path(temporary.path().to_str().unwrap()).unwrap();
+            let weak = Arc::downgrade(&isolated);
+            drop(isolated);
+            assert!(
+                weak.upgrade().is_none(),
+                "font cache must not pin unused faces"
+            );
+        }
+        let emoji = load_path("/System/Library/Fonts/Apple Color Emoji.ttc").unwrap();
+        assert!(
+            emoji.font.len() < 2 * 1024 * 1024,
+            "outline renderer must not retain unused bitmap strikes"
+        );
     }
 }

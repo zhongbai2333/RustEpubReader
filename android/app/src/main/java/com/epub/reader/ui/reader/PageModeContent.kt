@@ -56,6 +56,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 
 // ─── 页面交互常量 ───
@@ -65,6 +66,12 @@ private const val FLIP_COOLDOWN_MS = 300L
 private const val SELECTION_TAP_SUPPRESS_MS = 700L
 
 // ─── 翻页模式 ───
+
+/** Internal command seam shared by deterministic renderer tests. */
+internal class PageTurnController {
+    var turn: (suspend (Boolean) -> Unit)? = null
+    var page: () -> Int = { 0 }
+}
 
 @Composable
 @OptIn(ExperimentalPageCurlApi::class)
@@ -110,6 +117,7 @@ internal fun PageModeContent(
     positionRevision: Int = 0,
     onPositionChange: (Int,Int) -> Unit = { _,_ -> },
     onContentPrepared: () -> Unit = {},
+    turnController: PageTurnController? = null,
 ) {
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -401,6 +409,19 @@ internal fun PageModeContent(
             },
         )
     bookSpreadCurlConfig.backPageColor = bgColor
+    androidx.compose.runtime.SideEffect {
+        turnController?.turn = { forward -> coroutineScope.async {
+            if (pageAnimation == "Realistic") {
+                val state=if(isBookSpread)bookSpreadPageCurlState else pageCurlState
+                if(forward) state.next() else state.prev()
+            } else {
+                val target=(pagerState.currentPage+if(forward)1 else -1).coerceIn(0,(pagerState.pageCount-1).coerceAtLeast(0))
+                if(pageAnimation=="None")pagerState.scrollToPage(target) else pagerState.animateScrollToPage(target)
+            }
+        }.await() }
+        turnController?.page = { if(pageAnimation=="Realistic") (if(isBookSpread)bookSpreadPageCurlState.current else pageCurlState.current) else pagerState.currentPage }
+    }
+
 
     // 章节切换时重置页码
     LaunchedEffect(currentChapter, pageAnimation, positionRevision, layoutTag) {

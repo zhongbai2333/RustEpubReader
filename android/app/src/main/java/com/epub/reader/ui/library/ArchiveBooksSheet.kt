@@ -55,11 +55,13 @@ fun SyncMeterContent(meter:JSONObject?,compact:Boolean=false) {
         else->"cloud.phase_preparing"
     })
     val completed=meter.optInt("completed"); val total=meter.optInt("total")
+    val context=androidx.compose.ui.platform.LocalContext.current
+    val amount=if(meter.optBoolean("bytes")) android.text.format.Formatter.formatShortFileSize(context,completed.toLong())+" / "+android.text.format.Formatter.formatShortFileSize(context,total.toLong()) else I18n.tf("cloud.processed",completed.toString(),total.toString())
     Column(Modifier.widthIn(max=if(compact) 160.dp else 600.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
         Text(label,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         if(total>0) {
             LinearProgressIndicator(progress={completed.toFloat()/total},modifier=Modifier.fillMaxWidth())
-            Text(I18n.tf("cloud.processed",completed.toString(),total.toString()),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(amount,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if(!compact && meter.optString("title").isNotBlank()) Text(meter.optString("title"),style=MaterialTheme.typography.bodySmall,maxLines=2)
     }

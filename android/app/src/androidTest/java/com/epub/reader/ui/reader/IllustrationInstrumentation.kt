@@ -18,6 +18,7 @@ import org.json.JSONObject
 
 /** Verifies the actual JNI bridge and Android bitmap decoder on a device. */
 class IllustrationInstrumentation : Instrumentation() {
+    private var largePublication = false
     private var fontLibrary = false
     private var punctuation = false
     private var firstReader = false
@@ -31,8 +32,9 @@ class IllustrationInstrumentation : Instrumentation() {
     private var native = false
     private var curl = false
     private var bookShare = false
-    override fun onCreate(arguments: Bundle?) { fontLibrary=arguments?.getString("check")=="font-library"; punctuation=arguments?.getString("check")=="punctuation"; firstReader=arguments?.getString("check")=="first-reader"; linkage=arguments?.getString("check")=="appearance-linkage"; appearance=arguments?.getString("check") in listOf("appearance","appearance-ambient"); appearanceAmbient=arguments?.getString("check")=="appearance-ambient"; bookShare=arguments?.getString("check")=="book-share"; i18n=arguments?.getString("check")=="i18n"; bounds=arguments?.getString("check")=="bounds"; corpus=arguments?.getString("check")=="corpus"; typography = arguments?.getString("check") == "typography"; native = arguments?.getString("check") == "native"; curl = arguments?.getString("check") == "curl"; super.onCreate(arguments); start() }
+    override fun onCreate(arguments: Bundle?) { largePublication=arguments?.getString("check")=="large-publication"; fontLibrary=arguments?.getString("check")=="font-library"; punctuation=arguments?.getString("check")=="punctuation"; firstReader=arguments?.getString("check")=="first-reader"; linkage=arguments?.getString("check")=="appearance-linkage"; appearance=arguments?.getString("check") in listOf("appearance","appearance-ambient"); appearanceAmbient=arguments?.getString("check")=="appearance-ambient"; bookShare=arguments?.getString("check")=="book-share"; i18n=arguments?.getString("check")=="i18n"; bounds=arguments?.getString("check")=="bounds"; corpus=arguments?.getString("check")=="corpus"; typography = arguments?.getString("check") == "typography"; native = arguments?.getString("check") == "native"; curl = arguments?.getString("check") == "curl"; super.onCreate(arguments); start() }
     override fun onStart() {
+        if(largePublication) { LargePublicationRuntimeChecks.run(this); return }
         if(fontLibrary) { FontLibraryRuntimeChecks.run(this); return }
         // Existing isolated UI checks exercise the already-onboarded reader.
         if(!firstReader && targetContext.packageName.startsWith("local.reader.")) {

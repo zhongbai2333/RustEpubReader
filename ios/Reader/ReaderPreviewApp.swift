@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 @main struct ReaderPreviewApp: App {
     init() {
         ReaderFonts.shared.restoreSystemFonts()
+        #if READER_PERFORMANCE_CHECK
+        if CommandLine.arguments.contains("--measure-release-book") {ReadingReleasePerformance.run()}
+        #endif
         #if DEBUG
         if CommandLine.arguments.contains("--verify-appearance") { ReadingAppearanceRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-book-share") { BookShareRuntimeCheck.run() }
@@ -11,7 +14,7 @@ import UniformTypeIdentifiers
         if CommandLine.arguments.contains("--verify-native") { NativePresentationRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-keychain") { KeychainRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-illustrations") { IllustrationRuntimeCheck.run() }
-        if CommandLine.arguments.contains("--verify-reading-modes") || CommandLine.arguments.contains("--verify-page-footers") { ReadingModesRuntimeCheck.run() }
+        if CommandLine.arguments.contains("--verify-chapter-loading") || CommandLine.arguments.contains("--verify-reading-modes") || CommandLine.arguments.contains("--verify-page-footers") { ReadingModesRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-model") { ModelRuntimeCheck.run() }
         #endif
     }

@@ -347,14 +347,14 @@ impl ReaderApp {
     fn tts_block_count(&self, chapter: usize) -> Option<usize> {
         self.book
             .as_ref()
-            .and_then(|b| b.chapters.get(chapter).map(|ch| ch.blocks.len()))
+            .and_then(|b| b.chapter(chapter).ok().map(|ch| ch.blocks.len()))
     }
 
     /// Starting from `from`, find the next block index that is a Paragraph or Heading.
     fn tts_next_readable_block(&self, chapter: usize, from: usize) -> usize {
         self.book
             .as_ref()
-            .and_then(|book| book.chapters.get(chapter))
+            .and_then(|book| book.chapter(chapter).ok())
             .map_or(0, |chapter| next_readable_block(&chapter.blocks, from))
     }
 
@@ -379,7 +379,7 @@ impl ReaderApp {
         self.book
             .as_ref()
             .and_then(|b| {
-                b.chapters.get(chapter).and_then(|ch| {
+                b.chapter(chapter).ok().and_then(|ch| {
                     ch.blocks.get(block_idx).map(|block| match block {
                         reader_core::epub::ContentBlock::Paragraph { spans, .. } => {
                             spans.iter().map(|s| s.text.as_str()).collect::<String>()

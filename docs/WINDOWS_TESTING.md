@@ -59,8 +59,11 @@ deletion, annotations or synchronization.
 | Contribution choice | Default does not count sync commits toward the contribution graph; the user's toggle persists independently of enabling sync |
 | LAN sharing | Private-network firewall permission, PIN pairing, real EPUB/progress transfer with another device; reject invalid PIN and corrupt file |
 
-Cloud limits: 20 MiB per book; highlights/notes/settings are currently local.
-Local deletion does not delete the repository's book file. Mobile background file
+Cloud limits: 1 GiB per book; files above 20 MiB use resumable 8 MiB chunks in the
+same private GitHub repository. Test disconnect/restart/retry and archive restore
+with a large file. Highlights/notes/settings are currently local.
+Archiving hides the book across devices on their next sync; permanent deletion
+from the archive removes its cloud file or chunk assets. Mobile background file
 work runs while the app is foregrounded; it is not an unlimited background service.
 Keep these boundaries in mind when comparing all three clients.
 

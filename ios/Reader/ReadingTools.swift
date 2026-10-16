@@ -123,7 +123,7 @@ struct NativeDictionary: UIViewControllerRepresentable {
     }
     func excerpt(_ highlight: ReaderHighlight) -> String {
         guard book.chapters.indices.contains(highlight.chapter) else { return "" }
-        return book.chapters[highlight.chapter].blocks.filter { $0.type == "Paragraph" || $0.type == "Heading" }.filter { ($0.core_block ?? 0) >= highlight.start_block && ($0.core_block ?? 0) <= highlight.end_block }.map { block in
+        return ((try? book.chapter(at:highlight.chapter))?.blocks ?? []).filter { $0.type == "Paragraph" || $0.type == "Heading" }.filter { ($0.core_block ?? 0) >= highlight.start_block && ($0.core_block ?? 0) <= highlight.end_block }.map { block in
             let text = (block.spans ?? []).map(\.text).joined(); let scalars = Array(text.unicodeScalars)
             let begin = (block.core_block ?? 0) == highlight.start_block ? highlight.start_offset : 0
             let end = (block.core_block ?? 0) == highlight.end_block ? highlight.end_offset : scalars.count
@@ -211,7 +211,7 @@ struct CorrectionView: View {
                 LabeledContent("MacBERT", value: model.ready ? L("csc.model_ready") : model.available ? L("common.not_loaded") : L("common.not_downloaded"))
                 if model.busy { HStack { ProgressView(); Text(L("common.processing")) }; Button(L("share.cancel")) { model.cancel() } }
                 else if !model.ready { Button(model.available ? L("csc.load_model") : L("csc.download_model")) { model.prepare(download: !model.available) } }
-                else { Button(L("csc.check_current_chapter")) { model.check(chapter: annotations.book.chapters[chapter]) } }
+                else { Button(L("csc.check_current_chapter")) { if let content=try? annotations.book.chapter(at:chapter) {model.check(chapter:content)} } }
                 if model.available && !model.busy { Button(L("csc.delete_model"), role: .destructive) { model.remove() } }
                 Picker(L("csc.correction_intensity"), selection: $model.threshold) { Text(L("csc.conservative")).tag(0.97); Text(L("csc.standard")).tag(0.90); Text(L("csc.intensity_aggressive")).tag(0.80) }.disabled(model.busy)
                 if let error = model.error { Text(LM(error)).foregroundStyle(.red) }

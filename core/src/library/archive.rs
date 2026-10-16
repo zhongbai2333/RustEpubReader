@@ -367,6 +367,54 @@ pub fn restore_download(
     Ok(Some(entry.clone()))
 }
 
+/// Restore an owned archived identity from a verified staged file without
+/// materializing the entire publication in memory.
+pub fn restore_download_file(
+    root: &str,
+    library: &mut Library,
+    hash: &str,
+    source: &Path,
+) -> Result<Option<BookEntry>, String> {
+    let store = ArchiveStore::load(root)?;
+    let Some(record) = store.records.get(hash) else {
+        return Ok(None);
+    };
+    if record.lifecycle.state != BookState::Active {
+        return Err("Book is archived".into());
+    }
+    let Some(entry) = &record.entry else {
+        return Ok(None);
+    };
+    let expected = Path::new(root)
+        .join("books")
+        .join(format!("{}.epub", entry.id));
+    if !super::is_uuid_like(&entry.id)
+        || expected != Path::new(&entry.path)
+        || crate::file_hash(&source.to_string_lossy())? != hash
+    {
+        return Err("Cannot restore archived book".into());
+    }
+    if crate::file_hash(&expected.to_string_lossy()).is_ok_and(|v| v == hash) {
+        library.restore_entry(root, entry.clone());
+        return Ok(Some(entry.clone()));
+    }
+    let temporary = expected.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        std::fs::copy(source, &temporary).map_err(|_| "Cannot copy restored book")?;
+        if crate::file_hash(&temporary.to_string_lossy())? != hash {
+            return Err("Restored book integrity check failed".into());
+        }
+        std::fs::rename(&temporary, &expected).map_err(|_| "Cannot finalize restored book")?;
+        Ok::<_, String>(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result?;
+    library.restore_entry(root, entry.clone());
+    Ok(Some(entry.clone()))
+}
+
 pub fn dispatch(root: &str, request: &serde_json::Value) -> Result<serde_json::Value, String> {
     match request["action"].as_str().unwrap_or("list") {
         "list" => {
@@ -522,6 +570,38 @@ mod tests {
         .unwrap();
         assert!(ArchiveStore::load(root).unwrap().list().is_empty());
         assert!(restore_download(root, &mut library, &hash, &bytes).is_err());
+    }
+    #[test]
+    fn staged_file_restore_keeps_identity_and_rejects_corrupt_downloads() {
+        let (dir, mut library, entry, bytes) = setup();
+        let root = dir.path().to_str().unwrap();
+        let hash = crate::bytes_hash(&bytes);
+        ArchiveStore::archive(root, &mut library, std::slice::from_ref(&entry.path)).unwrap();
+        ArchiveStore::change(root, &hash, BookState::Active).unwrap();
+        library = Library::load_from(root);
+        library.hide_paths(root, &std::collections::HashSet::from([entry.path.clone()]));
+        std::fs::remove_file(&entry.path).unwrap();
+        let staged = dir.path().join("download.partial");
+        std::fs::write(&staged, b"corrupt").unwrap();
+        assert!(restore_download_file(root, &mut library, &hash, &staged).is_err());
+        assert!(!Path::new(&entry.path).exists());
+        assert!(library.books.is_empty());
+        std::fs::write(&staged, bytes).unwrap();
+        let restored = restore_download_file(root, &mut library, &hash, &staged)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.id, entry.id);
+        assert_eq!(restored.last_chapter, entry.last_chapter);
+        assert_eq!(restored.path, entry.path);
+        assert_eq!(crate::file_hash(&restored.path).unwrap(), hash);
+        assert_eq!(
+            Library::read_book_config(root, &entry.id)
+                .unwrap()
+                .last_chapter,
+            3
+        );
+        assert_eq!(library.books.len(), 1);
+        assert!(staged.exists());
     }
     #[test]
     fn selection_validation_is_atomic_and_never_unlinks_external_files() {

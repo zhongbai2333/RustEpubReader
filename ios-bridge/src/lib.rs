@@ -99,7 +99,10 @@ fn book(root: &str, entry: &BookEntry) -> Result<Arc<EpubBook>, String> {
             return Ok(b.clone());
         }
     }
-    let parsed = EpubBook::open(&entry.path)?;
+    let parsed = EpubBook::open_cached(
+        &entry.path,
+        &PathBuf::from(root).join(".cache/chapter-index"),
+    )?;
     if parsed.chapters.is_empty() {
         return Err("EPUB has no readable chapters".into());
     }
@@ -113,10 +116,7 @@ fn validate_position(
     block: usize,
     offset: usize,
 ) -> Result<(), String> {
-    let ch = b
-        .chapters
-        .get(chapter)
-        .ok_or("Reading chapter is out of range")?;
+    let ch = b.chapter(chapter)?;
     if ch.blocks.is_empty() && block == 0 && offset == 0 {
         return Ok(());
     }
@@ -289,32 +289,41 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     .collect::<Vec<_>>())),
                 "import" => {
                     let path = field(&v, "path")?;
-                    // Local books can be larger than the cloud's 20 MiB limit.
+                    // Admission is separate from per-chunk and decoded-payload bounds.
                     if std::fs::metadata(path)
                         .map_err(|_| "Cannot read selected file")?
                         .len()
-                        > 100 * 1024 * 1024
+                        > reader_core::cloud_sync::MAX_DOCUMENT_BYTES
                     {
-                        return Err("EPUB exceeds the local 100 MiB limit".into());
+                        return Err("EPUB exceeds the local 1 GiB limit".into());
                     }
                     // Do not derive a managed UUID from a user-supplied filename.
                     // Copy a bounded, validated snapshot first; an external file named
                     // after an existing book must never overwrite that book.
                     use std::io::Read;
-                    let scratch = ImportScratch(PathBuf::from(root).join(".epub-import.tmp"));
+                    let scratch = ImportScratch(
+                        PathBuf::from(root)
+                            .join(format!(".epub-import-{}.tmp", uuid::Uuid::new_v4())),
+                    );
                     let source =
                         std::fs::File::open(path).map_err(|_| "Cannot read selected file")?;
                     let mut target = std::fs::File::create(&scratch.0)
                         .map_err(|_| "Cannot copy EPUB into library storage")?;
-                    let size = std::io::copy(&mut source.take(100 * 1024 * 1024 + 1), &mut target)
-                        .map_err(|_| "Cannot copy EPUB into library storage")?;
-                    if size > 100 * 1024 * 1024 {
-                        return Err("EPUB exceeds the local 100 MiB limit".into());
+                    let size = std::io::copy(
+                        &mut source.take(reader_core::cloud_sync::MAX_DOCUMENT_BYTES + 1),
+                        &mut target,
+                    )
+                    .map_err(|_| "Cannot copy EPUB into library storage")?;
+                    if size > reader_core::cloud_sync::MAX_DOCUMENT_BYTES {
+                        return Err("EPUB exceeds the local 1 GiB limit".into());
                     }
                     target
                         .sync_all()
                         .map_err(|_| "Cannot copy EPUB into library storage")?;
-                    let parsed = EpubBook::open(&scratch.0)?;
+                    let parsed = EpubBook::open_cached(
+                        &scratch.0,
+                        &PathBuf::from(root).join(".cache/chapter-index"),
+                    )?;
                     if parsed.chapters.is_empty() {
                         return Err("EPUB has no readable chapters".into());
                     }
@@ -352,6 +361,8 @@ fn dispatch(v: Value) -> Result<Value, String> {
                         );
                         return Err("Cannot copy EPUB into library storage".into());
                     }
+                    // Release the temporary archive handle before its owner unlinks it.
+                    parsed.relocate_source(std::path::Path::new(&e.path))?;
                     // Validation already parsed these exact, hash-checked bytes.
                     // Opening the newly imported book must not parse it again.
                     *BOOK.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -380,7 +391,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     let e = entry(root, field(&v, "id")?)?;
                     let parsed = book(root, &e)?;
                     let index = number(&v, "chapter")?;
-                    let chapter = parsed.chapters.get(index).ok_or("Invalid chapter")?;
+                    let chapter = parsed.chapter(index)?;
                     let events: Vec<reader_core::epub::native::NativeEvent> =
                         serde_json::from_value(v["events"].clone())
                             .map_err(|_| "Invalid events")?;
@@ -396,38 +407,55 @@ fn dispatch(v: Value) -> Result<Value, String> {
                 "open" => {
                     let e = entry(root, field(&v, "id")?)?;
                     let parsed = book(root, &e)?;
-                    let rendered = parsed.render_blocks(&e.path)?;
-                    let mut budget = 0usize;
-                    let mut chapters = Vec::new();
-                    for (ch, rendered) in parsed.chapters.iter().zip(rendered) {
-                        let mut blocks = Vec::new();
-                        for (index, offset, block) in rendered {
-                            let mut value = match block {
-                                ContentBlock::Image { data, alt, .. } => {
-                                    budget =
-                                        budget.saturating_add(data.len().saturating_mul(4) / 3);
-                                    json!({"type":"Image", "data":reader_core::base64_encode(&data), "alt":alt})
-                                }
-                                _ => {
-                                    let value = serde_json::to_value(block)
-                                        .map_err(|_| "Cannot encode chapter")?;
-                                    budget = budget.saturating_add(value.to_string().len());
-                                    value
-                                }
-                            };
-                            if budget > 64 * 1024 * 1024 {
-                                return Err("EPUB rendered content exceeds the 64 MiB limit".into());
-                            }
-                            value["core_block"] = json!(index);
-                            value["core_char_offset"] = json!(offset);
-                            blocks.push(value);
-                        }
-                        chapters.push(json!({"title":ch.title,"blocks":blocks}));
-                    }
                     nearby::opened(root, &e.path);
-                    Ok(
-                        json!({"entry":entry_value(root,&e),"chapters":chapters,"toc":parsed.toc,"cover":parsed.cover_data.as_ref().map(|d| reader_core::base64_encode(d))}),
-                    )
+                    Ok(json!({"entry":entry_value(root,&e),
+                        "chapters":parsed.chapters.iter().map(|ch| json!({"title":ch.title,"blocks":[]})).collect::<Vec<_>>(),
+                        "chapter_loading":true,"toc":parsed.toc,
+                        "cover":parsed.cover_data.as_ref().map(|d| reader_core::base64_encode(d))}))
+                }
+                "chapter_cache_stats" => {
+                    let entry = entry(root, field(&v, "id")?)?;
+                    let stats = book(root, &entry)?.chapter_cache_stats();
+                    Ok(json!({"resident":stats.0,"body_loads":stats.1,"index_probes":stats.2}))
+                }
+                "chapter" => {
+                    let e = entry(root, field(&v, "id")?)?;
+                    let parsed = book(root, &e)?;
+                    let index = number(&v, "chapter")?;
+                    let source = parsed
+                        .chapters
+                        .get(index)
+                        .ok_or("Reading chapter is out of range")?;
+                    let mut budget = 0usize;
+                    let mut blocks = Vec::new();
+                    for (index, offset, block) in parsed.render_chapter(index)? {
+                        let mut value = match block {
+                            ContentBlock::Image { data, alt, .. } => {
+                                if data.len().div_ceil(3).saturating_mul(4)
+                                    > 64 * 1024 * 1024 - budget
+                                {
+                                    return Err("EPUB chapter exceeds the 64 MiB limit".into());
+                                }
+                                json!({"type":"Image","data":reader_core::base64_encode(&data),"alt":alt})
+                            }
+                            _ => {
+                                let mut value = serde_json::to_value(block)
+                                    .map_err(|_| "Cannot encode chapter")?;
+                                // Native presentation is requested separately; default style
+                                // objects need not be repeated for every canonical paragraph.
+                                value.as_object_mut().unwrap().remove("native_style");
+                                value
+                            }
+                        };
+                        value["core_block"] = json!(index);
+                        value["core_char_offset"] = json!(offset);
+                        budget = budget.saturating_add(value.to_string().len());
+                        if budget > 64 * 1024 * 1024 {
+                            return Err("EPUB chapter exceeds the 64 MiB limit".into());
+                        }
+                        blocks.push(value);
+                    }
+                    Ok(json!({"title":source.title,"blocks":blocks}))
                 }
                 "save" => {
                     let e = entry(root, field(&v, "id")?)?;
@@ -673,11 +701,9 @@ mod tests {
         let e = request(root, "import", json!({"path":source}))["result"].clone();
         let id = e["id"].as_str().unwrap();
         let parsed = book(root, &entry(root, id).unwrap()).unwrap();
-        let (chapter, block) = parsed
-            .chapters
-            .iter()
-            .enumerate()
-            .find_map(|(c, ch)| {
+        let (chapter, block) = (0..parsed.chapters.len())
+            .find_map(|c| {
+                let ch = parsed.chapter(c).unwrap();
                 ch.blocks
                     .iter()
                     .enumerate()
@@ -810,22 +836,21 @@ mod tests {
         let opened = request(root, "open", json!({"id":id}));
         assert_eq!(opened["ok"], true);
         let chapters = opened["result"]["chapters"].as_array().unwrap();
-        let (chapter, block) = chapters
-            .iter()
-            .enumerate()
-            .find_map(|(c, ch)| {
-                ch["blocks"]
+        let (chapter, block) = (0..chapters.len())
+            .find_map(|chapter| {
+                let response = request(root, "chapter", json!({"id":id,"chapter":chapter}));
+                response["result"]["blocks"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .position(|b| {
-                        b["spans"].as_array().is_some_and(|spans| {
+                    .find(|block| {
+                        block["spans"].as_array().is_some_and(|spans| {
                             spans
                                 .iter()
                                 .any(|s| s["text"].as_str().unwrap().contains('😀'))
                         })
                     })
-                    .map(|b| (c, b))
+                    .map(|block| (chapter, block["core_block"].as_u64().unwrap() as usize))
             })
             .unwrap();
         assert_eq!(
@@ -888,6 +913,38 @@ mod tests {
             false
         );
         assert_eq!(Library::load_from(root).books.len(), 2);
+    }
+    #[test]
+    fn open_returns_only_catalog_and_single_chapters_keep_coordinates() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let imported = request(
+            root,
+            "import",
+            json!({"path":concat!(env!("CARGO_MANIFEST_DIR"),"/../core/tests/fixtures/native-typography.epub")}),
+        );
+        assert_eq!(imported["ok"], true);
+        let id = imported["result"]["id"].as_str().unwrap();
+        let opened = request(root, "open", json!({"id":id}));
+        assert_eq!(opened["ok"], true);
+        assert_eq!(opened["result"]["chapter_loading"], true);
+        assert!(opened["result"]["chapters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|ch| ch["blocks"].as_array().unwrap().is_empty()));
+        let chapter = request(root, "chapter", json!({"id":id,"chapter":0}));
+        assert_eq!(chapter["ok"], true);
+        let blocks = chapter["result"]["blocks"].as_array().unwrap();
+        assert!(!blocks.is_empty());
+        assert!(blocks.iter().all(|block| block["core_block"].is_number()
+            && block["core_char_offset"].is_number()
+            && block.get("native_style").is_none()));
+        assert_eq!(
+            request(root, "chapter", json!({"id":id,"chapter":999999}))["ok"],
+            false
+        );
     }
     #[test]
     fn an_unwind_cannot_leave_sync_permanently_busy() {

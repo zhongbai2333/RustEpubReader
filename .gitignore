@@ -40,6 +40,8 @@ peers.json
 settings.json
 books/
 .cache/shelf-covers-v1/
+.cache/chapter-index/
+.epub-import-*.tmp
 models/
 android/app/src/main/jniLibs/
 # Device-local sync journal (no credentials)
@@ -56,6 +58,7 @@ book-share-history.json
 
 # Device-local failed-transfer queue
 github-sync-transfers/
+github-sync-chunks/
 
 # Xcode user state and local build products (keep shared scheme / Package.resolved)
 **/xcuserdata/

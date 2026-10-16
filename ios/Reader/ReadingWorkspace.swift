@@ -159,7 +159,7 @@ struct ReadingWorkspace: View {
                                  guard !Task.isCancelled,let target else{return}
                                  activity.touch();speech.detach();jump=target;jumpingID += 1;library.save(target,for:book)
                              }
-                         }, nativeStyles: nativeStyles, viewportChanged: { viewport = $0 }, contentVisible: contentVisible, immersiveStatus: showImmersiveStatus ? statusInfo : nil)
+                         }, nativeStyles: nativeStyles, failed: {library.fail($0,title:L("reader.error_open_failed"))}, viewportChanged: { viewport = $0 }, contentVisible: contentVisible, immersiveStatus: showImmersiveStatus ? statusInfo : nil)
                 .ignoresSafeArea()
             }
             GeometryReader { geometry in
@@ -334,7 +334,8 @@ struct ReadingWorkspace: View {
             let indices=Array(max(0,current.chapter-2)..<min(book.chapters.count,current.chapter+3))
             let chapter=current.chapter
             let first=await Task.detached { () -> NativePresentation in
-                (try? client.call("native_presentation",["id":id,"chapter":chapter,"policy":mode,"scripts":enabled,"events":(events[chapter] ?? []).map {["node":$0]}],as:NativePresentation.self)) ?? NativePresentation(styles:[],errors:[])
+                _ = try? book.chapter(at:chapter)
+                return (try? client.call("native_presentation",["id":id,"chapter":chapter,"policy":mode,"scripts":enabled,"events":(events[chapter] ?? []).map {["node":$0]}],as:NativePresentation.self)) ?? NativePresentation(styles:[],errors:[])
             }.value
             guard !Task.isCancelled else {return}
             nativeStyles[chapter]=first.styles; nativeRevision += 1
@@ -343,6 +344,7 @@ struct ReadingWorkspace: View {
             guard !Task.isCancelled else {return}
             let result=await Task.detached {
                 indices.filter {$0 != chapter}.reduce(into:[Int:NativePresentation]()) { result,index in
+                    _ = try? book.chapter(at:index)
                     result[index]=try? client.call("native_presentation",["id":id,"chapter":index,"policy":mode,"scripts":enabled,"events":(events[index] ?? []).map {["node":$0]}],as:NativePresentation.self)
                 }
             }.value

@@ -110,8 +110,8 @@ impl ReaderApp {
                                     let preview =
                                         self.book
                                             .as_ref()
-                                            .and_then(|b| b.chapters.get(hl.chapter))
-                                            .and_then(|ch| ch.blocks.get(hl.start_block))
+                                            .and_then(|b| b.chapter(hl.chapter).ok())
+                                            .and_then(|ch| ch.blocks.get(hl.start_block).cloned())
                                             .map(|block| {
                                                 let full: String = match block {
                                                 reader_core::epub::ContentBlock::Paragraph {

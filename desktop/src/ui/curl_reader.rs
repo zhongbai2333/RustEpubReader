@@ -1216,6 +1216,7 @@ mod integration_tests {
         app.reader_page_animation = "Realistic".into();
         app.view = crate::app::AppView::Reader;
         app.book = Some(EpubBook {
+            chapter_store: None,
             title: "Turn regression".into(),
             chapters: (0..3)
                 .map(|i| Chapter {

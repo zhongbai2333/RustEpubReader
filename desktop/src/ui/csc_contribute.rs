@@ -88,9 +88,9 @@ impl ReaderApp {
         let mut samples = Vec::new();
 
         for rec in &accepted {
-            let chapter = match book.chapters.get(rec.chapter) {
-                Some(ch) => ch,
-                None => continue,
+            let chapter = match book.chapter(rec.chapter) {
+                Ok(ch) => ch,
+                Err(_) => continue,
             };
             let block = match chapter.blocks.get(rec.block_idx) {
                 Some(b) => b,

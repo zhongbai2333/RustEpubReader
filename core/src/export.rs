@@ -93,7 +93,7 @@ pub fn export_book(
             Ok(())
         }
         _ => {
-            let book = EpubBook::open(source_epub)?;
+            let book = EpubBook::open_lazy(source_epub)?;
             build_modified_epub(&book, output_path, config, &mode)
         }
     }
@@ -123,8 +123,9 @@ fn build_modified_epub(
         .stylesheet(css.as_bytes())
         .map_err(|e| format!("{e}"))?;
 
-    for (ch_idx, chapter) in book.chapters.iter().enumerate() {
-        let xhtml = build_chapter_xhtml(chapter, ch_idx, config, mode);
+    for ch_idx in 0..book.chapters.len() {
+        let chapter = book.chapter(ch_idx)?;
+        let xhtml = build_chapter_xhtml(&chapter, ch_idx, config, mode);
         let filename = format!("chapter_{ch_idx:04}.xhtml");
         let content = EpubContent::new(&filename, xhtml.as_bytes()).title(&chapter.title);
         builder.add_content(content).map_err(|e| format!("{e}"))?;

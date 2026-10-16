@@ -215,6 +215,7 @@ fun ReaderScreen(
         presentations=emptyMap()
     }
     LaunchedEffect(bookPath,currentChapter,cssPolicy,scriptsEnabled,nativeEvents) {
+        presentations=presentations.filterKeys {it in currentChapter-2..currentChapter+3}
         suspend fun prepare(index:Int): NativePresentation = withContext(kotlinx.coroutines.Dispatchers.IO) {
             val events=(nativeEvents[index]?:emptyList()).joinToString(",","[","]") { "{\"node\":$it}" }
             com.zhongbai233.epub.reader.RustBridge.nativePresentation(bookPath,index,cssPolicy,scriptsEnabled,events)

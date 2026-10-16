@@ -1,6 +1,9 @@
 //! EPUB parser module containing sub-parsers for HTML, images, and other aspects.
 mod html;
 mod image;
+mod lazy;
+pub(crate) use lazy::read_bounded;
+pub use lazy::{ChapterStore, LoadedChapter};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -58,26 +61,27 @@ fn normalize_resource_path(path: &str) -> String {
     }
 }
 
-fn resource_path_matches(resource_path: &str, candidate_path: &str) -> bool {
-    let resource_norm = normalize_resource_path(resource_path);
-    let candidate_norm = normalize_resource_path(candidate_path);
-    let resource_trim = resource_norm.trim_start_matches('/');
-    let candidate_trim = candidate_norm.trim_start_matches('/');
-    if resource_trim == candidate_trim
-        || resource_trim.ends_with(candidate_trim)
-        || candidate_trim.ends_with(resource_trim)
-    {
-        return true;
+struct PreparedPath {
+    normalized: String,
+    name: String,
+}
+impl PreparedPath {
+    fn new(path: &str) -> Self {
+        let normalized = normalize_resource_path(path)
+            .trim_start_matches('/')
+            .to_owned();
+        let name = Path::new(&normalized)
+            .file_name()
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self { normalized, name }
     }
-    let resource_name = Path::new(resource_trim)
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let candidate_name = Path::new(candidate_trim)
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_default();
-    !resource_name.is_empty() && resource_name == candidate_name
+    fn matches(&self, other: &Self) -> bool {
+        self.normalized == other.normalized
+            || self.normalized.ends_with(&other.normalized)
+            || other.normalized.ends_with(&self.normalized)
+            || (!self.name.is_empty() && self.name == other.name)
+    }
 }
 
 fn collect_toc_items(epub: &RbookEpub) -> Vec<(String, String)> {
@@ -98,6 +102,8 @@ fn collect_toc_items(epub: &RbookEpub) -> Vec<(String, String)> {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EpubBook {
+    #[serde(skip)]
+    pub chapter_store: Option<std::sync::Arc<ChapterStore>>,
     pub title: String,
     pub chapters: Vec<Chapter>,
     pub toc: Vec<TocEntry>,
@@ -141,7 +147,9 @@ pub struct EpubMetadata {
 
 impl EpubBook {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
-        let epub = RbookEpub::open(path).map_err(|e| format!("无法打开 EPUB 文件: {e}"))?;
+        let epub = std::sync::Arc::new(
+            RbookEpub::open(path).map_err(|e| format!("无法打开 EPUB 文件: {e}"))?,
+        );
         let metadata = epub.metadata();
 
         let title = metadata
@@ -168,8 +176,12 @@ impl EpubBook {
         let mut image_resources: HashMap<String, Vec<u8>> = HashMap::new();
 
         let toc_items = collect_toc_items(&epub);
-        let mut text_resources: HashMap<String, Option<String>> = HashMap::new();
-        let mut cached_text_bytes = 0usize;
+        let toc_paths: Vec<_> = toc_items
+            .iter()
+            .map(|(_, path)| PreparedPath::new(path))
+            .collect();
+        let native_resources =
+            std::sync::Arc::new(super::native::NativeResources::new(epub.clone()));
 
         for spine_entry in epub.spine().iter() {
             let Some(manifest_entry) = spine_entry.manifest_entry() else {
@@ -208,10 +220,10 @@ impl EpubBook {
             );
             let blocks: Vec<_> = canonical.into_iter().map(|(_, _, block)| block).collect();
 
-            let chapter_title = toc_items
-                .iter()
-                .find(|(_, p)| resource_path_matches(&path_str, p))
-                .map(|(label, _)| label.clone())
+            let prepared_path = PreparedPath::new(&path_str);
+            let toc_match = toc_paths.iter().position(|p| prepared_path.matches(p));
+            let chapter_title = toc_match
+                .map(|index| toc_items[index].0.clone())
                 .unwrap_or_else(|| format!("第 {} 章", chapters.len() + 1));
 
             if blocks.is_empty() {
@@ -234,27 +246,11 @@ impl EpubBook {
                 supplemental_images.insert(chapter_idx, media);
             }
 
-            let native_document = super::native::NativeDocument::parse_document(
-                &html,
-                &path_str,
+            let native_document = super::native::NativeDocument::deferred(
+                html,
+                path_str.clone(),
                 &blocks,
-                |p| {
-                    if let Some(cached) = text_resources.get(p) {
-                        return cached.clone();
-                    }
-                    let value = epub.read_resource_str(p).ok().map(|s| s.to_string());
-                    let bytes = value.as_ref().map_or(0, String::len);
-                    // Share common styles/scripts without retaining an unbounded
-                    // cache for books that give every chapter different resources.
-                    if text_resources.len() < 128
-                        && cached_text_bytes.saturating_add(bytes) <= 8 * 1024 * 1024
-                    {
-                        cached_text_bytes += bytes;
-                        text_resources.insert(p.into(), value.clone());
-                    }
-                    value
-                },
-                &document,
+                native_resources.clone(),
             );
             chapters.push(Chapter {
                 native_document: std::sync::Arc::new(native_document),
@@ -263,10 +259,7 @@ impl EpubBook {
                 source_href: Some(path_str.clone()),
             });
 
-            if toc_items
-                .iter()
-                .any(|(_, p)| resource_path_matches(&path_str, p))
-            {
+            if toc_match.is_some() {
                 toc.push(TocEntry {
                     title: chapter_title,
                     chapter_index: chapter_idx,
@@ -355,6 +348,7 @@ impl EpubBook {
         }
 
         Ok(EpubBook {
+            chapter_store: None,
             title,
             chapters,
             toc,
@@ -368,55 +362,69 @@ impl EpubBook {
 
     /// Render-only supplemental media; tuple indices retain the original shared
     /// block/scalar coordinate. The canonical chapters and sync schema stay stable.
-    pub fn render_blocks<P: AsRef<Path>>(&self, _path: P) -> Result<RenderChapters, String> {
-        self.chapters
-            .iter()
-            .enumerate()
-            .map(|(index, chapter)| {
-                let media = self
-                    .supplemental_images
-                    .get(&index)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let mut blocks = Vec::new();
-                for (i, block) in chapter.blocks.iter().enumerate() {
-                    for image in media
-                        .iter()
-                        .filter(|image| image.block == i && !image.after)
-                    {
-                        blocks.push((
-                            i,
-                            0,
-                            super::ContentBlock::Image {
-                                native_style: Default::default(),
-                                data: image.data.clone(),
-                                alt: image.alt.clone(),
-                            },
-                        ));
-                    }
-                    blocks.push((i, 0, block.clone()));
-                    let end = match block {
-                        super::ContentBlock::Paragraph { spans, .. }
-                        | super::ContentBlock::Heading { spans, .. } => {
-                            spans.iter().map(|s| s.text.chars().count()).sum()
-                        }
-                        _ => 0,
-                    };
-                    for image in media.iter().filter(|image| image.block == i && image.after) {
-                        blocks.push((
-                            i,
-                            end,
-                            super::ContentBlock::Image {
-                                native_style: Default::default(),
-                                data: image.data.clone(),
-                                alt: image.alt.clone(),
-                            },
-                        ));
-                    }
+    pub fn render_chapter(
+        &self,
+        index: usize,
+    ) -> Result<Vec<(usize, usize, super::ContentBlock)>, String> {
+        let loaded = self.loaded_chapter(index)?;
+        let chapter = &loaded.chapter;
+        let media = loaded.images.as_slice();
+        let mut blocks = Vec::new();
+        for (i, block) in chapter.blocks.iter().enumerate() {
+            for image in media
+                .iter()
+                .filter(|image| image.block == i && !image.after)
+            {
+                blocks.push((
+                    i,
+                    0,
+                    super::ContentBlock::Image {
+                        native_style: Default::default(),
+                        data: image.data.clone(),
+                        alt: image.alt.clone(),
+                    },
+                ));
+            }
+            blocks.push((i, 0, block.clone()));
+            let end = match block {
+                super::ContentBlock::Paragraph { spans, .. }
+                | super::ContentBlock::Heading { spans, .. } => {
+                    spans.iter().map(|s| s.text.chars().count()).sum()
                 }
-                Ok(blocks)
-            })
+                _ => 0,
+            };
+            for image in media.iter().filter(|image| image.block == i && image.after) {
+                blocks.push((
+                    i,
+                    end,
+                    super::ContentBlock::Image {
+                        native_style: Default::default(),
+                        data: image.data.clone(),
+                        alt: image.alt.clone(),
+                    },
+                ));
+            }
+        }
+        Ok(blocks)
+    }
+    pub fn render_blocks<P: AsRef<Path>>(&self, _path: P) -> Result<RenderChapters, String> {
+        (0..self.chapters.len())
+            .map(|index| self.render_chapter(index))
             .collect()
+    }
+
+    /// Rebind lazy resources after importing an identical, hash-verified copy.
+    /// Canonical chapter bodies and saved coordinates are not rebuilt.
+    pub fn relocate_source(&self, path: &Path) -> Result<(), String> {
+        if let Some(store) = &self.chapter_store {
+            return store.relocate(path);
+        }
+        for chapter in &self.chapters {
+            if chapter.native_document.relocate_source(path)? {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Compute SHA-256 hash of an epub file for cross-device identification
@@ -539,7 +547,9 @@ impl EpubBook {
             })?
         };
         let (block, char_offset) = match fragment.filter(|id| !id.is_empty()) {
-            Some(id) => self.chapters[target]
+            Some(id) => self
+                .chapter(target)
+                .ok()?
                 .native_document
                 .anchor(&decode_fragment(id)?)?,
             None => (0, 0),
@@ -568,7 +578,8 @@ impl EpubBook {
             })?
         };
         let id = decode_fragment(id)?;
-        self.chapters[target]
+        self.chapter(target)
+            .ok()?
             .native_document
             .note(&id)
             .map(|text| super::native::NativeNote {
@@ -597,4 +608,61 @@ fn decode_fragment(value: &str) -> Option<String> {
         }
     }
     String::from_utf8(output).ok()
+}
+
+#[cfg(test)]
+mod prepared_paths_tests {
+    use super::*;
+    #[test]
+    fn prepared_toc_matching_keeps_first_match_and_legacy_path_semantics() {
+        fn original(a: &str, b: &str) -> bool {
+            let a = normalize_resource_path(a);
+            let b = normalize_resource_path(b);
+            let a = a.trim_start_matches('/');
+            let b = b.trim_start_matches('/');
+            if a == b || a.ends_with(b) || b.ends_with(a) {
+                return true;
+            }
+            let a = Path::new(a)
+                .file_name()
+                .map(|v| v.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let b = Path::new(b)
+                .file_name()
+                .map(|v| v.to_string_lossy().to_string())
+                .unwrap_or_default();
+            !a.is_empty() && a == b
+        }
+        let paths = [
+            "/OEBPS/ch1.xhtml",
+            "Text/ch1.xhtml#p1",
+            "../ch1.xhtml?a=b",
+            "a/../b/ch2.xhtml",
+            "ch2.xhtml",
+            "2.xhtml",
+            "b\\ch2.xhtml",
+            "",
+            "/",
+            "b/",
+            "中文.xhtml",
+        ];
+        for a in paths {
+            for b in paths {
+                assert_eq!(
+                    PreparedPath::new(a).matches(&PreparedPath::new(b)),
+                    original(a, b),
+                    "{a} {b}"
+                );
+            }
+        }
+        for name in 0..3500 {
+            let path = format!("/OEBPS/chapter_{name:05}.xhtml");
+            let toc = [format!("chapter_{name:05}.xhtml"), path.clone()];
+            assert_eq!(
+                toc.iter()
+                    .position(|p| PreparedPath::new(&path).matches(&PreparedPath::new(p))),
+                Some(0)
+            );
+        }
+    }
 }

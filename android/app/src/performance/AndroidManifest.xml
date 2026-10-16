@@ -1,0 +1,1 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application><activity android:name="com.zhongbai233.epub.reader.ui.reader.ReaderPerformanceActivity" android:exported="true" /></application></manifest>

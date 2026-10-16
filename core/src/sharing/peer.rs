@@ -1171,7 +1171,7 @@ fn validate_received_book(
     }
     let scratch = Scratch(path);
     std::fs::write(&scratch.0, data).map_err(|_| "Cannot save received EPUB")?;
-    let book = crate::epub::EpubBook::open(&scratch.0)?;
+    let book = crate::epub::EpubBook::open_lazy(&scratch.0)?;
     if book.chapters.is_empty() {
         return Err("EPUB has no readable chapters".into());
     }

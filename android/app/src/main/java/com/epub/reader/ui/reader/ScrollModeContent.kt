@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -64,7 +63,7 @@ internal fun ScrollModeContent(
     onPositionChange: (Int,Int) -> Unit = { _,_ -> },
     onContentPrepared: () -> Unit = {},
 ) {
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
     val visibleImages=remember(publicationKey(allChapters)) { VisibleReaderImages() }
     val preparedCallback by rememberUpdatedState(onContentPrepared)
     LaunchedEffect(publicationKey(allChapters),initialChapter) {
@@ -204,9 +203,9 @@ internal fun ScrollModeContent(
                 bottom = bottomPaddingDp,
             ),
     ) {
-        itemsIndexed(allChapters, key = { index, _ -> "chapter-$index" }) {
-            chapterIndex,
-            chapterItem ->
+        // Key generation must not access lazy bodies in Compose's nearby-key window.
+        items(count = allChapters.size, key = { index -> "chapter-$index" }) { chapterIndex ->
+            val chapterItem = allChapters[chapterIndex]
             Column(
                 modifier =
                     Modifier.fillMaxWidth()

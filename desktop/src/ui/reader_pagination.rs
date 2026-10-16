@@ -319,6 +319,126 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "explicit Release benchmark with READER_LARGE_BOOK and READER_PERFORMANCE_REPORT"]
+    fn huge_book_release_native_renderer_performance() {
+        use reader_core::epub::EpubBook;
+        use std::time::Instant;
+        fn rss() -> u64 {
+            std::process::Command::new("ps")
+                .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                .output()
+                .ok()
+                .and_then(|v| String::from_utf8(v.stdout).ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+                * 1024
+        }
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let root = tempfile::tempdir().unwrap();
+        let path = std::env::var("READER_LARGE_BOOK").unwrap();
+        let mut app =
+            crate::app::ReaderApp::from_data_dir(root.path().to_string_lossy().into_owned());
+        app.reader_introduction_seen = true;
+        app.scroll_mode = false;
+        app.reader_page_animation = "Realistic".into();
+        app.font_size = 18.;
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        #[cfg(target_os = "macos")]
+        crate::system_fonts::register_defaults(&mut fonts);
+        for name in ["Bold", "ReaderFont", "ReaderCjk"] {
+            fonts.families.insert(
+                egui::FontFamily::Name(name.into()),
+                fonts.families[&egui::FontFamily::Proportional].clone(),
+            );
+        }
+        ctx.set_fonts(fonts);
+        let baseline = rss();
+        let opened = Instant::now();
+        let book = EpubBook::open_cached(&path, &root.path().join("chapter-index")).unwrap();
+        let catalogue_ms = opened.elapsed().as_secs_f64() * 1000.;
+        app.book = Some(book);
+        app.book_path = Some(path.clone());
+        app.view = crate::app::AppView::Reader;
+        app.pages_dirty = true;
+        let mut time = 0.;
+        fn frame(app: &mut crate::app::ReaderApp, ctx: &egui::Context, time: &mut f64) -> f64 {
+            *time += 1. / 60.;
+            let t = Instant::now();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 800.),
+                    )),
+                    time: Some(*time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.render_reader(ui));
+                },
+            );
+            let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+            t.elapsed().as_secs_f64() * 1000.
+        }
+        let first_frame = frame(&mut app, &ctx, &mut time);
+        let first_content = opened.elapsed().as_secs_f64() * 1000.;
+        assert!(!app.pages_dirty && app.total_pages > 0);
+        let first_rss = rss();
+        let mut cases = Vec::new();
+        for mode in ["Realistic", "Slide"] {
+            app.reader_page_animation = mode.into();
+            for chapter in [3, 1772, 3544] {
+                app.current_chapter = chapter;
+                app.current_page = 0;
+                app.pages_dirty = true;
+                app.page_curl.clear();
+                app.reader_render_blocks = None;
+                let jump_frame = frame(&mut app, &ctx, &mut time);
+                let mut timings = Vec::new();
+                for turn in 0..8 {
+                    if turn < 4 {
+                        app.next_page()
+                    } else {
+                        app.prev_page()
+                    };
+                    for _ in 0..36 {
+                        timings.push(frame(&mut app, &ctx, &mut time));
+                    }
+                }
+                timings.sort_by(f64::total_cmp);
+                cases.push(serde_json::json!({"mode":mode,"chapter":chapter,"chapter_first_frame_cpu_ms":jump_frame,"frame_count":timings.len(),"frame_cpu_p50_ms":timings[timings.len()/2],"frame_cpu_p95_ms":timings[timings.len()*95/100],"frame_cpu_max_ms":timings.last(),"rss_bytes":rss()}));
+            }
+        }
+        for chapter in 3..203 {
+            app.current_chapter = chapter;
+            app.current_page = 0;
+            app.pages_dirty = true;
+            app.page_curl.clear();
+            app.reader_render_blocks = None;
+            frame(&mut app, &ctx, &mut time);
+        }
+        let stats = app.book.as_ref().unwrap().chapter_cache_stats();
+        assert!(stats.0 <= 8);
+        assert!(
+            app.book
+                .as_ref()
+                .unwrap()
+                .chapters
+                .iter()
+                .filter(|ch| !ch.blocks.is_empty())
+                .count()
+                <= 5
+        );
+        let report = serde_json::json!({"profile":"release","environment":"macOS native egui rendering and tessellation, headless CPU; excludes GPU presentation","catalogue_ms":catalogue_ms,"first_content_layout_draw_ms":first_content,"first_frame_cpu_ms":first_frame,"baseline_rss_bytes":baseline,"first_content_rss_bytes":first_rss,"after_200_chapters_rss_bytes":rss(),"cache_stats":stats,"cases":cases,"passed":true});
+        std::fs::write(
+            std::env::var("READER_PERFORMANCE_REPORT").unwrap(),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
     #[ignore = "requires downloaded, fingerprinted Chinese corpus"]
     fn real_chinese_books_reflow_in_three_styles_with_stable_source_anchors() {
         let root = std::path::PathBuf::from(

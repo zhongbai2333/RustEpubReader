@@ -14,6 +14,7 @@ struct ReaderSearchHit: Identifiable, Sendable {
 struct ReaderSearchResults: Sendable {
     var hits: [ReaderSearchHit] = []
     var hasMore = false
+    var failure: String? = nil
 }
 
 // Search the already-open native publication, keeping scalar coordinates used by
@@ -23,7 +24,10 @@ enum ReaderBookSearch {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, limit > 0 else { return .init() }
         var result = ReaderSearchResults()
-        for (chapterIndex, chapter) in book.chapters.enumerated() {
+        for chapterIndex in book.chapters.indices {
+            let chapter: BookChapter
+            do {chapter=try book.chapter(at:chapterIndex)}
+            catch {result.failure=error.localizedDescription;return result}
             if Task.isCancelled { return .init() }
             var groups: [Int: [(offset: Int, text: String)]] = [:]
             for (index, block) in chapter.blocks.enumerated() where block.type == "Paragraph" || block.type == "Heading" {
@@ -73,6 +77,8 @@ struct ReaderSearchView: View {
                 ContentUnavailableView(L("reader.search_in_book"), systemImage: "magnifyingglass", description: Text(L("reader.search_hint")))
             } else if searching {
                 ProgressView(L("common.searching")).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let failure=results.failure {
+                Text(failure).foregroundStyle(.secondary).padding()
             } else if results.hits.isEmpty {
                 ContentUnavailableView(L("common.no_matches_found"), systemImage: "magnifyingglass", description: Text(L("common.try_other_keywords")))
             } else {

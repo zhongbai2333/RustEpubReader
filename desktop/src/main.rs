@@ -3,6 +3,8 @@
 
 mod app;
 pub(crate) use reader_core::github_sync;
+#[cfg(feature = "performance-checks")]
+mod performance;
 mod self_update;
 mod system_fonts;
 mod ui;
@@ -38,11 +40,8 @@ fn setup_fonts(ctx: &egui::Context) {
         "/System/Library/Fonts/PingFang.ttc",
     ];
     for path in &font_paths {
-        if let Ok(font_data) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "cjk_font".to_owned(),
-                egui::FontData::from_owned(font_data).into(),
-            );
+        if let Some(font_data) = system_fonts::load_path(path) {
+            fonts.font_data.insert("cjk_font".to_owned(), font_data);
             fonts
                 .families
                 .entry(egui::FontFamily::Proportional)
@@ -63,11 +62,8 @@ fn setup_fonts(ctx: &egui::Context) {
         "/System/Library/Fonts/PingFang.ttc",
     ];
     for path in &bold_font_paths {
-        if let Ok(font_data) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "cjk_bold".to_owned(),
-                egui::FontData::from_owned(font_data).into(),
-            );
+        if let Some(font_data) = system_fonts::load_path(path) {
+            fonts.font_data.insert("cjk_bold".to_owned(), font_data);
             break;
         }
     }
@@ -79,11 +75,8 @@ fn setup_fonts(ctx: &egui::Context) {
         "/System/Library/Fonts/Songti.ttc",
     ];
     for path in &serif_font_paths {
-        if let Ok(font_data) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "serif_font".to_owned(),
-                egui::FontData::from_owned(font_data).into(),
-            );
+        if let Some(font_data) = system_fonts::load_path(path) {
+            fonts.font_data.insert("serif_font".to_owned(), font_data);
             break;
         }
     }
@@ -95,11 +88,8 @@ fn setup_fonts(ctx: &egui::Context) {
         "/System/Library/Fonts/Apple Color Emoji.ttc",
     ];
     for path in &emoji_paths {
-        if let Ok(data) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "emoji_font".to_owned(),
-                egui::FontData::from_owned(data).into(),
-            );
+        if let Some(data) = system_fonts::load_path(path) {
+            fonts.font_data.insert("emoji_font".to_owned(), data);
             fonts
                 .families
                 .entry(egui::FontFamily::Proportional)
@@ -171,8 +161,9 @@ fn startup_open_path_from_process_args() -> Option<PathBuf> {
 
 fn main() -> eframe::Result {
     // Isolated UI diagnostics must never ask for access to real keychain entries.
-    #[cfg(debug_assertions)]
-    if std::env::args().any(|arg| arg == "--ui-preview") {
+    if cfg!(feature = "performance-checks") && std::env::args().any(|arg| arg == "--measure-reader")
+        || cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--ui-preview")
+    {
         keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
     }
     let debug_enabled = debug_enabled_from_args(std::env::args().skip(1));
@@ -244,6 +235,15 @@ fn main() -> eframe::Result {
                         reader_core::appearance::DisplayChoice::Light;
                     app.appearance_selected_node = 2;
                 }
+            }
+            #[cfg(feature = "performance-checks")]
+            if std::env::args().any(|arg| arg == "--measure-reader") {
+                let output = std::env::var("READER_PERFORMANCE_REPORT")
+                    .expect("READER_PERFORMANCE_REPORT is required for the isolated benchmark");
+                app.reader_introduction_seen = true;
+                app.scroll_mode = false;
+                app.reader_page_animation = "Realistic".into();
+                app.reader_performance = Some(performance::ReaderPerformance::new(output.into()));
             }
             if let Some(path) = &startup_open_path {
                 if path

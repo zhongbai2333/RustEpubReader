@@ -774,6 +774,9 @@ pub struct ReaderApp {
     // ── Search ──
     pub show_search: bool,
     pub search_query: String,
+    #[cfg(feature = "performance-checks")]
+    pub(crate) reader_performance: Option<crate::performance::ReaderPerformance>,
+    pub(crate) search_task: Option<crate::ui::search::SearchTask>,
     pub search_results: Vec<reader_core::search::SearchResult>,
     pub search_selected: Option<usize>,
     // ── Annotations ──
@@ -1132,6 +1135,9 @@ impl ReaderApp {
             // Search
             show_search: false,
             search_query: String::new(),
+            #[cfg(feature = "performance-checks")]
+            reader_performance: None,
+            search_task: None,
             search_results: Vec::new(),
             search_selected: None,
             // Annotations
@@ -1385,12 +1391,22 @@ impl ReaderApp {
         let (tx, rx) = std::sync::mpsc::channel();
         let source = path.to_owned();
         let ctx = self.last_egui_ctx.clone();
+        let index_dir = std::path::Path::new(&self.data_dir).join(".cache/chapter-index");
         self.begin_book_presentation(path);
         self.opening_started = Some(std::time::Instant::now());
         self.pending_book_open = Some((path.to_owned(), chapter, rx));
         std::thread::spawn(move || {
-            let result =
-                EpubBook::open(&source).map(|book| (book, EpubBook::file_hash(&source).ok()));
+            let result = EpubBook::open_cached(&source, &index_dir).and_then(|mut book| {
+                book.load_embedded_fonts()?;
+                let at = chapter
+                    .unwrap_or(0)
+                    .min(book.chapters.len().saturating_sub(1));
+                book.ensure_chapter_window(
+                    at.saturating_sub(1),
+                    (at + 2).min(book.chapters.len()),
+                )?;
+                Ok((book, EpubBook::file_hash(&source).ok()))
+            });
             let _ = tx.send(result);
             if let Some(ctx) = ctx {
                 ctx.request_repaint();
@@ -1660,7 +1676,7 @@ impl ReaderApp {
 
         // Extract block texts
         let block_texts: Vec<(usize, String)> = if let Some(book) = &self.book {
-            if let Some(chapter) = book.chapters.get(chapter_idx) {
+            if let Ok(chapter) = book.chapter(chapter_idx) {
                 chapter
                     .blocks
                     .iter()
@@ -2032,6 +2048,8 @@ impl Drop for ReaderApp {
 
 impl eframe::App for ReaderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(feature = "performance-checks")]
+        let performance_frame = std::time::Instant::now();
         self.sync_appearance(ctx);
         self.last_egui_ctx = Some(ctx.clone());
         self.tick_book_share(ctx);
@@ -2362,11 +2380,8 @@ impl eframe::App for ReaderApp {
                 "/System/Library/Fonts/PingFang.ttc",
             ];
             for path in cjk_paths {
-                if let Ok(data) = std::fs::read(path) {
-                    fonts.font_data.insert(
-                        "cjk_font".to_owned(),
-                        egui::FontData::from_owned(data).into(),
-                    );
+                if let Some(data) = crate::system_fonts::load_path(path) {
+                    fonts.font_data.insert("cjk_font".to_owned(), data);
                     fonts
                         .families
                         .entry(egui::FontFamily::Proportional)
@@ -2386,11 +2401,8 @@ impl eframe::App for ReaderApp {
                 "/System/Library/Fonts/PingFang.ttc",
             ];
             for path in bold_paths {
-                if let Ok(data) = std::fs::read(path) {
-                    fonts.font_data.insert(
-                        "cjk_bold".to_owned(),
-                        egui::FontData::from_owned(data).into(),
-                    );
+                if let Some(data) = crate::system_fonts::load_path(path) {
+                    fonts.font_data.insert("cjk_bold".to_owned(), data);
                     fonts.families.insert(
                         egui::FontFamily::Name("Bold".into()),
                         vec!["cjk_bold".to_owned()],
@@ -2404,11 +2416,8 @@ impl eframe::App for ReaderApp {
                 "/System/Library/Fonts/Times.ttc",
             ];
             for path in serif_paths {
-                if let Ok(data) = std::fs::read(path) {
-                    fonts.font_data.insert(
-                        "serif_font".to_owned(),
-                        egui::FontData::from_owned(data).into(),
-                    );
+                if let Some(data) = crate::system_fonts::load_path(path) {
+                    fonts.font_data.insert("serif_font".to_owned(), data);
                     fonts.families.insert(
                         egui::FontFamily::Name("Serif".into()),
                         vec!["serif_font".to_owned(), "cjk_font".to_owned()],
@@ -2452,7 +2461,7 @@ impl eframe::App for ReaderApp {
                     if let Some(data) = path.load() {
                         fonts
                             .font_data
-                            .insert(self.reader_font_family.clone(), data.into());
+                            .insert(self.reader_font_family.clone(), data);
                         let mut fallback = vec![self.reader_font_family.clone()];
                         if fonts.font_data.contains_key("cjk_font") {
                             fallback.push("cjk_font".to_owned());
@@ -2474,7 +2483,7 @@ impl eframe::App for ReaderApp {
                     if let Some(data) = path.load() {
                         fonts
                             .font_data
-                            .insert(self.reader_cjk_font_family.clone(), data.into());
+                            .insert(self.reader_cjk_font_family.clone(), data);
                         selected_cjk_bound = true;
                     }
                 }
@@ -2510,11 +2519,8 @@ impl eframe::App for ReaderApp {
                 "/System/Library/Fonts/Apple Color Emoji.ttc",
             ];
             for path in emoji_paths {
-                if let Ok(data) = std::fs::read(path) {
-                    fonts.font_data.insert(
-                        "emoji_font".to_owned(),
-                        egui::FontData::from_owned(data).into(),
-                    );
+                if let Some(data) = crate::system_fonts::load_path(path) {
+                    fonts.font_data.insert("emoji_font".to_owned(), data);
                     fonts
                         .families
                         .entry(egui::FontFamily::Proportional)
@@ -2740,6 +2746,12 @@ impl eframe::App for ReaderApp {
         self.render_reader_introduction(ctx);
         #[cfg(debug_assertions)]
         self.capture_appearance_preview(ctx);
+        #[cfg(feature = "performance-checks")]
+        if let Some(mut probe) = self.reader_performance.take() {
+            if !probe.tick(self, ctx, performance_frame.elapsed().as_secs_f64() * 1000.) {
+                self.reader_performance = Some(probe);
+            }
+        }
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
             settings.save(&self.data_dir);

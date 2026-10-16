@@ -134,12 +134,31 @@ impl ReaderApp {
             self.native_book_path = self.book_path.clone();
         }
         if let Some(book) = self.book.as_mut() {
-            let start = self.current_chapter.saturating_sub(1);
-            let end = if self.scroll_mode {
+            let mut start = self.current_chapter.saturating_sub(1);
+            let mut end = if self.scroll_mode {
                 (self.current_chapter + 4).min(book.chapters.len())
             } else {
                 (self.current_chapter + 2).min(book.chapters.len())
             };
+            if self.scroll_mode
+                && !self
+                    .continuous_scroll
+                    .needs_reset(self.current_chapter, book.chapters.len())
+            {
+                start = start.min(self.continuous_scroll.start_chapter);
+                end = end.max(self.continuous_scroll.loaded_end);
+            }
+            match book.ensure_chapter_window(start, end) {
+                Ok(evicted) => {
+                    for index in evicted {
+                        self.native_applied.remove(&index);
+                    }
+                }
+                Err(error) => {
+                    self.error_msg = Some(error);
+                    return;
+                }
+            }
             for index in start..end {
                 let events = self.native_events.entry(index).or_default();
                 let signature = (self.css_policy, self.scripts_enabled, events.len());

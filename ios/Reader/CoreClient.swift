@@ -1,6 +1,8 @@
 import Foundation
 import UIKit
 
+extension CodingUserInfoKey { static let readerCoreClient = CodingUserInfoKey(rawValue:"readerCoreClient")! }
+
 struct CoreFailure: LocalizedError { let message: String; var errorDescription: String? { ReaderErrors.display(message) } }
 struct CoreEnvelope<T: Decodable>: Decodable { let ok: Bool; let result: T?; let error: String? }
 struct CoreClient: Sendable {
@@ -13,7 +15,8 @@ struct CoreClient: Sendable {
         guard let result else { throw CoreFailure(message: "Reader core returned no result") }
         defer { reader_ios_free(result) }
         let data = Data(bytes: result, count: strlen(result))
-        let envelope = try JSONDecoder().decode(CoreEnvelope<T>.self, from: data)
+        let decoder=JSONDecoder(); decoder.userInfo[.readerCoreClient]=self
+        let envelope = try decoder.decode(CoreEnvelope<T>.self, from: data)
         guard envelope.ok, let value = envelope.result else { throw CoreFailure(message: envelope.error ?? "Reader core failed") }
         return value
     }
@@ -37,7 +40,12 @@ actor CoreStore {
     func archiveAction(hash: String, action: String) throws { let _: [String:Int] = try client.call("archive",["action":action,"hash":hash]) }
     func rename(id: String, title: String) throws -> LibraryEntry { try client.call("rename", ["id": id, "title": title]) }
     func exportBooks(ids: [String], directory: String) throws -> [String] { try client.call("export_books", ["ids": ids, "directory": directory]) }
-    func open(id: String) throws -> PreviewBook { try client.call("open", ["id": id]) }
+    func open(id: String) throws -> PreviewBook {
+        let book: PreviewBook = try client.call("open", ["id":id])
+        let chapter=min(max(0,book.entry.lastChapter),max(0,book.chapters.count-1))
+        for index in max(0,chapter-1)..<min(book.chapters.count,chapter+2) { _ = try book.chapter(at:index) }
+        return book
+    }
     func save(id: String, anchor: ReadingAnchor, editedAt: UInt64) throws -> LibraryEntry {
         try client.call("save", ["id": id, "chapter": anchor.chapter, "block": anchor.block, "char_offset": anchor.charOffset,"edited_at":editedAt])
     }

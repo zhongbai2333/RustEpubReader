@@ -895,7 +895,7 @@ pub(super) fn share_action_row(
     response
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 impl ShareUI {
     pub(crate) fn receive_fixture(scene: &str) -> Self {
         let mut view = Self::default();

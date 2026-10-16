@@ -104,7 +104,7 @@ pub fn dispatch(root: &str, v: &Value) -> Result<Value, String> {
                 validate_position(&parsed, chapter, block, offset)?;
                 let original = field(v, "original")?;
                 let corrected = field(v, "corrected")?;
-                let text = match &parsed.chapters[chapter].blocks[block] {
+                let text = match &parsed.chapter(chapter)?.blocks[block] {
                     reader_core::epub::ContentBlock::Paragraph { spans, .. }
                     | reader_core::epub::ContentBlock::Heading { spans, .. } => {
                         spans.iter().map(|s| s.text.as_str()).collect::<String>()
