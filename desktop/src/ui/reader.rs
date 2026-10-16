@@ -458,6 +458,9 @@ impl ReaderApp {
                         .allow_prepend_after_user_scroll(scroll_delta_y);
                     self.tts_detach_view();
                 }
+                let programmed_scroll = self.scroll_to_top
+                    || scroll_adjustment != 0.
+                    || self.pending_restore_block.is_some();
                 let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
                 if self.scroll_to_top {
                     scroll_area = scroll_area.vertical_scroll_offset(0.0);
@@ -467,6 +470,8 @@ impl ReaderApp {
                         (self.continuous_scroll.scroll_offset + scroll_adjustment).max(0.0),
                     );
                 }
+                let user_scrolling = ui.rect_contains_pointer(ui.available_rect_before_wrap())
+                    && ui.input(|i| i.smooth_scroll_delta.y != 0. || i.pointer.primary_down());
                 let scroll_output = scroll_area.show(ui, |ui| {
                     for (offset, (chapter_title, chapter_blocks)) in
                         continuous_chapters.iter().enumerate()
@@ -510,15 +515,23 @@ impl ReaderApp {
                                 entry.key.chapter == self.current_chapter
                                     && entry.key.block == target
                             }) {
-                                if !entry.rect.intersects(ui.clip_rect()) {
-                                    ui.scroll_to_rect(entry.rect, Some(egui::Align::Min));
-                                }
+                                let cursor = entry.galley.from_ccursor(egui::text::CCursor::new(
+                                    self.current_char_offset,
+                                ));
+                                let target = entry
+                                    .galley
+                                    .pos_from_cursor(&cursor)
+                                    .translate(entry.rect.min.to_vec2());
+                                ui.scroll_to_rect(target, Some(egui::Align::Min));
                                 self.pending_restore_block = None;
                             }
                         });
                     }
                 });
                 let viewport = scroll_output.inner_rect;
+                let scroll_moved =
+                    (scroll_output.state.offset.y - self.continuous_scroll.scroll_offset).abs()
+                        > 0.01;
                 self.continuous_scroll.record_scroll_output(
                     scroll_output.state.offset.y,
                     scroll_output.content_size.y,
@@ -530,11 +543,19 @@ impl ReaderApp {
                         .iter()
                         .filter(|entry| entry.rect.intersects(viewport))
                         .min_by(|a, b| a.rect.top().total_cmp(&b.rect.top()))
-                        .map(|entry| (entry.key.chapter, entry.key.block))
+                        .map(|entry| {
+                            let cursor = entry.galley.cursor_from_pos(egui::vec2(
+                                0.,
+                                (viewport.top() - entry.rect.top()).max(0.),
+                            ));
+                            (entry.key.chapter, entry.key.block, cursor.ccursor.index)
+                        })
                 });
-                if let Some((chapter, block)) = visible_block {
+                if let Some((chapter, block, offset)) = visible_block {
                     self.continuous_scroll.set_visible_chapter(chapter);
-                    self.schedule_position_save(chapter, block);
+                    if user_scrolling && scroll_moved && !programmed_scroll {
+                        self.schedule_position_save_at(chapter, block, offset);
+                    }
                 }
                 let near_start = self.continuous_scroll.near_start();
                 let near_end = self.continuous_scroll.near_end();
@@ -1307,11 +1328,35 @@ impl ReaderApp {
                     .page_block_ranges
                     .fragment(self.current_page)
                     .map_or(0, |f| f.char_offset);
-                self.schedule_position_save_at(
-                    self.current_chapter,
-                    anchor.map_or(block, |(_, b)| b),
-                    offset,
-                );
+                // A different viewport may put the same saved locator halfway down
+                // a page. Layout/remote restoration must not become a fresh edit.
+                let locator_page = self
+                    .page_block_ranges
+                    .iter()
+                    .enumerate()
+                    .filter(|(page, (start, end))| {
+                        *start <= self.current_block
+                            && self.current_block < *end
+                            && (*start != self.current_block
+                                || self
+                                    .page_block_ranges
+                                    .fragment(*page)
+                                    .is_none_or(|f| f.char_offset <= self.current_char_offset))
+                    })
+                    .map(|(page, _)| page)
+                    .next_back();
+                let preserve = self.last_synced_chapter == Some(self.current_chapter)
+                    && locator_page.is_some_and(|page| {
+                        page >= self.current_page
+                            && page < self.current_page + if self.is_dual_column { 2 } else { 1 }
+                    });
+                if !preserve {
+                    self.schedule_position_save_at(
+                        self.current_chapter,
+                        anchor.map_or(block, |(_, b)| b),
+                        offset,
+                    );
+                }
             }
         }
         if curl_consumed_frame {

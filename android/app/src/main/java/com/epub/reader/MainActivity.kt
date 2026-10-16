@@ -27,7 +27,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zhongbai233.epub.reader.i18n.I18n
-import com.zhongbai233.epub.reader.ui.library.AboutScreen
+import com.zhongbai233.epub.reader.ui.library.LibrarySettingsScreen
 import com.zhongbai233.epub.reader.ui.library.LibraryScreen
 import com.zhongbai233.epub.reader.ui.library.SyncScreen
 import com.zhongbai233.epub.reader.ui.library.TxtImportDialog
@@ -135,7 +135,9 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     // 共享对话框状态
-    var homeTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
+    var homeTab by androidx.compose.runtime.saveable.rememberSaveable {
+        mutableStateOf(if (BuildConfig.DEBUG && (context as? android.app.Activity)?.intent?.getBooleanExtra("github_login_preview", false) == true) 1 else 0)
+    }
     var libraryQuery by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     var librarySearching by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(homeTab) { if(homeTab != 0) bookMotion.shelfOrder.reset() }
@@ -162,15 +164,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
     }
     if (vm.receivingSharedBooks) com.zhongbai233.epub.reader.ui.library.BookShareReceiver(vm.bookSharing) { vm.receivingSharedBooks = false }
 
-    // 关于界面状态
-    var showAboutScreen by remember { mutableStateOf(false) }
-    var showAppearanceLinkage by remember { mutableStateOf(false) }
-    if(showAppearanceLinkage) AlertDialog(onDismissRequest={showAppearanceLinkage=false},
-        title={Text(I18n.t("appearance.link_title"))},
-        text={Column(Modifier.verticalScroll(rememberScrollState())) {
-            com.zhongbai233.epub.reader.ui.reader.AppearanceLinkageSettings(vm.appearanceLinkage,vm.systemAppearanceDark,vm.ambientAppearanceDark,vm.ambientSensorAvailable,vm::updateAppearanceLinkage,showTitle=false)
-        }},
-        confirmButton={TextButton(onClick={showAppearanceLinkage=false}) {Text(I18n.t("settings.done"))}})
+    var showLibrarySettings by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var preparingBookExport by remember { mutableStateOf(false) }
 
     val currentBook = vm.currentBook
@@ -196,7 +190,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                 vm.showSearch ||
                 drawerState.isOpen ||
                 currentBook != null || bookMotion.active ||
-                showAboutScreen
+                showLibrarySettings
     ) {
         when {
             vm.showStatistics -> vm.showStatistics = false
@@ -207,7 +201,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
             vm.showSearch -> vm.showSearch = false
             drawerState.isOpen -> scope.launch { drawerState.close() }
             currentBook != null || bookMotion.active -> closeReader()
-            showAboutScreen -> showAboutScreen = false
+            showLibrarySettings -> showLibrarySettings = false
         }
     }
 
@@ -270,19 +264,13 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
             val book = currentBook
 
             Box(Modifier.fillMaxSize().graphicsLayer { alpha=if(book==null || bookMotion.showShelf) 1f else 0f }.then(if(book!=null) Modifier.clearAndSetSemantics { } else Modifier)) {
-                if (showAboutScreen) {
-                    // ---- 关于界面 ----
-                    AboutScreen(
-                        onNavigateBack = { showAboutScreen = false },
-                        onExportLogs = { vm.exportFeedbackLogs() },
-                    )
-                } else {
+                Box(Modifier.fillMaxSize().then(if (showLibrarySettings) Modifier.clearAndSetSemantics { } else Modifier)) {
                     // ---- 书库界面 ----
                     if (homeTab == 1) {
                         SyncScreen(vm, onLibrary = { homeTab = 0 }, onSearch = { homeTab = 0; librarySearching = true })
                     } else {
                         LibraryScreen(
-                            active = book == null && !bookMotion.active,
+                            active = book == null && !bookMotion.active && !showLibrarySettings,
                             query = libraryQuery, searchActive = librarySearching,
                             onQueryChange = { libraryQuery = it }, onSearchActiveChange = { librarySearching = it },
                             shelfOrder = bookMotion.shelfOrder,
@@ -290,13 +278,14 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             promotedUri = bookMotion.sourceUri,
                             reduceShelfMotion = reducedMotion,
                             syncing = vm.githubSyncRunning,
+                            syncMeter = vm.githubSyncMeter,
+                            archivedBooks = vm.archivedBooks,
+                            onArchiveAction = vm::archiveAction,
                             onCoverBounds = { uri, rect -> if(rect.width>0 && rect.height>0) bookMotion.covers[uri]=rect else bookMotion.covers.remove(uri) },
                             onOpenSync = { homeTab = 1 },
                             onOpenStatistics = { vm.openStatistics(false) },
-                            onToggleTheme = { showAppearanceLinkage = true },
                             books = vm.books,
                             coverCache = vm.coverCache,
-                            language = vm.readerLanguage,
                             shareModel = vm.bookSharing,
                             githubToken = vm.githubToken,
                             githubAuthorized = vm.githubRepoAuthorized,
@@ -343,16 +332,16 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             onRemoveBook = { uri ->
                                 vm.removeBookByUri(uri)
                             },
-                            onUpdateLanguage = { code ->
-                                vm.updateLanguage(code)
-                            },
                             onRefreshLibrary = {
                                 vm.refreshLibrary().join()
                             },
-                            onOpenAbout = { showAboutScreen = true },
+                            onOpenSettings = { showLibrarySettings = true },
                         )
                     }
-                } // end else (showAboutScreen)
+                }
+                if (showLibrarySettings) {
+                    LibrarySettingsScreen(vm, onDismiss = { showLibrarySettings = false })
+                }
 
                 // ── TXT 导入对话框 ──
                 TxtImportDialog(
@@ -424,6 +413,8 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             bookPath = vm.originalBookPath,
                             currentChapter = vm.currentChapter,
                             currentBlock = vm.currentBlock,
+                            currentCharOffset = vm.currentCharOffset,
+                            positionRevision = vm.positionRevision,
                             fontSize = vm.fontSize,
                             isDarkMode = vm.isDarkMode,
                             scrollMode = vm.isScrollMode,
@@ -441,7 +432,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             showToc = drawerState.isOpen,
                             onNavigateBack = { closeReader() },
                             onChapterChange = { vm.goToChapter(it) },
-                            onPositionChange = { vm.updateReadingPosition(it) },
+                            onPositionChange = { block, offset -> vm.updateReadingPosition(block,offset) },
                             previousChapter = vm.previousChapter,
                             onGoBackChapter = { vm.goBackChapter() },
                             onFontSizeChange = { vm.updateFontSize(it) },

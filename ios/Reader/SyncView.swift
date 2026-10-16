@@ -31,7 +31,7 @@ struct SyncDesignView: View {
                     Text(L("sync.contributions_detail")).font(.footnote).foregroundStyle(.secondary)
                 }
                 if account.syncing {
-                    HStack { ProgressView(); Text(LM(account.syncStatus)) }
+                    SyncProgressContent(account: account)
                     Button(L("sync.cancel_sync")) { account.stopSync() }
                 } else {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -84,6 +84,8 @@ struct GitHubLoginView: View {
     @ObservedObject private var readerI18n = ReaderI18n.shared
     @ObservedObject var account: GitHubAccount
     @State private var browser = false
+    @State private var copied = false
+    @State private var opened = false
     var body: some View {
         NavigationStack {
             Form {
@@ -93,8 +95,21 @@ struct GitHubLoginView: View {
                     Section {
                         Text(L("sync.copy_code_hint"))
                         Text(code.user_code).font(.title2.monospaced()).textSelection(.enabled)
-                        Button(L("sync.copy_code"), systemImage: "doc.on.doc") { UIPasteboard.general.string = code.user_code }
-                        Button(L("sync.open_github"), systemImage: "safari") { browser = true }
+                        Button(copied ? L("sync.code_copied") : L("sync.copy_code"), systemImage: copied ? "checkmark" : "doc.on.doc") {
+                            UIPasteboard.general.string = code.user_code
+                            copied = true
+                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        }
+                        .task(id: copied) {
+                            guard copied else { return }
+                            try? await Task.sleep(for: .seconds(2))
+                            if !Task.isCancelled { copied = false }
+                        }
+                        Button(opened ? L("sync.reopen_github") : L("sync.open_github"), systemImage: "safari") {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            browser = true; opened = true
+                        }
+                        if opened { Text(L("sync.browser_opened")).font(.footnote).foregroundStyle(.secondary) }
                     }
                     Section { HStack { ProgressView(); Text(L("sync.waiting_for_auth")) } }
                 } else if let error = account.error {
@@ -110,4 +125,54 @@ struct GitHubLoginView: View {
 struct GitHubBrowser: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> SFSafariViewController { SFSafariViewController(url: URL(string: "https://github.com/login/device")!) }
     func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
+}
+
+struct SyncProgressContent: View {
+    @ObservedObject var account: GitHubAccount
+    var compact = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if let meter = account.meter, !meter.phase.isEmpty {
+                Text(meter.label).font(compact ? .caption2 : .subheadline).foregroundStyle(.secondary)
+                if meter.total > 0 {
+                    ProgressView(value: Double(meter.completed), total: Double(meter.total))
+                    Text(L("cloud.processed", meter.completed, meter.total)).font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                }
+                if !compact && !meter.title.isEmpty { Text(meter.title).font(.caption).lineLimit(2).foregroundStyle(.secondary) }
+            } else { Text(LM(account.syncStatus)).font(.caption).foregroundStyle(.secondary) }
+        }
+        .frame(maxWidth: compact ? 180 : .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+struct ArchiveLibraryView: View {
+    @ObservedObject var library: PreviewLibrary
+    @Environment(\.dismiss) private var dismiss
+    @State private var deleting: ArchivedEntry?
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if library.archived.isEmpty { Text(L("archive.empty")).foregroundStyle(.secondary) }
+                    ForEach(library.archived) { entry in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(entry.book.title).font(.headline)
+                            Text(L(entry.local_available ? "archive.local" : "archive.cloud")).font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button(L("archive.restore")) { Task { await library.archiveAction(entry,action:"restore") } }
+                                Spacer()
+                                Button(L("archive.delete"), role: .destructive) { deleting = entry }
+                            }.buttonStyle(.borderless).disabled(library.busy)
+                        }.padding(.vertical,4)
+                    }
+                }
+            }
+            .navigationTitle(L("archive.title")).navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("manage.done")) { dismiss() } } }
+            .alert(L("archive.delete_confirm"), isPresented: Binding(get:{deleting != nil},set:{if !$0 {deleting=nil}})) {
+                Button(L("archive.delete"),role:.destructive) { if let entry=deleting { Task { await library.archiveAction(entry,action:"delete") } }; deleting=nil }
+                Button(L("settings.cancel"),role:.cancel) { deleting=nil }
+            } message: { Text(L("archive.delete_note")) }
+        }
+    }
 }

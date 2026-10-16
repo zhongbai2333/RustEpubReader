@@ -7,6 +7,78 @@ fn fixture() -> EpubBook {
     ))
     .unwrap()
 }
+
+#[test]
+fn book_links_resolve_relative_chapters_containers_and_unicode_inline_anchors() {
+    use reader_core::epub::native::NativeLinkTarget;
+    use reader_core::epub::Chapter;
+    let mut book = fixture();
+    book.chapters=["start.xhtml","next.xhtml"].into_iter().map(|name| {
+        let blocks=vec![paragraph("前😀后文"),paragraph("末尾")];
+        let path=format!("/OEBPS/text/{name}");
+        let html="<html><body><section id='section'><p id='p'>前😀<a id='点'></a>后文</p><a name='legacy'></a><p id='last'>末尾</p><a name='end'></a></section></body></html>";
+        Chapter {title:name.into(),native_document:std::sync::Arc::new(NativeDocument::parse(html,&path,&blocks,|_|None)),blocks,source_href:Some(path)}
+    }).collect();
+    assert_eq!(
+        book.native_link(0, "next.xhtml#%E7%82%B9"),
+        Some(NativeLinkTarget {
+            chapter: 1,
+            block: 0,
+            char_offset: 2
+        })
+    );
+    assert_eq!(
+        book.native_link(1, "#last"),
+        Some(NativeLinkTarget {
+            chapter: 1,
+            block: 1,
+            char_offset: 0
+        })
+    );
+    assert_eq!(
+        book.native_link(0, "next.xhtml#section"),
+        Some(NativeLinkTarget {
+            chapter: 1,
+            block: 0,
+            char_offset: 0
+        })
+    );
+    assert_eq!(
+        book.native_link(0, "next.xhtml?mode=reading"),
+        Some(NativeLinkTarget {
+            chapter: 1,
+            block: 0,
+            char_offset: 0
+        })
+    );
+    for href in [
+        "https://example.org/next.xhtml",
+        "file:///etc/passwd",
+        "../../../../escape.xhtml",
+        "next.xhtml#missing",
+        "next.xhtml#%ZZ",
+        "%2fetc/passwd",
+    ] {
+        assert!(book.native_link(0, href).is_none(), "{href}");
+    }
+    assert_eq!(
+        book.native_link(1, "#legacy"),
+        Some(NativeLinkTarget {
+            chapter: 1,
+            block: 1,
+            char_offset: 0
+        })
+    );
+    assert_eq!(
+        book.native_link(1, "#end"),
+        Some(NativeLinkTarget {
+            chapter: 1,
+            block: 1,
+            char_offset: 2
+        })
+    );
+    assert!(book.native_link(999, "#p").is_none());
+}
 fn paragraph(text: &str) -> ContentBlock {
     ContentBlock::Paragraph {
         spans: vec![reader_core::epub::TextSpan {

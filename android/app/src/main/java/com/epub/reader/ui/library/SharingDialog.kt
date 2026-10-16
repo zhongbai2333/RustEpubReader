@@ -47,6 +47,7 @@ fun SharingContent(
     onRefreshPeers: () -> Unit,
     onRemovePaired: (deviceId: String) -> Unit = {},
     onOpenGithubFeedback: () -> Unit = {},
+    contentPadding: PaddingValues = PaddingValues(ReaderGeometry.PageInset),
 ) {
     @Suppress("UNUSED_VARIABLE") val langVersion = I18n.version
 
@@ -56,7 +57,8 @@ fun SharingContent(
 
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize().padding(ReaderGeometry.PageInset),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
     ) {
         item { Text(I18n.t("ui.local_detail"), style = MaterialTheme.typography.bodyMedium) }

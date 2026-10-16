@@ -21,6 +21,7 @@ struct NativeReader: UIViewControllerRepresentable {
     let committed: (ReadingAnchor) -> Void
     var publicationNote: ((Int,String)->Void)? = nil
     var publicationEvent: ((Int,Int)->Void)? = nil
+    var publicationLink: ((Int,String)->Void)? = nil
     var nativeStyles: [Int: [NativeStyle]] = [:]
     var viewportChanged: (ReaderWindowViewport) -> Void = { _ in }
     var contentVisible = true
@@ -36,7 +37,7 @@ struct NativeReader: UIViewControllerRepresentable {
         controller.toggleTools = toggleTools; controller.turning = turning
         controller.visible = visible; controller.committed = committed
         controller.selected = selected
-        controller.book = book; controller.publicationNote = publicationNote; controller.publicationEvent = publicationEvent; controller.nativeStyles = nativeStyles
+        controller.book = book; controller.publicationNote = publicationNote; controller.publicationEvent = publicationEvent; controller.publicationLink = publicationLink; controller.nativeStyles = nativeStyles
         controller.update(options: options, jump: jump, jumpID: jumpID, annotations: annotations, revision: annotationRevision)
         controller.updateSpeech(speechHighlight, following: followSpeech)
         controller.updateImmersiveStatus(immersiveStatus)
@@ -50,6 +51,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
     }
     var publicationNote: ((Int,String)->Void)? = nil
     var publicationEvent: ((Int,Int)->Void)?
+    var publicationLink: ((Int,String)->Void)?
     var nativeStyles: [Int: [NativeStyle]] = [:]
     var anchor: ReadingAnchor
     var options: ReaderOptions
@@ -150,6 +152,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             lastJumpID = jumpID
             scrollReset = true
             anchor = jump
+            lastSavedScrollAnchor = jump
             layoutOptions = nil
         }
         if isViewLoaded { rebuildIfNeeded(); if languageChanged {reportVisible()} }
@@ -252,9 +255,9 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         let screenSafe = view.window?.safeAreaInsets ?? view.safeAreaInsets
         if sizeChanged {
             verticalInset = max(68, max(screenSafe.top, screenSafe.bottom) + 24)
-            // Reserve the floating header even when controls are hidden. Its
-            // visibility must not repaginate or move a continuous scroll anchor.
-            contentTopInset = max(verticalInset, screenSafe.top + 68)
+            // Floating controls overlay the paper; keep equal body margins even
+            // while chrome is hidden. Chrome visibility must not repaginate.
+            contentTopInset = verticalInset
             horizontalInset = max(screenSafe.left, screenSafe.right)
             footerSafeBottom = screenSafe.bottom
         }
@@ -508,9 +511,9 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             || (scrollLoadedRange.lowerBound > 0 && viewport.bounds.minY - margin < first)
     }
     private func queueScrollSave() {
-        pendingScrollSave?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.flushScrollPosition() }
-        pendingScrollSave = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        // CoreStore serializes disk writes off the main thread. Capture each
+        // changed line now, so a delayed callback cannot overtake remote progress.
+        flushScrollPosition()
     }
     @objc private func flushScrollPosition() {
         pendingScrollSave?.cancel(); pendingScrollSave = nil
@@ -523,16 +526,20 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { continuous?.stopDisplayUpdates(); flushScrollPosition(); rebuildIfNeeded(); scheduleWarmup() }
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { flushScrollPosition(); rebuildIfNeeded(); scheduleWarmup() }
     @objc private func centerTapped(_ gesture: UITapGestureRecognizer) {
-        func activate(_ root:UIView)->Bool {
-            if let paper=root as? PaperSurface,let (chapter,href)=paper.note(at:gesture.location(in:paper)){publicationNote?(chapter,href);return true}
-            if let paper=root as? PaperSurface, let (chapter,node)=paper.action(at:gesture.location(in:paper)) { publicationEvent?(chapter,node);return true }
-            for child in root.subviews where activate(child) {return true}
-            return false
-        }
-        if activate(view) { return }
+        if activatePublication(at:gesture.location(in:view),in:view) { return }
         let x = gesture.location(in: view).x / view.bounds.width
         if pager != nil && options.sliding && (x < 0.32 || x > 0.68) { turnSpread(forward: x > 0.68) }
         else { toggleTools?() }
+    }
+    func activatePublication(at point:CGPoint,in root:UIView)->Bool {
+        guard !root.isHidden,root.alpha>0.01,root.bounds.contains(point) else{return false}
+        if let paper=root as? PaperSurface {
+            if let (chapter,href)=paper.note(at:point){publicationNote?(chapter,href);return true}
+            if let (chapter,node)=paper.action(at:point){publicationEvent?(chapter,node);return true}
+            if let (chapter,href)=paper.link(at:point){publicationLink?(chapter,href);return true}
+        }
+        for child in root.subviews.reversed() where activatePublication(at:child.convert(point,from:root),in:child) {return true}
+        return false
     }
     @objc private func customSwiped(_ gesture: UISwipeGestureRecognizer) {
         guard gesture.state == .ended else {return}
@@ -690,17 +697,27 @@ final class PaperSurface: UIView {
         cachedFrame = value; return value
     }
     private func index(at point: CGPoint, page: ReadingPage) -> Int? {
-        guard page.textRect.insetBy(dx: -8, dy: -8).contains(point) else { return nil }
+        let painted=CGRect(x:page.textRect.minX,y:bounds.height-page.textRect.maxY,width:page.textRect.width,height:page.textRect.height)
+        guard painted.insetBy(dx: -8, dy: -8).contains(point) else { return nil }
         let frame = frame(page), lines = CTFrameGetLines(frame) as! [CTLine]
         var origins = Array(repeating: CGPoint.zero, count: lines.count); CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
         let local = CGPoint(x: point.x-page.textRect.minX, y: bounds.height-point.y-page.textRect.minY)
         guard let nearest = lines.indices.min(by: { abs(origins[$0].y-local.y) < abs(origins[$1].y-local.y) }) else { return nil }
         let line = lines[nearest]
+        var ascent:CGFloat=0,descent:CGFloat=0
+        let width=CTLineGetTypographicBounds(line,&ascent,&descent,nil)
+        let x=local.x-origins[nearest].x,y=local.y-origins[nearest].y
+        guard x >= -4,x <= width+4,y >= -descent-4,y <= ascent+4 else{return nil}
         let result = CTLineGetStringIndexForPosition(line, CGPoint(x: local.x-origins[nearest].x, y: 0))
         return result == kCFNotFound ? nil : min(page.range.location+page.range.length-1, max(page.range.location,result))
     }
     func note(at point:CGPoint)->(Int,String)? {
         guard let page,let index=index(at:point,page:page),index>=0,index<page.text.length,let href=page.text.attribute(BookTypesetter.noteKey,at:index,effectiveRange:nil) as? String else{return nil}
+        return(page.chapter,href)
+    }
+    func link(at point:CGPoint)->(Int,String)? {
+        guard let page,let index=index(at:point,page:page),index>=0,index<page.text.length,
+              let href=page.text.attribute(BookTypesetter.linkKey,at:index,effectiveRange:nil) as? String else{return nil}
         return(page.chapter,href)
     }
     func action(at point:CGPoint)->(Int,Int)? {

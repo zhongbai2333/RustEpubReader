@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.zhongbai233.epub.reader.i18n.I18n
@@ -49,18 +50,32 @@ fun SyncScreen(vm: ReaderViewModel, onLibrary: () -> Unit = {}, onBack: (() -> U
         },
         bottomBar = { if (onBack == null) HomeNavigation(true, onLibrary, {}, onSearch = onSearch) },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        val layoutDirection = LocalLayoutDirection.current
+        // Keep the tab view behind the floating controls, with clearance only
+        // at the end of each tab's scrollable content.
+        val contentPadding = PaddingValues(
+            start = ReaderGeometry.PageInset,
+            top = ReaderGeometry.PageInset,
+            end = ReaderGeometry.PageInset,
+            bottom = ReaderGeometry.PageInset + padding.calculateBottomPadding(),
+        )
+        Column(Modifier.fillMaxSize().padding(
+            start = padding.calculateStartPadding(layoutDirection),
+            top = padding.calculateTopPadding(),
+            end = padding.calculateEndPadding(layoutDirection),
+        )) {
             TabRow(selectedTabIndex = tab) {
                 listOf("ui.github_sync", "ui.local_sync").forEachIndexed { index, key ->
                     Tab(selected = tab == index, onClick = { tab = index }, text = { Text(I18n.t(key)) })
                 }
             }
-            if (tab == 0) Column(Modifier.weight(1f).verticalScroll(githubScroll).padding(ReaderGeometry.PageInset), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (tab == 0) Column(Modifier.weight(1f).verticalScroll(githubScroll).padding(contentPadding), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 GithubAccountContent(vm, embedded = true)
             }
             else {
                     SharingContent(
                         listState = nearbyScroll,
+                        contentPadding = contentPadding,
                         serverRunning = vm.sharingServerRunning,
                         serverAddr = vm.sharingServerAddr,
                         pin = vm.sharingPin,

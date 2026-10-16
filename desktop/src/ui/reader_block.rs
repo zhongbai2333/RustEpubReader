@@ -250,7 +250,7 @@ struct NativeGalleyCache {
 fn native_galley(
     ui: &egui::Ui,
     mut job: LayoutJob,
-    style: &reader_core::epub::native::NativeStyle,
+    _style: &reader_core::epub::native::NativeStyle,
     width: f32,
 ) -> std::sync::Arc<egui::Galley> {
     // egui applies explicit line_height to the glyph's decoration rectangle.
@@ -260,6 +260,7 @@ fn native_galley(
     for section in &mut job.sections {
         section.format.line_height = None;
     }
+    let horizontal_align = job.halign;
     let mut galley = ui.painter().layout_job(job);
     let source = std::sync::Arc::downgrade(&galley);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -267,7 +268,7 @@ fn native_galley(
     for height in &heights {
         height.map(f32::to_bits).hash(&mut hasher);
     }
-    style.align.hash(&mut hasher);
+    horizontal_align.hash(&mut hasher);
     width.to_bits().hash(&mut hasher);
     let key = (std::sync::Arc::as_ptr(&galley) as usize, hasher.finish());
     let id = egui::Id::new("reader_native_galleys");
@@ -286,9 +287,9 @@ fn native_galley(
         return cached;
     }
     let value = std::sync::Arc::make_mut(&mut galley);
-    let x = match style.align.as_deref() {
-        Some("right") => width,
-        Some("center") => width * 0.5,
+    let x = match horizontal_align {
+        egui::Align::Max => width,
+        egui::Align::Center => width * 0.5,
         _ => 0.,
     };
     let mut next_y = 0.;
@@ -1195,6 +1196,7 @@ pub(crate) fn build_layout_job(
     job.halign = match style.align.as_deref() {
         Some("center") => egui::Align::Center,
         Some("right") => egui::Align::Max,
+        None if is_heading => egui::Align::Center,
         _ => egui::Align::Min,
     };
     job.justify = style.align.as_deref() == Some("justify");
@@ -1747,17 +1749,29 @@ mod tests {
     }
     #[test]
     fn publisher_alignment_keeps_glyphs_inside_the_native_column() {
-        for align in ["right", "center"] {
+        for (align, is_heading) in [
+            (Some("right"), false),
+            (Some("center"), false),
+            (None, true),
+            (Some("left"), true),
+            (Some("right"), true),
+        ] {
             let ctx = egui::Context::default();
+            let mut fonts = egui::FontDefinitions::default();
+            let proportional = fonts.families[&FontFamily::Proportional].clone();
+            fonts
+                .families
+                .insert(FontFamily::Name("Bold".into()), proportional);
+            ctx.set_fonts(fonts);
             let style = reader_core::epub::native::NativeStyle {
-                align: Some(align.into()),
+                align: align.map(str::to_owned),
                 ..Default::default()
             };
             let mut checked = false;
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let spans = [TextSpan {
-                        text: "A native publication paragraph".into(),
+                        text: "A native publication paragraph with a heading that wraps across multiple lines".into(),
                         style: InlineStyle::Normal,
                         link_url: None,
                         correction: None,
@@ -1766,7 +1780,7 @@ mod tests {
                         &spans,
                         18.,
                         Color32::WHITE,
-                        false,
+                        is_heading,
                         340.,
                         None,
                         "Sans",
@@ -1777,6 +1791,9 @@ mod tests {
                     assert_eq!(galley.rect.width(), 340.);
                     for row in &galley.rows {
                         assert!(row.rect.left() >= -0.1 && row.rect.right() <= 340.1);
+                        if align == Some("center") || (align.is_none() && is_heading) {
+                            assert!((row.rect.center().x - 170.).abs() < 0.1);
+                        }
                     }
                     checked = true;
                 });

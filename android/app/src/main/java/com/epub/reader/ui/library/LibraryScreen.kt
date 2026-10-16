@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -58,7 +58,6 @@ fun LibraryScreen(
     onQueryChange: (String) -> Unit = {},
     onSearchActiveChange: (Boolean) -> Unit = {},
     coverCache: Map<String, ByteArray?>,
-    language: String,
     onOpenFilePicker: () -> Unit,
     onOpenBook: (String, Int) -> Unit,
     onRemoveBook: (String) -> Unit,
@@ -71,13 +70,14 @@ fun LibraryScreen(
     onGithubLogin: () -> Unit = {},
     onReceiveBooks: () -> Unit = {},
     onRequestCover: (String) -> Unit = {},
-    onUpdateLanguage: (String) -> Unit = {},
     onRefreshLibrary: suspend () -> Unit = {},
-    onOpenAbout: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onOpenSync: () -> Unit = {},
     onOpenStatistics: () -> Unit = {},
-    onToggleTheme: () -> Unit = {},
     syncing: Boolean = false,
+    syncMeter: org.json.JSONObject? = null,
+    archivedBooks: List<org.json.JSONObject> = emptyList(),
+    onArchiveAction: (String,String) -> Unit = { _,_ -> },
     onCoverBounds: (String, Rect) -> Unit = { _, _ -> },
     shelfOrder: StableShelfOrder = remember { StableShelfOrder() },
     shelfRevision: Int = 0,
@@ -95,13 +95,15 @@ fun LibraryScreen(
     BackHandler(enabled = managing) { managing = false; selected = emptyList() }
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+    var showArchive by remember { mutableStateOf(false) }
     var showMore by remember { mutableStateOf(false) }
+    var showAdd by remember { mutableStateOf(false) }
+    var showSortDisplay by rememberSaveable { mutableStateOf(false) }
     val preferences = LocalContext.current.getSharedPreferences("library-display", android.content.Context.MODE_PRIVATE)
     var sortTitle by rememberSaveable { mutableStateOf(preferences.getBoolean("sort-title", false)) }
     var listMode by rememberSaveable { mutableStateOf(preferences.getBoolean("list", false)) }
-    val chooseSort: (Boolean) -> Unit = { value -> sortTitle = value; shelfOrder.reset(); preferences.edit().putBoolean("sort-title", value).apply(); showMore = false }
-    val chooseDisplay: (Boolean) -> Unit = { value -> listMode = value; preferences.edit().putBoolean("list", value).apply(); showMore = false }
-    var showLanguage by remember { mutableStateOf(false) }
+    val chooseSort: (Boolean) -> Unit = { value -> sortTitle = value; shelfOrder.reset(); preferences.edit().putBoolean("sort-title", value).apply() }
+    val chooseDisplay: (Boolean) -> Unit = { value -> listMode = value; preferences.edit().putBoolean("list", value).apply() }
     var refreshing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val shelfBooks = books.toList()
@@ -115,7 +117,7 @@ fun LibraryScreen(
     val libraryHeader: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) {
-                Column {
+                Column(Modifier.fillMaxWidth()) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             I18n.t("library.title"),
@@ -129,9 +131,10 @@ fun LibraryScreen(
                                 strokeWidth = 1.5.dp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            Text(I18n.t("cloud.syncing_indicator"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(I18n.t("cloud.syncing_indicator"), maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                    if (syncing) SyncMeterContent(syncMeter,compact=true)
                     Text(
                         I18n.count("ui.library_count", books.size),
                         style = MaterialTheme.typography.bodySmall,
@@ -142,54 +145,29 @@ fun LibraryScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val outline = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
                 val buttonColors = IconButtonDefaults.outlinedIconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow, contentColor = MaterialTheme.colorScheme.primary)
-                OutlinedIconButton(onClick = onOpenFilePicker, border = outline, colors = buttonColors, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Add, I18n.t("ui.import"), Modifier.size(22.dp)) }
+                Box {
+                    OutlinedIconButton(onClick = { showAdd = true; showMore = false }, border = outline, colors = buttonColors, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Add, I18n.t("library.add_books"), Modifier.size(22.dp))
+                    }
+                    DropdownMenu(showAdd, { showAdd = false }) {
+                        DropdownMenuItem(text = { Text(I18n.t("ui.import")) }, onClick = { showAdd = false; onOpenFilePicker() })
+                        DropdownMenuItem(text = { Text(I18n.t("transfer.receive")) }, onClick = { showAdd = false; onReceiveBooks() })
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = { managing = !managing; if (!managing) selected = emptyList() }, enabled = books.isNotEmpty(), shape = CircleShape, border = outline,
                     colors = ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                     contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.heightIn(min = 40.dp)) { Text(I18n.t(if (managing) "manage.done" else "manage.books"), maxLines = 1) }
                 Spacer(Modifier.width(8.dp))
                 Box {
-                    OutlinedIconButton(onClick = { showMore = true }, border = outline, colors = buttonColors, modifier = Modifier.size(40.dp)) {
+                    OutlinedIconButton(onClick = { showMore = true; showAdd = false }, border = outline, colors = buttonColors, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.Default.MoreHoriz, I18n.t("ui.more"), Modifier.size(22.dp))
                     }
                     DropdownMenu(showMore, { showMore = false }) {
-                        Text(I18n.t("common.sort"), Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        for ((title, value) in listOf("library.sort_recently_read" to false, "txt.book_title" to true)) {
-                            DropdownMenuItem(text = { Text(I18n.t(title)) }, onClick = { chooseSort(value) },
-                                modifier = Modifier.semantics { this.selected = sortTitle == value },
-                                trailingIcon = { if (sortTitle == value) Icon(Icons.Default.Check, null, Modifier.size(20.dp)) })
-                        }
-                        HorizontalDivider()
-                        Text(I18n.t("library.display"), Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        for ((title, value) in listOf("library.view_grid" to false, "library.view_list" to true)) {
-                            DropdownMenuItem(text = { Text(I18n.t(title)) }, onClick = { chooseDisplay(value) },
-                                modifier = Modifier.semantics { this.selected = listMode == value },
-                                trailingIcon = { if (listMode == value) Icon(Icons.Default.Check, null, Modifier.size(20.dp)) })
-                        }
-                        HorizontalDivider()
-                        DropdownMenuItem(text={Text(I18n.t("transfer.receive"))},onClick={showMore=false;onReceiveBooks()})
-                        DropdownMenuItem(text={Text(I18n.t("stats.title"))},onClick={showMore=false;onOpenStatistics()})
-                        DropdownMenuItem(
-                            text = { Text(I18n.t("ui.language")) },
-                            onClick = {
-                                showMore = false
-                                showLanguage = true
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(I18n.t("ui.appearance")) },
-                            onClick = {
-                                showMore = false
-                                onToggleTheme()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(I18n.t("about.title")) },
-                            onClick = {
-                                showMore = false
-                                onOpenAbout()
-                            },
-                        )
+                        DropdownMenuItem(text = { Text(I18n.t("library.sort_display")) }, onClick = { showMore = false; showSortDisplay = true })
+                        DropdownMenuItem(text = { Text(I18n.t("archive.title") + " (${archivedBooks.size})") }, onClick = { showMore = false; showArchive = true })
+                        DropdownMenuItem(text = { Text(I18n.t("stats.title")) }, onClick = { showMore = false; onOpenStatistics() })
+                        DropdownMenuItem(text = { Text(I18n.t("settings.title")) }, onClick = { showMore = false; onOpenSettings() })
                     }
                 }
             }
@@ -201,6 +179,7 @@ fun LibraryScreen(
             onSearch = { onSearchActiveChange(true) }, searching = searchActive, query = query,
             onQueryChange = onQueryChange, interactive = active, onSearchClose = { onSearchActiveChange(false); onQueryChange("") }) },
     ) { padding ->
+        val layoutDirection = LocalLayoutDirection.current
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = {
@@ -216,11 +195,22 @@ fun LibraryScreen(
                     }
                 }
             },
-            modifier = Modifier.fillMaxSize().padding(padding),
+            // The bottom controls float over the shelf; only the scrollable
+            // content tail reserves their height so the final book stays reachable.
+            modifier = Modifier.fillMaxSize().padding(
+                start = padding.calculateStartPadding(layoutDirection),
+                top = padding.calculateTopPadding(),
+                end = padding.calculateEndPadding(layoutDirection),
+            ),
         ) {
             LazyVerticalGrid(
                 columns = if (listMode) GridCells.Fixed(1) else GridCells.Adaptive(144.dp),
-                contentPadding = PaddingValues(ReaderGeometry.PageInset),
+                contentPadding = PaddingValues(
+                    start = ReaderGeometry.PageInset,
+                    top = ReaderGeometry.PageInset,
+                    end = ReaderGeometry.PageInset,
+                    bottom = ReaderGeometry.PageInset + padding.calculateBottomPadding(),
+                ),
                 horizontalArrangement = Arrangement.spacedBy(ReaderGeometry.BlockGap),
                 verticalArrangement = Arrangement.spacedBy(if (listMode) 8.dp else ReaderGeometry.SectionGap),
             ) {
@@ -326,7 +316,7 @@ fun LibraryScreen(
                         }
                         Row {
                             TextButton(onClick = { shareTargets = selected.toList() }, enabled = selected.isNotEmpty()) { Text(I18n.t("manage.share")) }
-                            TextButton(onClick = { confirmDelete = true }, enabled = selected.isNotEmpty(), colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(I18n.t("manage.delete")) }
+                            TextButton(onClick = { confirmDelete = true }, enabled = selected.isNotEmpty(), ) { Text(I18n.t("archive.action")) }
                         }
                     }
                 }
@@ -352,8 +342,9 @@ fun LibraryScreen(
             }
         }
     }
-    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text(I18n.t("manage.confirm")) }, text = { Text(I18n.t("manage.delete_note")) }, confirmButton = {
-        TextButton(onClick = { val deleting = selected; confirmDelete = false; selected = emptyList(); deleting.forEach(onRemoveBook) }) { Text(I18n.t("manage.delete"), color = MaterialTheme.colorScheme.error) }
+    if (showArchive) ArchiveBooksSheet(archivedBooks,onArchiveAction) { showArchive=false }
+    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text(I18n.t("archive.confirm")) }, text = { Text(I18n.t("archive.note")) }, confirmButton = {
+        TextButton(onClick = { val deleting = selected; confirmDelete = false; selected = emptyList(); deleting.forEach(onRemoveBook) }) { Text(I18n.t("archive.action")) }
     }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(I18n.t("settings.cancel")) } })
     if (shareTargets.isNotEmpty()) {
         val shareBooks = shareTargets.mapNotNull { uri -> books.find { it.uri == uri } }
@@ -371,42 +362,11 @@ fun LibraryScreen(
             TextButton(onClick = { onRenameBook(entry.uri, renameTitle.trim()); renaming = null }, enabled = renameTitle.trim().isNotEmpty()) { Text(I18n.t("error.ok")) }
         }, dismissButton = { TextButton(onClick = { renaming = null }) { Text(I18n.t("settings.cancel")) } })
     }
-    if (showLanguage)
-        AlertDialog(
-            onDismissRequest = { showLanguage = false },
-            title = { Text(I18n.t("ui.language")) },
-            text = {
-                Column {
-                    I18n.availableLanguages.forEach { (code, label) ->
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
-                                onUpdateLanguage(code)
-                                showLanguage = false
-                            },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = language == code,
-                                onClick = {
-                                    onUpdateLanguage(code)
-                                    showLanguage = false
-                                },
-                            )
-                            Text(label)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { showLanguage = false },
-                    shape = ReaderGeometry.Shape,
-                    contentPadding = ReaderGeometry.ButtonPadding,
-                ) {
-                    Text(I18n.t("error.ok"))
-                }
-            },
-        )
+    if (showSortDisplay) LibrarySortDisplaySheet(
+        sortTitle = sortTitle, listMode = listMode,
+        onSort = chooseSort, onDisplay = chooseDisplay,
+        onDismiss = { showSortDisplay = false },
+    )
 }
 
 @Composable
@@ -513,7 +473,7 @@ private fun BookActionsMenu(onShare: () -> Unit, onRename: () -> Unit, onDelete:
             DropdownMenuItem(text = { Text(I18n.t("book.share")) }, onClick = { more = false; onShare() })
             DropdownMenuItem(text = { Text(I18n.t("book.rename")) }, onClick = { more = false; onRename() })
             HorizontalDivider()
-            DropdownMenuItem(text = { Text(I18n.t("library.delete")) }, onClick = { more = false; onDelete() })
+            DropdownMenuItem(text = { Text(I18n.t("archive.action")) }, onClick = { more = false; onDelete() })
         }
     }
 }

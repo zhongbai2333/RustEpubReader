@@ -151,6 +151,13 @@ pub struct NativePresentation {
     pub styles: Vec<NativeStyle>,
     pub errors: Vec<String>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeLinkTarget {
+    pub chapter: usize,
+    pub block: usize,
+    pub char_offset: usize,
+}
 fn compact(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -208,6 +215,78 @@ fn stylesheet(
     output
 }
 impl NativeDocument {
+    /// Resolve IDs on paragraphs, containers and inline/empty anchors without
+    /// introducing render-only block numbers or UTF-16 offsets.
+    pub fn anchor(&self, id: &str) -> Option<(usize, usize)> {
+        let dom = Html::parse_document(&self.html);
+        let elements: Vec<_> = dom
+            .select(&Selector::parse("*").ok()?)
+            .take(16_384)
+            .collect();
+        let target = elements.iter().find(|e| {
+            e.value().attr("id") == Some(id)
+                || (e.value().name() == "a" && e.value().attr("name") == Some(id))
+        })?;
+        for (block, binding) in self.bindings.iter().enumerate() {
+            let Some(element) = binding.and_then(|i| elements.get(i)) else {
+                continue;
+            };
+            if element.id() == target.id() || element.ancestors().any(|p| p.id() == target.id()) {
+                return Some((block, 0));
+            }
+            if target.ancestors().any(|p| p.id() == element.id()) {
+                let prefix: String = element
+                    .descendants()
+                    .take_while(|n| n.id() != target.id())
+                    .filter(|n| {
+                        !n.ancestors()
+                            .filter_map(ElementRef::wrap)
+                            .any(|e| matches!(e.value().name(), "rt" | "rp" | "script" | "style"))
+                    })
+                    .filter_map(|n| match n.value() {
+                        scraper::Node::Text(t) => Some(t.text.as_ref()),
+                        _ => None,
+                    })
+                    .collect();
+                let source = self.sources.get(block)?;
+                let prefix = compact(&prefix);
+                let offset = if compact(source).starts_with(&prefix) && !prefix.is_empty() {
+                    source
+                        .chars()
+                        .enumerate()
+                        .filter(|(_, c)| !c.is_whitespace())
+                        .nth(prefix.chars().count())
+                        .map_or(source.chars().count(), |(i, _)| i)
+                } else {
+                    0
+                };
+                return Some((block, offset));
+            }
+        }
+        // Legacy books also put empty named anchors between block elements.
+        if target.text().all(|text| text.trim().is_empty()) {
+            let index = elements.iter().position(|e| e.id() == target.id())?;
+            if let Some((block, _)) = self
+                .bindings
+                .iter()
+                .enumerate()
+                .find(|(_, binding)| binding.is_some_and(|i| i > index))
+            {
+                return Some((block, 0));
+            }
+            if let Some((block, _)) = self
+                .bindings
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, binding)| binding.is_some_and(|i| i < index))
+            {
+                return Some((block, self.sources.get(block)?.chars().count()));
+            }
+        }
+        None
+    }
+
     pub fn parse(
         html: &str,
         path: &str,

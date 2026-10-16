@@ -172,6 +172,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
         "peer_state" | "peer_start" | "peer_connect" | "peer_remove" => {
             nearby::dispatch(root, device, &v)
         }
+        "sync_status" => Ok(json!(reader_core::github_sync::sync_meter(root))),
         "sync" => {
             let epoch = v["epoch"].as_u64().ok_or("Missing session epoch")?;
             let token = field(&v, "token")?.to_owned();
@@ -257,6 +258,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     reader_core::reading_activity::dispatch(root, device, &v)
                 }
                 "remove" => annotations::remove(root, &v),
+                "archive" => reader_core::library::archive::dispatch(root, &v),
                 "rename" => {
                     let mut library = Library::load_from(root);
                     let renamed =
@@ -351,6 +353,14 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     }
                     Ok(entry_value(root, &e))
                 }
+                "native_link" => {
+                    let e = entry(root, field(&v, "id")?)?;
+                    let parsed = book(root, &e)?;
+                    serde_json::to_value(
+                        parsed.native_link(number(&v, "chapter")?, field(&v, "href")?),
+                    )
+                    .map_err(|e| e.to_string())
+                }
                 "native_note" => {
                     let e = entry(root, field(&v, "id")?)?;
                     let parsed = book(root, &e)?;
@@ -424,6 +434,27 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     );
                     validate_position(&b, chapter, block, offset)?;
                     let title = Some(b.chapters[chapter].title.clone());
+                    let mut journal = SyncJournal::load(root, device);
+                    journal.seed_entry(root, &e);
+                    let progress = ProgressEntry {
+                        book_hash: EpubBook::file_hash(&e.path)?,
+                        title: e.title.clone(),
+                        chapter,
+                        block,
+                        char_offset: offset,
+                        chapter_title: title.clone(),
+                        timestamp: reader_core::now_secs(),
+                    };
+                    let changed = (e.last_chapter, e.last_block, e.last_char_offset)
+                        != (chapter, block, offset);
+                    let accepted = if let Some(edited_at) = v["edited_at"].as_u64() {
+                        journal.record_at(progress, edited_at)
+                    } else {
+                        journal.record(progress)
+                    };
+                    if changed && !accepted {
+                        return Ok(entry_value(root, &e));
+                    }
                     let mut lib = Library::load_from(root);
                     lib.update_position(root, &e.path, chapter, title.clone(), block, offset);
                     let saved = entry(root, &e.id)?;
@@ -439,18 +470,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     {
                         return Err("Cannot save reading position".into());
                     }
-                    let mut journal = SyncJournal::load(root, device);
-                    if journal.record(ProgressEntry {
-                        book_hash: EpubBook::file_hash(&e.path)?,
-                        title: e.title.clone(),
-                        chapter,
-                        block,
-                        char_offset: offset,
-                        chapter_title: title,
-                        timestamp: reader_core::now_secs(),
-                    }) {
-                        journal.save(root)?;
-                    }
+                    journal.save(root)?;
                     Ok(entry_value(root, &saved))
                 }
                 _ => Err("Unknown core operation".into()),
@@ -541,6 +561,40 @@ mod tests {
             .unwrap()
             .epub_path
     }
+    #[test]
+    fn body_links_resolve_book_local_targets_without_opening_external_resources() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let imported = request(
+            root,
+            "import",
+            json!({"path":concat!(env!("CARGO_MANIFEST_DIR"),"/../core/tests/fixtures/native-typography.epub")}),
+        );
+        assert_eq!(imported["ok"], true, "{imported}");
+        let id = imported["result"]["id"].as_str().unwrap();
+        let linked = request(
+            root,
+            "native_link",
+            json!({"id":id,"chapter":0,"href":"notes.xhtml#n%E4%B8%80"}),
+        );
+        assert_eq!(linked["ok"], true, "{linked}");
+        assert!(linked["result"]["chapter"].as_u64().unwrap() > 0);
+        for href in [
+            "https://example.org",
+            "file:///etc/passwd",
+            "notes.xhtml#missing",
+        ] {
+            let result = request(
+                root,
+                "native_link",
+                json!({"id":id,"chapter":0,"href":href}),
+            );
+            assert_eq!(result["ok"], true, "{result}");
+            assert!(result["result"].is_null(), "{result}");
+        }
+    }
+
     #[test]
     fn large_shelf_returns_catalog_without_extracting_or_parsing_books() {
         let _test = TEST_LOCK.lock().unwrap();

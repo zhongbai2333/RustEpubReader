@@ -25,6 +25,8 @@ pub struct TransferFailure {
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct RetryQueue {
     failures: BTreeMap<String, TransferFailure>,
+    #[serde(default)]
+    deleted: BTreeMap<String, u64>,
     #[serde(skip)]
     path: PathBuf,
 }
@@ -51,11 +53,19 @@ impl RetryQueue {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(_) => return Err("Cannot read transfer retry queue".into()),
         };
-        if queue.failures.len() > 10000
+        if queue.deleted.len() > 5000
+            || queue
+                .deleted
+                .keys()
+                .any(|h| !crate::cloud_sync::valid_hash(h))
+            || queue.failures.len() > 10000
             || queue.failures.iter().any(|(key, f)| {
                 !crate::cloud_sync::valid_hash(&f.hash)
                     || *key != Self::key(&f.direction, &f.hash)
-                    || !matches!(f.direction.as_str(), "upload" | "download")
+                    || !matches!(
+                        f.direction.as_str(),
+                        "upload" | "download" | "delete" | "archive"
+                    )
                     || f.title.len() > 4096
                     || f.error.len() > 4096
             })
@@ -124,7 +134,7 @@ pub fn record_transfer_failure(
     error: String,
 ) -> Result<Vec<TransferFailure>, String> {
     let _guard = TRANSFER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if !matches!(direction, "upload" | "download")
+    if !matches!(direction, "upload" | "download" | "delete" | "archive")
         || !crate::cloud_sync::valid_hash(&info.hash)
         || info.title.len() > 4096
     {
@@ -144,7 +154,9 @@ pub fn complete_transfer(
     hash: &str,
 ) -> Result<Vec<TransferFailure>, String> {
     let _guard = TRANSFER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if !matches!(direction, "upload" | "download") || !crate::cloud_sync::valid_hash(hash) {
+    if !matches!(direction, "upload" | "download" | "delete" | "archive")
+        || !crate::cloud_sync::valid_hash(hash)
+    {
         return Err("Invalid completed transfer".into());
     }
     let mut queue = RetryQueue::load(root, owner, device)?;
@@ -165,6 +177,18 @@ pub fn sync_phase(
     data_dir: &str,
     retry_failed: bool,
 ) -> Result<SyncResult, String> {
+    let archive = crate::library::archive::ArchiveStore::load(data_dir)?;
+    crate::library::archive::merge_states(&mut own.lifecycle, &archive.states());
+    let mut books = books;
+    if phase == SyncPhase::Books {
+        books.extend(
+            archive
+                .retained()
+                .into_iter()
+                .filter(|(info, _)| info.size <= MAX_BOOK_BYTES)
+                .map(|(info, path)| LocalBook { info, path }),
+        );
+    }
     let api = Api {
         client: Client::builder()
             .timeout(Duration::from_secs(45))
@@ -177,6 +201,14 @@ pub fn sync_phase(
         cancel,
         last_write: Default::default(),
         count_contributions,
+        meter: Some(meter::Reporter::start(
+            data_dir,
+            if phase == SyncPhase::Progress {
+                "progress"
+            } else {
+                "preparing"
+            },
+        )),
     };
     match phase {
         SyncPhase::Progress => progress(&api, &mut own),
@@ -244,6 +276,7 @@ pub(super) fn progress(api: &Api, own: &mut DeviceSnapshot) -> Result<SyncResult
     authorize(api, own)?;
     publish(api, own)?;
     Ok(SyncResult {
+        confirmed_archives: Default::default(),
         snapshots: api.snapshots()?,
         own: own.clone(),
         downloaded: Vec::new(),
@@ -316,6 +349,7 @@ pub(super) fn files(
     let snapshots = api.snapshots()?;
     let mut known = BTreeMap::new();
     for snapshot in &snapshots {
+        crate::library::archive::merge_states(&mut own.lifecycle, &snapshot.lifecycle);
         if snapshot.device_id == own.device_id {
             own.merge_own(snapshot)?;
         }
@@ -323,28 +357,120 @@ pub(super) fn files(
             known.entry(hash.clone()).or_insert_with(|| info.clone());
         }
     }
+    let books: Vec<_> = books
+        .into_iter()
+        .filter(|b| {
+            !own.lifecycle
+                .get(&b.info.hash)
+                .is_some_and(|r| r.state == crate::library::archive::BookState::Deleted)
+        })
+        .collect();
     let local: BTreeSet<_> = books.iter().map(|b| b.info.hash.clone()).collect();
+    for book in &books {
+        if own
+            .lifecycle
+            .get(&book.info.hash)
+            .is_some_and(|r| r.state == crate::library::archive::BookState::Archived)
+        {
+            known.remove(&book.info.hash);
+        }
+    }
     let retry_keys: BTreeSet<_> = retries.failures.keys().cloned().collect();
     retries.failures.retain(|_, f| {
         if f.direction == "upload" {
             local.contains(&f.hash)
+        } else if f.direction == "archive" {
+            local.contains(&f.hash)
+                && own
+                    .lifecycle
+                    .get(&f.hash)
+                    .is_some_and(|r| r.state == crate::library::archive::BookState::Archived)
+        } else if f.direction == "delete" {
+            own.lifecycle
+                .get(&f.hash)
+                .is_some_and(|r| r.state == crate::library::archive::BookState::Deleted)
         } else {
-            !local.contains(&f.hash)
-                && !own.books.contains_key(&f.hash)
+            !own.lifecycle
+                .get(&f.hash)
+                .is_some_and(|r| r.state != crate::library::archive::BookState::Active)
+                && !local.contains(&f.hash)
                 && known.contains_key(&f.hash)
         }
     });
     retries.save()?;
+    // Lifecycle tombstones are published before removing cloud files. Old device
+    // book indexes cannot resurrect them; each file failure is independently retryable.
+    let deletions: Vec<_> = own
+        .lifecycle
+        .values()
+        .filter(|r| {
+            r.state == crate::library::archive::BookState::Deleted
+                && retries
+                    .deleted
+                    .get(&r.book.hash)
+                    .is_none_or(|revision| *revision < r.revision)
+        })
+        .cloned()
+        .collect();
+    if !deletions.is_empty() {
+        publish(api, own)?;
+    }
+    let mut delete_remaining = 0;
+    for (index, record) in deletions.iter().enumerate() {
+        if index >= 20 {
+            delete_remaining += 1;
+            continue;
+        }
+        if let Some(meter) = &api.meter {
+            meter.update(
+                "deleting",
+                index,
+                deletions.len().min(20),
+                &record.book.title,
+            );
+        }
+        if !retries.due("delete", &record.book.hash, retry_failed) {
+            continue;
+        }
+        match api.delete_book(&record.book.hash) {
+            Ok(()) => {
+                retries.succeeded("delete", &record.book.hash)?;
+                retries
+                    .deleted
+                    .insert(record.book.hash.clone(), record.revision);
+                retries.save()?;
+                own.books.remove(&record.book.hash);
+                known.remove(&record.book.hash);
+            }
+            Err(message) if message == "Sync cancelled" || global_error(&message) => {
+                return Err(message)
+            }
+            Err(message) => retries.failed("delete", &record.book, message)?,
+        }
+    }
+    let upload_total = books
+        .iter()
+        .filter(|b| {
+            !known.contains_key(&b.info.hash)
+                && retries.due("upload", &b.info.hash, retry_failed)
+                && (!retry_failed || retry_keys.contains(&RetryQueue::key("upload", &b.info.hash)))
+        })
+        .count()
+        .min(20);
+    let mut upload_completed = 0;
     let mut uploaded = 0;
     let mut attempted = 0;
-    let mut remaining = 0;
+    let mut remaining = delete_remaining;
     let mut changed = false;
     let mut terminal_error = None;
     for book in books {
         if api.cancel.load(Ordering::SeqCst) {
             return Err("Sync cancelled".into());
         }
-        if retry_failed && !retry_keys.contains(&RetryQueue::key("upload", &book.info.hash)) {
+        if retry_failed
+            && !retry_keys.contains(&RetryQueue::key("upload", &book.info.hash))
+            && !retry_keys.contains(&RetryQueue::key("archive", &book.info.hash))
+        {
             continue;
         }
         if !retries.due("upload", &book.info.hash, retry_failed) {
@@ -357,6 +483,17 @@ pub(super) fn files(
                 continue;
             }
             attempted += 1;
+        }
+        let counted = !known.contains_key(&book.info.hash);
+        if counted {
+            if let Some(meter) = &api.meter {
+                meter.update(
+                    "uploading",
+                    upload_completed,
+                    upload_total,
+                    &book.info.title,
+                );
+            }
         }
         match upload(api, &book, &known) {
             Ok(wrote) => {
@@ -376,9 +513,15 @@ pub(super) fn files(
                 retries.failed("upload", &book.info, message)?;
             }
         }
+        if counted {
+            upload_completed += 1;
+            if let Some(meter) = &api.meter {
+                meter.update("uploading", upload_completed, upload_total, "");
+            }
+        }
     }
     // Only advertise hashes whose file is already present, even if another book failed.
-    if changed && terminal_error.is_none() {
+    if (changed || !own.lifecycle.is_empty()) && terminal_error.is_none() {
         if let Err(message) = publish(api, own) {
             if message == "Sync cancelled" {
                 return Err(message);
@@ -386,12 +529,80 @@ pub(super) fn files(
             terminal_error = Some(message);
         }
     }
+    // A manifest entry is not proof that the bytes still exist. Verify the
+    // actual cloud copy before allowing any client to unlink its local archive.
+    let archives: Vec<_> = own
+        .lifecycle
+        .values()
+        .filter(|r| {
+            r.state == crate::library::archive::BookState::Archived
+                && local.contains(&r.book.hash)
+                && r.book.size <= MAX_BOOK_BYTES
+                && retries.due("archive", &r.book.hash, retry_failed)
+        })
+        .cloned()
+        .collect();
+    let mut confirmed_archives = BTreeSet::new();
+    for (index, record) in archives.iter().enumerate() {
+        if index >= 20 || terminal_error.is_some() {
+            remaining += 1;
+            continue;
+        }
+        if let Some(meter) = &api.meter {
+            meter.update(
+                "preparing",
+                index,
+                archives.len().min(20),
+                &record.book.title,
+            );
+        }
+        let checked = (|| {
+            let bytes = api
+                .read(&format!("books/{}.epub", record.book.hash), MAX_BOOK_BYTES)?
+                .ok_or("Remote archive copy is missing")?;
+            if bytes.len() as u64 != record.book.size || digest(&bytes) != record.book.hash {
+                return Err("Remote archive integrity check failed".into());
+            }
+            Ok(())
+        })();
+        match checked {
+            Ok(()) => {
+                confirmed_archives.insert(record.book.hash.clone());
+                retries.succeeded("archive", &record.book.hash)?;
+            }
+            Err(message) if message == "Sync cancelled" => return Err(message),
+            Err(message) => {
+                if global_error(&message) {
+                    terminal_error = Some(message.clone());
+                }
+                retries.failed("archive", &record.book, message)?;
+            }
+        }
+        if let Some(meter) = &api.meter {
+            meter.update("preparing", index + 1, archives.len().min(20), "");
+        }
+    }
     let mut downloaded = Vec::new();
     let mut total_bytes = 0;
     attempted = 0;
+    let download_total = known
+        .keys()
+        .filter(|h| {
+            !local.contains(*h)
+                && !own
+                    .lifecycle
+                    .get(*h)
+                    .is_some_and(|r| r.state != crate::library::archive::BookState::Active)
+        })
+        .count()
+        .min(20);
+    let mut download_completed = 0;
     for (hash, info) in known {
         if local.contains(&hash)
-            || own.books.contains_key(&hash)
+            || own
+                .lifecycle
+                .get(&hash)
+                .is_some_and(|r| r.state != crate::library::archive::BookState::Active)
             || retry_failed && !retry_keys.contains(&RetryQueue::key("download", &hash))
         {
             continue;
@@ -410,6 +621,14 @@ pub(super) fn files(
             return Err("Sync cancelled".into());
         }
         attempted += 1;
+        if let Some(meter) = &api.meter {
+            meter.update(
+                "downloading",
+                download_completed,
+                download_total,
+                &info.title,
+            );
+        }
         let result = (|| {
             let bytes = api
                 .read(&format!("books/{hash}.epub"), MAX_BOOK_BYTES)?
@@ -434,6 +653,10 @@ pub(super) fn files(
                 retries.failed("download", &info, message)?;
             }
         }
+        download_completed += 1;
+        if let Some(meter) = &api.meter {
+            meter.update("downloading", download_completed, download_total, "");
+        }
     }
     let next_retry_after = retries
         .failures
@@ -445,6 +668,7 @@ pub(super) fn files(
         .chain((remaining > 0).then_some(15))
         .min();
     Ok(SyncResult {
+        confirmed_archives,
         own: own.clone(),
         snapshots,
         downloaded,

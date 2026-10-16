@@ -5,7 +5,7 @@ use crate::{
 };
 use eframe::egui;
 use reader_core::{
-    cloud_sync::{latest_progress, CloudBook, MAX_BOOK_BYTES},
+    cloud_sync::{CloudBook, MAX_BOOK_BYTES},
     sharing::ProgressEntry,
 };
 use std::{
@@ -24,6 +24,7 @@ pub struct CloudSyncState {
     pending: Option<mpsc::Receiver<Result<(SyncResult, usize), String>>>,
     cancel: Arc<AtomicBool>,
     last_attempt: Option<Instant>,
+    dirty_at: Option<Instant>,
     retry_delay: u64,
     throttled: bool,
     phase: Option<SyncPhase>,
@@ -82,7 +83,7 @@ impl ReaderApp {
             self.github_start_sync_device_flow();
         }
     }
-    fn cloud_journal_init(&mut self) {
+    pub(crate) fn cloud_journal_init(&mut self) {
         if self.cloud_sync.journal.is_some() {
             return;
         }
@@ -92,7 +93,10 @@ impl ReaderApp {
             .unwrap_or_else(|e| e.into_inner())
             .device_id
             .clone();
-        let journal = Journal::load(&self.data_dir, &device_id);
+        let mut journal = Journal::load(&self.data_dir, &device_id);
+        for entry in &self.library.books {
+            journal.seed_entry(&self.data_dir, entry);
+        }
         self.cloud_sync.journal = Some(journal);
     }
     fn cloud_save_journal(&mut self) {
@@ -106,6 +110,7 @@ impl ReaderApp {
     pub fn cloud_record_progress(&mut self, p: ProgressEntry) {
         self.cloud_journal_init();
         if self.cloud_sync.journal.as_mut().unwrap().record(p) {
+            self.cloud_sync.dirty_at = Some(Instant::now());
             self.cloud_save_journal();
         }
     }
@@ -152,6 +157,9 @@ impl ReaderApp {
         self.cloud_sync.phase = Some(phase);
         self.cloud_sync.retry_failed = retry_failed;
         self.cloud_sync.last_attempt = Some(Instant::now());
+        if phase == SyncPhase::Progress {
+            self.cloud_sync.dirty_at = None;
+        }
         self.cloud_sync.status = self
             .i18n
             .t(if phase == SyncPhase::Progress {
@@ -187,7 +195,16 @@ impl ReaderApp {
                                         block: entry.last_block,
                                         char_offset: entry.last_char_offset,
                                         chapter_title: entry.last_chapter_title,
-                                        timestamp: entry.last_opened,
+                                        timestamp: if (
+                                            entry.last_chapter,
+                                            entry.last_block,
+                                            entry.last_char_offset,
+                                        ) == (0, 0, 0)
+                                        {
+                                            0
+                                        } else {
+                                            entry.last_opened
+                                        },
                                     });
                             }
                         }
@@ -201,7 +218,11 @@ impl ReaderApp {
                         skipped += 1;
                         continue;
                     }
-                    let Ok(hash) = reader_core::epub::EpubBook::file_hash(&entry.path) else {
+                    let Some(hash) =
+                        reader_core::library::Library::read_book_config(&data_dir, &entry.id)
+                            .and_then(|c| c.file_hash)
+                            .or_else(|| reader_core::epub::EpubBook::file_hash(&entry.path).ok())
+                    else {
                         skipped += 1;
                         continue;
                     };
@@ -215,7 +236,16 @@ impl ReaderApp {
                                 block: entry.last_block,
                                 char_offset: entry.last_char_offset,
                                 chapter_title: entry.last_chapter_title.clone(),
-                                timestamp: entry.last_opened,
+                                timestamp: if (
+                                    entry.last_chapter,
+                                    entry.last_block,
+                                    entry.last_char_offset,
+                                ) == (0, 0, 0)
+                                {
+                                    0
+                                } else {
+                                    entry.last_opened
+                                },
                             });
                     }
                     books.push(LocalBook {
@@ -300,10 +330,33 @@ impl ReaderApp {
                         self.error_msg = Some(error);
                     }
                     journal.seen.extend(result.own.progress.keys().cloned());
-                    let latest = latest_progress(&result.snapshots, &journal.own);
+                    let latest_records = reader_core::cloud_progress::latest_records(
+                        &result.snapshots,
+                        &journal.own,
+                    );
+                    let latest = latest_records
+                        .iter()
+                        .map(|(h, r)| (h.clone(), r.progress.clone()))
+                        .collect::<std::collections::BTreeMap<_, _>>();
                     self.cloud_sync.offered = None;
+                    if let Err(error) = reader_core::library::archive::ArchiveStore::apply_verified(
+                        &self.data_dir,
+                        &mut self.library,
+                        &result.snapshots,
+                        &journal.own,
+                        &result.confirmed_archives,
+                    ) {
+                        self.error_msg = Some(error);
+                    }
                     let mut imported = 0;
                     for book in result.downloaded {
+                        if reader_core::library::archive::ArchiveStore::load(&self.data_dir)
+                            .map(|a| a.hidden(&book.info.hash))
+                            .unwrap_or(true)
+                        {
+                            continue;
+                        }
+
                         // Recheck the live library: an import may have happened during the request.
                         if self.library.books.iter().any(|e| {
                             reader_core::epub::EpubBook::file_hash(&e.path)
@@ -332,13 +385,25 @@ impl ReaderApp {
                                 .map_err(|_| "Downloaded file is not a valid EPUB")?;
                             let p = latest.get(&book.info.hash);
                             let previous = self.library.clone();
-                            let entry = self.library.add_or_update_from_bytes(
-                                &self.data_dir,
-                                book.info.title.clone(),
-                                &book.bytes,
-                                p.map_or(0, |p| p.chapter),
-                                p.and_then(|p| p.chapter_title.clone()),
-                            );
+                            let entry = if let Some(restored) =
+                                reader_core::library::archive::restore_download(
+                                    &self.data_dir,
+                                    &mut self.library,
+                                    &book.info.hash,
+                                    &book.bytes,
+                                )
+                                .map_err(|_| "Cannot restore archived book")?
+                            {
+                                restored
+                            } else {
+                                self.library.add_or_update_from_bytes(
+                                    &self.data_dir,
+                                    book.info.title.clone(),
+                                    &book.bytes,
+                                    p.map_or(0, |p| p.chapter),
+                                    p.and_then(|p| p.chapter_title.clone()),
+                                )
+                            };
                             if reader_core::epub::EpubBook::file_hash(&entry.path)
                                 .ok()
                                 .as_ref()
@@ -381,46 +446,66 @@ impl ReaderApp {
                             }
                         }
                     }
-                    for (hash, p) in latest {
-                        if journal
-                            .own
-                            .progress
-                            .get(&hash)
-                            .is_some_and(|local| local.timestamp >= p.timestamp)
-                            || journal
-                                .applied
-                                .get(&hash)
-                                .is_some_and(|time| *time >= p.timestamp)
+                    let mut paths_by_hash =
+                        std::collections::BTreeMap::<String, Vec<String>>::new();
+                    for entry in &self.library.books {
+                        if let Some(hash) = reader_core::library::Library::read_book_config(
+                            &self.data_dir,
+                            &entry.id,
+                        )
+                        .and_then(|c| c.file_hash)
+                        .or_else(|| reader_core::epub::EpubBook::file_hash(&entry.path).ok())
                         {
-                            continue;
+                            paths_by_hash
+                                .entry(hash)
+                                .or_default()
+                                .push(entry.path.clone());
                         }
-                        if self.current_book_hash.as_ref() == Some(&hash) && self.book.is_some() {
-                            self.cloud_sync.offered = Some(p);
-                            continue;
-                        }
-                        let paths: Vec<_> = self
-                            .library
-                            .books
-                            .iter()
-                            .filter(|e| {
-                                reader_core::epub::EpubBook::file_hash(&e.path)
-                                    .ok()
-                                    .as_ref()
-                                    == Some(&hash)
-                            })
-                            .map(|e| e.path.clone())
-                            .collect();
+                    }
+                    for (hash, record) in latest_records {
+                        let p = &record.progress;
+                        let paths = paths_by_hash.get(&hash).cloned().unwrap_or_default();
+                        let mut accepted = false;
                         for path in &paths {
-                            self.library.update_position(
-                                &self.data_dir,
-                                path,
-                                p.chapter,
-                                p.chapter_title.clone(),
-                                p.block,
-                                p.char_offset,
-                            );
+                            let changed = self
+                                .library
+                                .books
+                                .iter()
+                                .find(|e| &e.path == path)
+                                .is_some_and(|e| {
+                                    (e.last_chapter, e.last_block, e.last_char_offset)
+                                        != (p.chapter, p.block, p.char_offset)
+                                });
+                            if changed
+                                && !reader_core::epub::EpubBook::open(path).is_ok_and(|book| {
+                                    reader_core::cloud_progress::validate_position(&book, p)
+                                })
+                            {
+                                continue;
+                            }
+                            accepted = true;
+                            if self.current_book_hash.as_ref() == Some(&hash)
+                                && self.book.is_some()
+                                && changed
+                            {
+                                self.pending_sync_updates
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(p.clone());
+                            }
+                            if changed {
+                                self.library.update_position(
+                                    &self.data_dir,
+                                    path,
+                                    p.chapter,
+                                    p.chapter_title.clone(),
+                                    p.block,
+                                    p.char_offset,
+                                );
+                            }
                         }
-                        if !paths.is_empty() {
+                        if accepted {
+                            journal.accept(&record);
                             journal.applied.insert(hash, p.timestamp);
                         }
                     }
@@ -460,6 +545,14 @@ impl ReaderApp {
                             format!("{}: {error}", self.i18n.t("cloud.failed"));
                     }
                     self.cloud_save_journal();
+                    if self.book_path.as_ref().is_some_and(|path| {
+                        !self.library.books.iter().any(|entry| &entry.path == path)
+                    }) {
+                        self.close_book_presentation();
+                        self.book_path = None;
+                        self.current_book_hash = None;
+                        self.book = None;
+                    }
                     if progress_phase {
                         self.cloud_start_phase(SyncPhase::Books, self.cloud_sync.retry_failed);
                     }
@@ -470,6 +563,12 @@ impl ReaderApp {
             && !self.cloud_sync.needs_auth
             && self.cloud_sync.last_attempt.is_none_or(|time| {
                 time.elapsed() >= Duration::from_secs(self.cloud_sync.retry_delay.max(1))
+                    || (!self.cloud_sync.throttled
+                        && self
+                            .cloud_sync
+                            .dirty_at
+                            .is_some_and(|t| t.elapsed() >= Duration::from_secs(2))
+                        && time.elapsed() >= Duration::from_secs(5))
             })
         {
             self.cloud_start_sync();
@@ -477,10 +576,44 @@ impl ReaderApp {
         if self.cloud_sync.pending.is_some() {
             ctx.request_repaint_after(Duration::from_secs(1));
         } else {
-            ctx.request_repaint_after(Duration::from_secs(30));
+            ctx.request_repaint_after(Duration::from_secs(if self.cloud_sync.dirty_at.is_some() {
+                1
+            } else {
+                30
+            }));
+        }
+    }
+    pub fn render_sync_meter(&self, ui: &mut egui::Ui) {
+        if !self.cloud_sync.is_syncing() {
+            return;
+        }
+        let meter = github_sync::sync_meter(&self.data_dir);
+        let key = match meter.phase.as_str() {
+            "progress" => "cloud.phase_progress",
+            "uploading" => "cloud.phase_uploading",
+            "downloading" => "cloud.phase_downloading",
+            "deleting" => "cloud.phase_deleting",
+            "saving" => "cloud.phase_saving",
+            _ => "cloud.phase_preparing",
+        };
+        ui.small(self.i18n.t(key));
+        if meter.total > 0 {
+            let text = self.i18n.tf(
+                "cloud.processed",
+                &[&meter.completed.to_string(), &meter.total.to_string()],
+            );
+            ui.add(
+                egui::ProgressBar::new(meter.completed as f32 / meter.total as f32)
+                    .desired_width(190.)
+                    .text(text),
+            );
+        }
+        if !meter.title.is_empty() {
+            ui.small(&meter.title);
         }
     }
     pub fn render_github_sync_controls(&mut self, ui: &mut egui::Ui) {
+        self.render_sync_meter(ui);
         let enabled_before = self.github_sync_enabled;
         let authorized = self.github_token.is_some()
             && self.github_repo_authorized
@@ -605,10 +738,7 @@ impl ReaderApp {
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .push(p.clone());
-                        let mut applied = p.clone();
-                        applied.timestamp =
-                            reader_core::now_secs().max(p.timestamp.saturating_add(1));
-                        self.cloud_record_progress(applied);
+
                         self.cloud_sync.offered = None;
                     }
                 }

@@ -364,3 +364,171 @@ fn rate_limit_stops_other_file_requests_and_preserves_progress() {
     assert_eq!(result.failed.len(), 1);
     server.join().unwrap();
 }
+
+#[test]
+fn previously_downloaded_but_missing_local_file_is_downloaded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let bytes = b"previously downloaded book";
+    let hash = digest(bytes);
+    let mut own = DeviceSnapshot::new("local".into());
+    let book = CloudBook {
+        hash: hash.clone(),
+        title: "Missing local copy".into(),
+        size: bytes.len() as u64,
+    };
+    own.books.insert(hash.clone(), book);
+    let mut steps = prefix(true, "repo");
+    steps.extend(listed(&own));
+    steps.push(raw(
+        &format!("/repos/tester/EpubReaderInfo/contents/books/{hash}.epub"),
+        bytes.to_vec(),
+    ));
+    let (api, server) = mock(steps);
+    let mut retries = staged::RetryQueue::load(root, "tester", "local").unwrap();
+    let result = staged::files(&api, &mut own, vec![], &mut retries, false).unwrap();
+    assert_eq!(
+        result.downloaded.len(),
+        1,
+        "own snapshot is not proof that the file still exists locally"
+    );
+    server.join().unwrap();
+}
+#[test]
+fn archived_remote_book_is_neither_downloaded_nor_removed_from_cloud() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let hash = "a".repeat(64);
+    let book = CloudBook {
+        hash: hash.clone(),
+        title: "Archived".into(),
+        size: 12,
+    };
+    let mut remote = DeviceSnapshot::new("remote".into());
+    remote.books.insert(hash.clone(), book.clone());
+    remote.lifecycle.insert(
+        hash.clone(),
+        crate::library::archive::BookLifecycle {
+            book,
+            state: crate::library::archive::BookState::Archived,
+            revision: 20,
+            event: uuid::Uuid::new_v4().to_string(),
+        },
+    );
+    let mut own = DeviceSnapshot::new("local".into());
+    let mut expected = own.clone();
+    expected.lifecycle = remote.lifecycle.clone();
+    let path = "/repos/tester/EpubReaderInfo/contents/devices/local.json";
+    let mut steps = prefix(true, "repo");
+    steps.extend(listed(&remote));
+    steps.extend([
+        step("GET", path, 404, json!({})),
+        step("GET", path, 404, json!({})),
+        step("PUT", path, 201, json!({})),
+    ]);
+    let (api, server) = mock(steps);
+    let mut retries = staged::RetryQueue::load(root, "tester", "local").unwrap();
+    let result = staged::files(&api, &mut own, vec![], &mut retries, false).unwrap();
+    assert!(result.downloaded.is_empty());
+    assert!(result.failed.is_empty());
+    assert_eq!(result.own.lifecycle, expected.lifecycle);
+    server.join().unwrap();
+}
+#[test]
+fn permanent_delete_publishes_tombstone_then_deletes_only_hash_named_book() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let hash = "b".repeat(64);
+    let book = CloudBook {
+        hash: hash.clone(),
+        title: "Deleted".into(),
+        size: 12,
+    };
+    let mut remote = DeviceSnapshot::new("remote".into());
+    remote.books.insert(hash.clone(), book.clone());
+    remote.lifecycle.insert(
+        hash.clone(),
+        crate::library::archive::BookLifecycle {
+            book,
+            state: crate::library::archive::BookState::Deleted,
+            revision: 30,
+            event: uuid::Uuid::new_v4().to_string(),
+        },
+    );
+    let mut own = DeviceSnapshot::new("local".into());
+    let path = "/repos/tester/EpubReaderInfo/contents/devices/local.json";
+    let epub = format!("/repos/tester/EpubReaderInfo/contents/books/{hash}.epub");
+    let mut published = own.clone();
+    published.lifecycle = remote.lifecycle.clone();
+    let mut steps = prefix(true, "repo");
+    steps.extend(listed(&remote));
+    steps.extend([
+        step("GET", path, 404, json!({})),
+        step("GET", path, 404, json!({})),
+        step("PUT", path, 201, json!({})),
+        step("GET", &epub, 200, json!({"sha":"book-blob"})),
+        step("DELETE", &epub, 200, json!({})),
+        step("GET", path, 200, json!({"sha":"state"})),
+        raw(path, serde_json::to_vec_pretty(&published).unwrap()),
+    ]);
+    let (api, server) = mock(steps);
+    let mut retries = staged::RetryQueue::load(root, "tester", "local").unwrap();
+    let result = staged::files(&api, &mut own, vec![], &mut retries, false).unwrap();
+    assert!(result.downloaded.is_empty());
+    assert!(result.failed.is_empty());
+    assert_eq!(
+        serde_json::to_value(&retries).unwrap()["deleted"][&hash],
+        30
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn archived_copy_requires_actual_cloud_bytes_before_local_release() {
+    for corrupt in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let bytes = b"archive safety fixture";
+        let book = local(&dir.path().join("local.epub"), bytes, "Archive");
+        let path_on_disk = book.path.clone();
+        let hash = book.info.hash.clone();
+        let mut own = DeviceSnapshot::new("local".into());
+        own.books.insert(hash.clone(), book.info.clone());
+        own.lifecycle.insert(
+            hash.clone(),
+            crate::library::archive::BookLifecycle {
+                book: book.info.clone(),
+                state: crate::library::archive::BookState::Archived,
+                revision: 20,
+                event: uuid::Uuid::new_v4().to_string(),
+            },
+        );
+        let state = "/repos/tester/EpubReaderInfo/contents/devices/local.json";
+        let epub = format!("/repos/tester/EpubReaderInfo/contents/books/{hash}.epub");
+        let mut steps = prefix(true, "repo");
+        steps.extend(listed(&own));
+        steps.extend([
+            step("GET", &epub, 200, json!({"size":bytes.len(),"sha":"book"})),
+            step("GET", state, 200, json!({"sha":"state"})),
+            raw(state, serde_json::to_vec_pretty(&own).unwrap()),
+            raw(
+                &epub,
+                if corrupt {
+                    b"corrupted cloud bytes".to_vec()
+                } else {
+                    bytes.to_vec()
+                },
+            ),
+        ]);
+        let (api, server) = mock(steps);
+        let mut retries = staged::RetryQueue::load(root, "tester", "local").unwrap();
+        let result = staged::files(&api, &mut own, vec![book], &mut retries, false).unwrap();
+        assert_eq!(result.confirmed_archives.contains(&hash), !corrupt);
+        assert_eq!(result.failed.len(), usize::from(corrupt));
+        assert!(
+            path_on_disk.is_file(),
+            "transport must never unlink the local file"
+        );
+        server.join().unwrap();
+    }
+}

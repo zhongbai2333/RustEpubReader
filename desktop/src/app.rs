@@ -682,6 +682,8 @@ pub struct ReaderApp {
     pub library_manage: bool,
     pub library_selected: std::collections::HashSet<String>,
     pub library_confirm_delete: bool,
+    pub library_show_archive: bool,
+    pub library_archive_delete: Option<reader_core::cloud_sync::CloudBook>,
     pub library_query: String,
     pub library_sort_title: bool,
     pub library_list_mode: bool,
@@ -1046,6 +1048,8 @@ impl ReaderApp {
             library_manage: false,
             library_selected: Default::default(),
             library_confirm_delete: false,
+            library_show_archive: false,
+            library_archive_delete: None,
             library_query: String::new(),
             library_sort_title: false,
             library_list_mode: false,
@@ -1440,6 +1444,7 @@ impl ReaderApp {
                     ch = ch.min(book.chapters.len() - 1);
                 }
 
+                self.cloud_journal_init();
                 let initial_title = book.title.clone();
                 let initial_chapter_title = book.chapters.get(ch).map(|c| c.title.clone());
                 let entry = self.library.add_or_update(
@@ -1466,8 +1471,9 @@ impl ReaderApp {
                 self.current_book_hash = hash;
                 self.book_path = Some(entry.path.clone());
                 self.current_chapter = ch;
-                self.last_synced_chapter = None; // Reset so progress is pushed immediately on first update
-                self.last_synced_block = None;
+                self.last_synced_chapter = Some(ch);
+                self.last_synced_block = Some(entry.last_block);
+                self.last_synced_char_offset = Some(entry.last_char_offset);
                 self.current_block = entry.last_block;
                 self.current_char_offset = entry.last_char_offset;
                 self.pending_restore_block = Some(entry.last_block);
@@ -1765,9 +1771,6 @@ impl ReaderApp {
         }
     }
 
-    pub fn schedule_position_save(&mut self, chapter: usize, block: usize) {
-        self.schedule_position_save_at(chapter, block, 0);
-    }
     pub(crate) fn schedule_position_save_at(
         &mut self,
         chapter: usize,

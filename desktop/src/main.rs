@@ -222,6 +222,17 @@ fn main() -> eframe::Result {
             }
 
             #[cfg(debug_assertions)]
+            if std::env::args().any(|a| a == "--ui-preview")
+                && std::env::args().any(|a| {
+                    matches!(
+                        a.as_str(),
+                        "--github-login-preview" | "--github-sync-preview"
+                    )
+                })
+            {
+                app.open_sync(0);
+            }
+            #[cfg(debug_assertions)]
             if std::env::args().any(|a| a == "--appearance-linkage-preview") {
                 app.show_appearance_linkage = true;
                 app.i18n

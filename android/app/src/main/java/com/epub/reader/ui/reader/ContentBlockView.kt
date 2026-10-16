@@ -231,7 +231,7 @@ private fun ContentBlockViewContent(
                 letterSpacing = 0.sp,
                 fontSize = (fontSize * scale).sp,
                 fontFamily = fontFamily,
-                textAlign = nativeAlign,
+                textAlign = if (native.align == null) androidx.compose.ui.text.style.TextAlign.Center else nativeAlign,
                 lineHeight = (fontSize * scale * lineSpacing).sp,
                 platformStyle = PlatformTextStyle(includeFontPadding = false),
                 lineHeightStyle = LineHeightStyle(

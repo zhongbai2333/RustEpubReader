@@ -68,6 +68,16 @@ is omitted from drawing rather than removed from the canonical book. Dynamic
 text is a display override; native selection/annotation support for that generated
 text is limited and does not create new shared block coordinates.
 
+## Native body links
+
+iOS retains link targets in regular text and table-of-contents lists. Book-local
+links resolve relative to the clicked chapter, including percent-encoded fragments,
+container IDs, inline Unicode scalar offsets and legacy named anchors. They use
+normal reader navigation in scrolling, sliding and curl modes without requiring
+publication scripts. Semantic note references retain the native note sheet.
+Only explicit HTTP, HTTPS, mail and telephone schemes use the platform URL handler;
+unresolved local links and other schemes do not open host files.
+
 ## Verification
 
 `core/tests/epub_native.rs` verifies style priority, local imports, inline important

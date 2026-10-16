@@ -354,7 +354,7 @@ private fun measuredBlockHeight(block:ContentBlock,font:Float,lineHeight:Float,w
         val native=block.nativeStyle
         val scale=if(native.size!=null||native.sizePx!=null)1f else (titleScale*when(block.level){1->1.3f;2->1.1f;3->0.9f;else->0.8f}).coerceAtLeast(1f)
         val paragraph=ContentBlock.Paragraph(block.spans.map {it.copy(style=when(it.style){InlineStyle.Italic,InlineStyle.BoldItalic->InlineStyle.BoldItalic;else->InlineStyle.Bold})},block.anchor_id,
-            native.copy(indent=0f,indentLength=null,before=(native.before?:1.2f)/scale,after=(native.after?:1.8f)/scale))
+            native.copy(align=native.align?:"center",indent=0f,indentLength=null,before=(native.before?:1.2f)/scale,after=(native.after?:1.8f)/scale))
         val (layout,vertical)=paragraphGeometry(paragraph,font*scale,lineHeight*scale,width,density,para,0,measurer,family,sourceOffset)
         return layout.size.height+ceil(vertical)
     }

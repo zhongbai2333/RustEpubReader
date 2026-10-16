@@ -174,6 +174,12 @@ enum ReadingModesRuntimeCheck {
                 for leaf in leaves where leaf.page != nil {
                     leaf.view.layoutIfNeeded()
                     let footer = leaf.pageFooter, bounds = leaf.view.bounds
+                    if let page = leaf.page {
+                        let top = bounds.height - page.textRect.maxY
+                        let bottom = page.textRect.minY
+                        try require(abs(top-bottom)<0.5, "Reading body has unequal top/bottom margins: \(top)/\(bottom)")
+                        try require(top >= max(window.safeAreaInsets.top,window.safeAreaInsets.bottom), "Reading body enters the system safe area")
+                    }
                     try require(footer.isDescendant(of: leaf.view) && footer.text == L("reader.page_info", leaf.index+1, reader.pages.count), "Footer detached from paper or stale page number")
                     try require(!footer.isHidden && bounds.contains(footer.frame) && abs(bounds.maxX-footer.frame.maxX-16)<1, "Footer not inside bottom-right paper edge")
                     try require(abs(bounds.maxY-footer.frame.maxY-leaf.footerSafeBottom-8)<1, "Footer unsafe or wrong bottom inset")
@@ -207,12 +213,30 @@ enum ReadingModesRuntimeCheck {
                 try require(reader.currentIndex > start, "Page turn did not complete: \(mode.rawValue), width=\(size.width), index=\(reader.currentIndex), start=\(start)")
                 let visible = pager.viewControllers?.flatMap { ($0 as? SpreadController)?.leaves ?? [($0 as? PaperController)].compactMap { $0 } } ?? []
                 try require(visible.allSatisfy { $0.page == nil ? $0.footerText.isEmpty : $0.footerText == L("reader.page_info", $0.index+1, reader.pages.count) }, "Turn left stale footer")
-                results.append(["mode": mode.rawValue, "width": Int(size.width), "dual": reader.dual, "paper_owned": true, "safe_bottom_right": true, "turn_updates": true, "status_on_paper": true, "status_toggle_no_reflow": true])
+                results.append(["mode": mode.rawValue, "width": Int(size.width), "dual": reader.dual, "paper_owned": true, "safe_bottom_right": true, "turn_updates": true, "status_on_paper": true, "status_toggle_no_reflow": true, "symmetric_body_margins": true])
             }
             options.theme = "dark"
             reader.update(options: options, jump: nil, jumpID: 0, annotations: .empty, revision: 0)
         }
-        return ["cases": results, "count": results.count, "overlay_removed": true]
+        var scrollResults = [[String: Any]]()
+        let scrollOptions = ReaderOptions(fontSize:18,lineHeight:1.65,fontName:"Helvetica",theme:"light",sliding:false,cjkFontName:"PingFangSC-Regular",readingMode:.scroll)
+        let scrollReader = NativeReadingController(book:book,anchor:.init(chapter:0),options:scrollOptions)
+        host.addChild(scrollReader);host.view.addSubview(scrollReader.view);scrollReader.didMove(toParent:host)
+        defer {scrollReader.willMove(toParent:nil);scrollReader.view.removeFromSuperview();scrollReader.removeFromParent()}
+        for size in [CGSize(width:402,height:874),CGSize(width:874,height:402)] {
+            scrollReader.view.frame=CGRect(origin:.zero,size:size)
+            scrollReader.view.setNeedsLayout();scrollReader.view.layoutIfNeeded()
+            guard let viewport=scrollReader.view.subviews.first(where:{$0 is ReadingScrollViewport}) else {throw CoreFailure(message:"Missing continuous reading viewport")}
+            let top=viewport.frame.minY,bottom=scrollReader.view.bounds.maxY-viewport.frame.maxY
+            try require(abs(top-bottom)<0.5,"Continuous reading has unequal top/bottom margins: \(top)/\(bottom)")
+            try require(top >= max(window.safeAreaInsets.top,window.safeAreaInsets.bottom),"Continuous reading enters the system safe area")
+            let anchor=scrollReader.anchor,builds=scrollReader.scrollTypesetCount
+            scrollReader.updateImmersiveStatus(ReadingStatusInfo(time:"09:41",battery:73))
+            scrollReader.updateImmersiveStatus(nil)
+            try require(scrollReader.anchor==anchor && scrollReader.scrollTypesetCount==builds,"Footer visibility moved the continuous reading position")
+            scrollResults.append(["width":Int(size.width),"symmetric_body_margins":true,"top":top,"bottom":bottom,"status_toggle_no_reflow":true])
+        }
+        return ["scroll_margins":scrollResults,"cases": results, "count": results.count, "overlay_removed": true]
     }
 
     private static func verifySearch(entry: LibraryEntry) throws -> [String: Any] {

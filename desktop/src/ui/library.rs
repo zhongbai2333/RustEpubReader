@@ -164,7 +164,7 @@ impl ReaderApp {
                                 ));
                                 ui.memory_mut(|m| m.close_popup());
                             }
-                            if design::menu_item(ui, self.i18n.t("library.delete"), false, true)
+                            if design::menu_item(ui, self.i18n.t("archive.action"), false, false)
                                 .clicked()
                             {
                                 action = Some(LibraryListAction::Remove(entry.path.clone()));
@@ -253,6 +253,7 @@ impl ReaderApp {
                                 );
                             }
                         });
+                        self.render_sync_meter(ui);
                         ui.label(
                             egui::RichText::new(
                                 self.i18n
@@ -262,6 +263,9 @@ impl ReaderApp {
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(self.i18n.t("archive.title")).clicked() {
+                            self.library_show_archive = true;
+                        }
                         if ui.button(self.i18n.t("transfer.receive")).clicked() {
                             self.book_share.open_receive(&self.data_dir);
                         }
@@ -413,7 +417,7 @@ impl ReaderApp {
                         if ui
                             .add_enabled(
                                 !self.library_selected.is_empty(),
-                                egui::Button::new(self.i18n.t("manage.delete")),
+                                egui::Button::new(self.i18n.t("archive.action")),
                             )
                             .clicked()
                         {
@@ -780,7 +784,7 @@ impl ReaderApp {
                                                                 }
                                                                 if design::menu_item(
                                                                     ui,
-                                                                    self.i18n.t("library.delete"),
+                                                                    self.i18n.t("archive.action"),
                                                                     false,
                                                                     true,
                                                                 )
@@ -836,17 +840,18 @@ impl ReaderApp {
                     scroll.state.offset.y + scroll.inner_rect.height() + 1. < scroll.content_size.y,
                 );
             });
+        self.render_archive_window(ui.ctx());
         self.shelf_covers.trim(&mut self.cover_textures);
         if self.library_confirm_delete {
-            egui::Window::new(self.i18n.t("manage.confirm"))
+            egui::Window::new(self.i18n.t("archive.confirm"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
                 .show(ui.ctx(), |ui| {
                     ui.set_max_width(420.);
-                    ui.label(self.i18n.t("manage.delete_note"));
+                    ui.label(self.i18n.t("archive.note"));
                     ui.horizontal(|ui| {
-                        if ui.button(self.i18n.t("manage.delete")).clicked() {
+                        if ui.button(self.i18n.t("archive.action")).clicked() {
                             let paths: Vec<_> = self
                                 .library
                                 .books
@@ -854,10 +859,8 @@ impl ReaderApp {
                                 .filter(|e| self.library_selected.contains(&e.id))
                                 .map(|e| e.path.clone())
                                 .collect();
-                            for path in paths {
-                                self.cover_textures.remove(&path);
-                                self.library.remove_by_path(&self.data_dir, &path);
-                            }
+                            if let Err(error) = reader_core::library::archive::ArchiveStore::archive(&self.data_dir,&mut self.library,&paths) { self.error_msg=Some(error); }
+                            for path in paths { self.cover_textures.remove(&path); }
                             self.library_selected.clear();
                             self.library_confirm_delete = false;
                         }
@@ -873,7 +876,13 @@ impl ReaderApp {
         if let Some(path) = action_remove_path {
             self.push_feedback_log(format!("[Library] remove book: {}", path));
             self.cover_textures.remove(&path);
-            self.library.remove_by_path(&self.data_dir, &path);
+            if let Err(error) = reader_core::library::archive::ArchiveStore::archive(
+                &self.data_dir,
+                &mut self.library,
+                std::slice::from_ref(&path),
+            ) {
+                self.error_msg = Some(error);
+            }
             if self.book_path.as_deref() == Some(path.as_str()) {
                 self.book_path = None;
                 self.current_book_hash = None;
@@ -909,6 +918,79 @@ impl ReaderApp {
                 self.error_msg = Some(self.i18n.tf1("book.export_failed", &error));
                 false
             }
+        }
+    }
+}
+
+impl ReaderApp {
+    fn render_archive_window(&mut self, ctx: &egui::Context) {
+        if self.library_show_archive {
+            let result = reader_core::library::archive::ArchiveStore::load(&self.data_dir);
+            let mut action = None;
+            egui::Window::new(self.i18n.t("archive.title")).open(&mut self.library_show_archive)
+                .default_width(540.).default_height(380.).resizable(true).show(ctx,|ui| {
+                    match result {
+                        Ok(store) => {
+                            let mut entries=store.list(); entries.sort_by_key(|r|std::cmp::Reverse(r.lifecycle.revision));
+                            if entries.is_empty() { ui.label(self.i18n.t("archive.empty")); }
+                            egui::ScrollArea::vertical().max_height(430.).show(ui,|ui| {
+                                for record in entries {
+                                    let book=record.lifecycle.book;
+                                    ui.push_id(&book.hash,|ui| {
+                                        ui.strong(&book.title);
+                                        ui.small(self.i18n.t(if record.entry.as_ref().is_some_and(|e|std::path::Path::new(&e.path).is_file()) {"archive.local"} else {"archive.cloud"}));
+                                        ui.horizontal(|ui| {
+                                            if ui.button(self.i18n.t("archive.restore")).clicked() { action=Some((book.hash.clone(),reader_core::library::archive::BookState::Active)); }
+                                            if ui.button(self.i18n.t("archive.delete")).clicked() { self.library_archive_delete=Some(book.clone()); }
+                                        });
+                                        ui.separator();
+                                    });
+                                }
+                            });
+                        }
+                        Err(error)=>{ui.label(error);}
+                    }
+                });
+            if let Some((hash, state)) = action {
+                match reader_core::library::archive::ArchiveStore::change(
+                    &self.data_dir,
+                    &hash,
+                    state,
+                ) {
+                    Ok(()) => {
+                        self.library = reader_core::library::Library::load_from(&self.data_dir);
+                        self.cloud_sync.stop();
+                    }
+                    Err(error) => self.error_msg = Some(error),
+                }
+            }
+        }
+        if let Some(book) = self.library_archive_delete.clone() {
+            egui::Window::new(self.i18n.t("archive.delete_confirm"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0., 0.])
+                .show(ctx, |ui| {
+                    ui.set_max_width(440.);
+                    ui.strong(book.title);
+                    ui.label(self.i18n.t("archive.delete_note"));
+                    ui.horizontal(|ui| {
+                        if ui.button(self.i18n.t("archive.delete")).clicked() {
+                            if let Err(error) = reader_core::library::archive::ArchiveStore::change(
+                                &self.data_dir,
+                                &book.hash,
+                                reader_core::library::archive::BookState::Deleted,
+                            ) {
+                                self.error_msg = Some(error);
+                            }
+                            self.library_archive_delete = None;
+                            self.cloud_sync.stop();
+                        }
+                        if ui.button(self.i18n.t("settings.cancel")).clicked() {
+                            self.library_archive_delete = None;
+                        }
+                    });
+                });
         }
     }
 }

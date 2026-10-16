@@ -3,8 +3,18 @@ import SwiftUI
 struct ReaderLanguagePicker: View {
     @ObservedObject private var readerI18n=ReaderI18n.shared
     @Environment(\.dismiss) private var dismiss
-    var body:some View {
-        NavigationStack {
+    var embedded = false
+    var body: some View {
+        Group {
+            if embedded { languageList }
+            else {
+                NavigationStack {
+                    languageList.toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("common.close")) { dismiss() } } }
+                }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+            }
+        }.environment(\.locale, readerI18n.locale)
+    }
+    private var languageList: some View {
             List {
                 ForEach(readerI18n.choices,id:\.code) {choice in
                     Button {
@@ -19,8 +29,5 @@ struct ReaderLanguagePicker: View {
                     }.accessibilityAddTraits(readerI18n.preference==choice.code ? .isSelected : [])
                 }
             }.navigationTitle(L("language.title")).navigationBarTitleDisplayMode(.inline)
-                .toolbar {ToolbarItem(placement:.confirmationAction) {Button(L("common.close")) {dismiss()}}}
-        }.environment(\.locale,readerI18n.locale)
-            .presentationDetents([.medium,.large]).presentationDragIndicator(.visible)
     }
 }

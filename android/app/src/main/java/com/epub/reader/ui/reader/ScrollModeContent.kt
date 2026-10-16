@@ -1,5 +1,9 @@
 package com.zhongbai233.epub.reader.ui.reader
 
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.layout.positionInRoot
+import kotlinx.coroutines.flow.collectLatest
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -55,7 +59,9 @@ internal fun ScrollModeContent(
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
     initialBlock: Int = 0,
-    onPositionChange: (Int) -> Unit = {},
+    initialCharOffset: Int = 0,
+    positionRevision: Int = 0,
+    onPositionChange: (Int,Int) -> Unit = { _,_ -> },
     onContentPrepared: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
@@ -68,6 +74,8 @@ internal fun ScrollModeContent(
     }
     var suppressChapterCallback by remember { mutableStateOf(false) }
     var lastVisibleChapter by remember { mutableIntStateOf(initialChapter) }
+    var lastRestoreRevision by remember { mutableIntStateOf(-1) }
+    var userScrollRevision by remember { mutableIntStateOf(0) }
     val configuration = LocalConfiguration.current
     val scrollDensity = LocalDensity.current
     val hPaddingDp = configuration.screenWidthDp.dp * 0.065f
@@ -91,11 +99,21 @@ internal fun ScrollModeContent(
         suppressChapterCallback = false
     }
 
-    LaunchedEffect(initialChapter) {
-        if (initialChapter == lastVisibleChapter) return@LaunchedEffect
+    LaunchedEffect(initialChapter,positionRevision) {
+        if (initialChapter == lastVisibleChapter && positionRevision == lastRestoreRevision) return@LaunchedEffect
+        lastRestoreRevision=positionRevision
         suppressChapterCallback = true
         listState.scrollToItem(initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
         lastVisibleChapter = initialChapter
+        withFrameNanos {}; withFrameNanos {}
+        val info=blockLayoutRegistry?.get(initialBlock)
+        if(info?.coordinates?.isAttached==true) {
+            val rootY=info.coordinates!!.positionInRoot().y
+            val targetY=visibleImages.viewport.top+with(scrollDensity){topPaddingDp.toPx()}
+            val line=info.layoutResult.getLineForOffset(initialCharOffset.coerceIn(0,info.text.length))
+            val dy=rootY+info.layoutResult.getLineTop(line)-targetY
+            listState.scrollBy(dy)
+        }
         withFrameNanos {}
         suppressChapterCallback = false
     }
@@ -113,15 +131,22 @@ internal fun ScrollModeContent(
             }
     }
 
-    LaunchedEffect(publicationKey(allChapters), initialChapter) {
-        snapshotFlow { listState.firstVisibleItemIndex }
-            .distinctUntilChanged()
-            .collect { chapterIndex ->
-                delay(350)
-                if (chapterIndex == initialChapter) {
-                    onPositionChange(
-                        initialBlock.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
-                    )
+    val positionCallback by rememberUpdatedState(onPositionChange)
+    LaunchedEffect(publicationKey(allChapters), initialChapter, positionRevision) {
+        var reportedScroll = userScrollRevision
+        snapshotFlow { Triple(listState.firstVisibleItemIndex,listState.firstVisibleItemScrollOffset,userScrollRevision) }
+            .collectLatest { (_,_,userRevision) ->
+                if (suppressChapterCallback || userRevision == reportedScroll) return@collectLatest
+                val targetY=visibleImages.viewport.top+with(scrollDensity){topPaddingDp.toPx()}
+                val located=blockLayoutRegistry?.entries?.filter {it.value.coordinates?.isAttached==true}
+                    ?.sortedBy {it.value.coordinates!!.positionInRoot().y}
+                val block=located?.lastOrNull {it.value.coordinates!!.positionInRoot().y<=targetY} ?: located?.firstOrNull()
+                if(block!=null) {
+                    val info=block.value
+                    val y=(targetY-info.coordinates!!.positionInRoot().y).coerceAtLeast(0f)
+                    val line=info.layoutResult.getLineForVerticalPosition(y)
+                    reportedScroll=userRevision
+                    positionCallback(block.key,info.sourceCharOffset+info.layoutResult.getLineStart(line))
                 }
             }
     }
@@ -132,6 +157,7 @@ internal fun ScrollModeContent(
                 available: Offset,
                 source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
             ): Offset {
+                if (source == androidx.compose.ui.input.nestedscroll.NestedScrollSource.UserInput) userScrollRevision++
                 // 向上滚回时重置
                 if (available.y < 0 && pullTotal > 0) {
                     pullTotal = (pullTotal + available.y).coerceAtLeast(0f)

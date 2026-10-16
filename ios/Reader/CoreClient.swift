@@ -27,11 +27,19 @@ actor CoreStore {
     func importBook(path: String) throws -> LibraryEntry { try client.call("import", ["path": path]) }
     func annotations(id: String, fields: [String: Any]) throws -> ReaderAnnotations { try client.call("annotations", fields.merging(["id": id]) { _, new in new }) }
     func remove(ids: [String]) throws { let _: [String: Int] = try client.call("remove", ["ids": ids]) }
+    func archive(ids: [String]) throws {
+        let entries: [LibraryEntry] = try client.call("library")
+        let selected = ids.compactMap { id in entries.first(where: { $0.id == id })?.path }
+        guard selected.count == ids.count else { throw CoreFailure(message: "Book is no longer in the library") }
+        let _: [String:Int] = try client.call("archive", ["action":"archive","paths":selected])
+    }
+    func archiveList() throws -> [ArchivedEntry] { try client.call("archive") }
+    func archiveAction(hash: String, action: String) throws { let _: [String:Int] = try client.call("archive",["action":action,"hash":hash]) }
     func rename(id: String, title: String) throws -> LibraryEntry { try client.call("rename", ["id": id, "title": title]) }
     func exportBooks(ids: [String], directory: String) throws -> [String] { try client.call("export_books", ["ids": ids, "directory": directory]) }
     func open(id: String) throws -> PreviewBook { try client.call("open", ["id": id]) }
-    func save(id: String, anchor: ReadingAnchor) throws -> LibraryEntry {
-        try client.call("save", ["id": id, "chapter": anchor.chapter, "block": anchor.block, "char_offset": anchor.charOffset])
+    func save(id: String, anchor: ReadingAnchor, editedAt: UInt64) throws -> LibraryEntry {
+        try client.call("save", ["id": id, "chapter": anchor.chapter, "block": anchor.block, "char_offset": anchor.charOffset,"edited_at":editedAt])
     }
     func apply(epoch: UInt64, openPath: String) throws -> SyncSummary { try client.call("apply_sync", ["epoch": epoch, "open_path": openPath]) }
 }

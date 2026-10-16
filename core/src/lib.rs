@@ -1,6 +1,7 @@
 //! The core reader library exposing API for the desktop app and the Android bridge.
 pub mod appearance;
 pub mod book_share;
+pub mod cloud_progress;
 pub mod cloud_sync;
 pub mod csc;
 pub mod epub;

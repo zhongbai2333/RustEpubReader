@@ -179,10 +179,19 @@ impl ReaderApp {
             });
     }
     pub fn render_sync_page(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::default()
-            .inner_margin(design::Geometry::PAGE_INSET)
-            .show(ui, |ui| {
-                ui.set_max_width(640.);
+        let bounds = ui.available_rect_before_wrap();
+        let margin = design::Geometry::PAGE_INSET as f32;
+        let width = (bounds.width() - 2. * margin).clamp(0., 640.);
+        let content = egui::Rect::from_min_max(
+            egui::pos2(bounds.center().x - width / 2., bounds.top() + margin),
+            egui::pos2(bounds.center().x + width / 2., bounds.bottom() - margin),
+        );
+        ui.allocate_new_ui(
+            egui::UiBuilder::new()
+                .max_rect(content)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.set_width(width);
                 ui.heading(self.i18n.t("sync.multiplatform"));
                 design::block_gap(ui);
                 ui.horizontal(|ui| {
@@ -231,7 +240,8 @@ impl ReaderApp {
                             self.render_sharing_content(ui);
                         }
                     });
-            });
+            },
+        );
     }
 }
 

@@ -187,12 +187,22 @@ struct AboutView: View {
     }
     @ObservedObject var releases: ReleaseNotice
     let count: Int
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @AppStorage("reader.releaseNotice") private var autoNotice = true
     @State private var diagnostics: [URL] = []
     @State private var sharing = false
     var body: some View {
-        NavigationStack {
+        Group {
+            if embedded { aboutForm }
+            else {
+                NavigationStack {
+                    aboutForm.toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("manage.done")) { dismiss() } } }
+                }
+            }
+        }.sheet(isPresented: $sharing) { ShareFiles(urls: diagnostics) }
+    }
+    private var aboutForm: some View {
             Form {
                 Section {
                     HStack(spacing: 16) {
@@ -227,9 +237,6 @@ struct AboutView: View {
                     Link("serde · MIT / Apache-2.0", destination: URL(string: "https://serde.rs")!)
                 }
             }.navigationTitle(L("about.title")).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("manage.done")) { dismiss() } } }
-                .sheet(isPresented: $sharing) { ShareFiles(urls: diagnostics) }
-        }
     }
 }
 
@@ -366,5 +373,74 @@ struct LibraryBottomBar: View {
         if reduceTransparency { content.background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule()) }
         else if #available(iOS 26.0, *) { content.glassEffect(.regular.interactive(), in: Capsule()) }
         else { content.background(.regularMaterial, in: Capsule()) }
+    }
+}
+
+struct LibrarySortDisplayView: View {
+    @Binding var sortByTitle: Bool
+    @Binding var listMode: Bool
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var readerI18n = ReaderI18n.shared
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(L("common.sort")) {
+                    choice("library.sort_recently_read", selected: !sortByTitle) { sortByTitle = false }
+                    choice("txt.book_title", selected: sortByTitle) { sortByTitle = true }
+                }
+                Section(L("library.display")) {
+                    choice("library.view_grid", selected: !listMode) { listMode = false }
+                    choice("library.view_list", selected: listMode) { listMode = true }
+                }
+            }.navigationTitle(L("library.sort_display")).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("manage.done")) { dismiss() } } }
+        }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+    }
+    private func choice(_ key: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(L(key)).foregroundStyle(.primary)
+                Spacer(minLength: 12)
+                if selected { Image(systemName: "checkmark").foregroundStyle(.tint) }
+            }.frame(minHeight: 32).contentShape(Rectangle())
+        }.accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+struct LibrarySettingsView: View {
+    private enum Page: Hashable { case appearance, language, about }
+    @ObservedObject var releases: ReleaseNotice
+    let count: Int
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @EnvironmentObject private var appearance: AppearanceCoordinator
+    @ObservedObject private var readerI18n = ReaderI18n.shared
+    @State private var path: [Page] = []
+    @State private var detent: PresentationDetent = .height(300)
+    private var homeDetent: PresentationDetent { typeSize.isAccessibilitySize ? .medium : .height(300) }
+    var body: some View {
+        NavigationStack(path: $path) {
+            Form {
+                NavigationLink(value: Page.appearance) { Label(L("ui.appearance"), systemImage: "circle.lefthalf.filled") }
+                NavigationLink(value: Page.language) { Label(L("ui.language"), systemImage: "globe") }
+                NavigationLink(value: Page.about) { Label(L("about.title"), systemImage: "info.circle") }
+            }.navigationTitle(L("settings.title")).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("manage.done")) { dismiss() } } }
+                .navigationDestination(for: Page.self) { page in
+                    switch page {
+                    case .appearance:
+                        Form { AppearanceLinkageControls() }
+                            .navigationTitle(L("ui.appearance")).navigationBarTitleDisplayMode(.inline)
+                    case .language: ReaderLanguagePicker(embedded: true)
+                    case .about: AboutView(releases: releases, count: count, embedded: true)
+                    }
+                }
+        }.readerPanelSurface(appearance: appearance)
+            .environment(\.colorScheme, appearance.appDark ? .dark : .light)
+            .presentationDetents([.height(300), .medium, .large], selection: $detent)
+            .presentationDragIndicator(.visible)
+            .onAppear { detent = homeDetent }
+            .onChange(of: path) { _, value in detent = value.isEmpty ? homeDetent : .medium }
+            .onChange(of: typeSize) { _, _ in if path.isEmpty { detent = homeDetent } }
     }
 }

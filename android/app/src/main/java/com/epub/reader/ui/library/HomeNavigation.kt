@@ -23,7 +23,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.focus.FocusRequester
@@ -80,7 +79,7 @@ fun HomeNavigation(
             }
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 2.dp, shadowElevation = 2.dp,
-                modifier = Modifier.width(railHeight + (availableWidth - railHeight) * progress).clipToBounds()) {
+                modifier = Modifier.width(railHeight + (availableWidth - railHeight) * progress)) {
                 if (searching) Row(Modifier.fillMaxWidth().heightIn(min = railHeight), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Search, null, Modifier.padding(start = 14.dp, end = 8.dp).size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     BasicTextField(query, onQueryChange,

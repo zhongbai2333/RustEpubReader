@@ -17,7 +17,9 @@ use std::{
     },
     time::Duration,
 };
+mod meter;
 mod staged;
+pub use meter::{sync_meter, SyncMeter};
 pub use staged::{
     complete_transfer, record_transfer_failure, sync_phase, SyncPhase, TransferFailure,
 };
@@ -36,6 +38,7 @@ pub struct DownloadedBook {
 }
 pub struct SyncResult {
     pub snapshots: Vec<DeviceSnapshot>,
+    pub confirmed_archives: std::collections::BTreeSet<String>,
     pub own: DeviceSnapshot,
     pub downloaded: Vec<DownloadedBook>,
     pub uploaded: usize,
@@ -52,6 +55,7 @@ struct Api {
     cancel: Arc<AtomicBool>,
     last_write: std::sync::Mutex<Option<std::time::Instant>>,
     count_contributions: bool,
+    meter: Option<meter::Reporter>,
 }
 
 pub fn has_repo_scope(scopes: &str) -> bool {
@@ -207,6 +211,36 @@ impl Api {
         }
         Ok(true)
     }
+    fn delete_book(&self, hash: &str) -> Result<(), String> {
+        if !crate::cloud_sync::valid_hash(hash) {
+            return Err("Invalid book hash".into());
+        }
+        let path = self.contents(&format!("books/{hash}.epub"));
+        for _ in 0..3 {
+            let Some(meta) = self.get_json(&path)? else {
+                return Ok(());
+            };
+            let sha = meta["sha"].as_str().ok_or("Invalid remote book metadata")?;
+            let mut body = json!({"message":"Delete archived reader book", "sha":sha});
+            if !self.count_contributions {
+                let identity =
+                    json!({"name":"RustEpubReader Sync","email":"sync@rustepubreader.local"});
+                body["author"] = identity.clone();
+                body["committer"] = identity;
+            }
+            let response = self.request(reqwest::Method::DELETE, &path, Some(body), false)?;
+            if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
+                return Ok(());
+            }
+            if !matches!(
+                response.status(),
+                StatusCode::CONFLICT | StatusCode::UNPROCESSABLE_ENTITY
+            ) {
+                return Err(error(&response));
+            }
+        }
+        Err("Book deletion conflict; retry later".into())
+    }
     fn ensure_repo(&self) -> Result<(), String> {
         let mut created = false;
         let repo = match self.get_json(&self.repo_path())? {
@@ -307,6 +341,7 @@ pub fn sync(
         cancel,
         last_write: Default::default(),
         count_contributions,
+        meter: None,
     };
     run(&api, &mut own, books)
 }
@@ -415,6 +450,7 @@ fn run(api: &Api, own: &mut DeviceSnapshot, books: Vec<LocalBook>) -> Result<Syn
         downloaded.push(DownloadedBook { info, bytes });
     }
     Ok(SyncResult {
+        confirmed_archives: Default::default(),
         snapshots,
         own: own.clone(),
         downloaded,
@@ -586,6 +622,7 @@ mod tests {
                 cancel: Arc::new(AtomicBool::new(false)),
                 last_write: Default::default(),
                 count_contributions,
+                meter: None,
             },
             server,
         )

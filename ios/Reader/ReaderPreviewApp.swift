@@ -143,6 +143,9 @@ struct AppHome: View {
         }
         .environment(\.locale, readerI18n.locale)
         .tint(Color(red: 0.18, green: 0.39, blue: 0.75))
+        .onChange(of: library.books.map(\.id)) { _, ids in
+            if let book=selectedBook, !ids.contains(book.id) { closeBook() }
+        }
         .onOpenURL { url in
             if url.scheme == "rustepubreader" {
                 library.receivingSharedBooks = true; library.bookSharing.receive(url.absoluteString)
@@ -420,7 +423,6 @@ struct BookCover: View {
 }
 
 struct LibraryDesignView: View {
-    @State private var appearanceSettings = false
     @ObservedObject private var readerI18n = ReaderI18n.shared
     @ObservedObject var library: PreviewLibrary
     @ObservedObject var account: GitHubAccount
@@ -435,13 +437,15 @@ struct LibraryDesignView: View {
     var bottomSearch: Bool = false
     let open: (LibraryEntry, String) -> Void
     var openSync: () -> Void = {}
-    @State private var about = false
-    @State private var statistics = false
-    @State private var choosingLanguage = false
+    private enum ToolSheet: String, Identifiable {
+        case sortDisplay, archive, statistics, settings
+        var id: String { rawValue }
+    }
+    @State private var toolSheet: ToolSheet?
     @State private var importing = false
     @State private var managing = false
     @State private var selected = Set<String>()
-    @State private var confirmingDelete = false
+    @State private var confirmingArchive = false
     @State private var bookShareSelection: BookShareSelection?
     @State private var renaming: LibraryEntry?
     @State private var renameTitle = ""
@@ -455,6 +459,7 @@ struct LibraryDesignView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                if account.syncing { SyncProgressContent(account: account) }
                 if !managing && search.isEmpty, let book = library.books.first(where: { $0.id == library.recent }) {
                     Button { open(book, "recent:" + book.id) } label: {
                         HStack(spacing: 16) {
@@ -479,7 +484,7 @@ struct LibraryDesignView: View {
                             }.font(.subheadline)
                             HStack {
                                 Button(L("manage.share"), systemImage: "square.and.arrow.up") { bookShareSelection = BookShareSelection(ids: books.filter { selected.contains($0.id) }.map(\.id)) }
-                                Button(L("manage.delete"), systemImage: "trash", role: .destructive) { confirmingDelete = true }
+                                Button(L("archive.action"), systemImage: "archivebox") { confirmingArchive = true }
                             }.disabled(selected.isEmpty || library.busy).buttonStyle(.bordered)
                         }
                     } else { Text(L("ui.all_books")).font(.headline) }
@@ -513,7 +518,7 @@ struct LibraryDesignView: View {
                                         Button(L("book.share"), systemImage: "square.and.arrow.up") { bookShareSelection = BookShareSelection(ids: [book.id]) }
                                         Button(L("book.rename"), systemImage: "pencil") { renameTitle = book.title; renaming = book }
                                         Divider()
-                                        Button(L("library.delete"), systemImage: "trash", role: .destructive) { selected = [book.id]; confirmingDelete = true }
+                                        Button(L("archive.action"), systemImage: "archivebox") { selected = [book.id]; confirmingArchive = true }
                                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
                                         .accessibilityLabel(L("reader.more_actions"))
                                 }
@@ -551,7 +556,10 @@ struct LibraryDesignView: View {
                 ToolbarItem(placement: .topBarLeading) { libraryHeading }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button(L("library.import_epub"), systemImage: "plus") { importing = true }
+                Menu {
+                    Button(L("ui.import"), systemImage: "doc.badge.plus") { importing = true }
+                    Button(L("transfer.receive"), systemImage: "qrcode.viewfinder") { library.bookSharing.resetReceiver(); library.receivingSharedBooks = true }
+                } label: { Label(L("library.add_books"), systemImage: "plus") }
                     .labelStyle(.iconOnly)
                     .buttonBorderShape(.circle)
                     .disabled(library.busy)
@@ -565,37 +573,31 @@ struct LibraryDesignView: View {
             if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button(L("transfer.receive"), systemImage: "qrcode.viewfinder") { library.bookSharing.resetReceiver(); library.receivingSharedBooks = true }
-                    Button(L("appearance.link_title"), systemImage: "circle.lefthalf.filled") { appearanceSettings = true }
-                    Picker(L("library.display"), selection: $listMode) {
-                        Label(L("library.view_grid"), systemImage: "square.grid.2x2").tag(false)
-                        Label(L("library.view_list"), systemImage: "list.bullet").tag(true)
-                    }
-                    Picker(L("common.sort"), selection: $sortByTitle) {
-                        Text(L("library.sort_recently_read")).tag(false)
-                        Text(L("txt.book_title")).tag(true)
-                    }
-                    Button(L("stats.title"), systemImage: "chart.bar") { statistics = true }
-                    Button {choosingLanguage=true} label: {
-                        Label(L("language.title")+" · "+readerI18n.choiceLabel,systemImage:"globe")
-                    }
-                    Button(L("about.title"), systemImage: "info.circle") { about = true }
+                    Button(L("library.sort_display"), systemImage: "slider.horizontal.3") { toolSheet = .sortDisplay }
+                    Button(L("archive.title") + " (\(library.archived.count))", systemImage: "archivebox") { toolSheet = .archive }
+                    Button(L("stats.title"), systemImage: "chart.bar") { toolSheet = .statistics }
+                    Button(L("settings.title"), systemImage: "gearshape") { toolSheet = .settings }
                 } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel(L("reader.more_actions"))
             }
         }
-        .sheet(isPresented: $statistics) { NavigationStack {
-            ReadingStatsView(library: library, syncSettings: {statistics=false;openSync()})
-                .toolbar {ToolbarItem(placement: .confirmationAction) {Button(L("settings.close")) {statistics=false}}}
-        }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
+        .sheet(item: $toolSheet) { sheet in
+            switch sheet {
+            case .sortDisplay: LibrarySortDisplayView(sortByTitle: $sortByTitle, listMode: $listMode)
+            case .archive: ArchiveLibraryView(library: library)
+            case .settings: LibrarySettingsView(releases: releases, count: library.books.count)
+            case .statistics:
+                NavigationStack {
+                    ReadingStatsView(library: library, syncSettings: { toolSheet = nil; openSync() })
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("settings.close")) { toolSheet = nil } } }
+                }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+            }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "epub") ?? .data]) { result in
             switch result {
             case .success(let url): Task { await library.importBook(url) }
             case .failure(let error): library.fail(error, title: L("library.error_import_failed"))
             }
         }
-        .sheet(isPresented: $choosingLanguage) {ReaderLanguagePicker()}
-        .sheet(isPresented: $appearanceSettings) { AppearanceLinkageSheet().presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
-        .sheet(isPresented: $about) { AboutView(releases: releases, count: library.books.count) }
         .sheet(item: $bookShareSelection) { selection in BookShareView(library: library, account: account, ids: selection.ids) }
         .alert(L("book.rename"), isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField(L("book.rename_hint"), text: $renameTitle)
@@ -603,24 +605,27 @@ struct LibraryDesignView: View {
                 .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || library.busy)
             Button(L("settings.cancel"), role: .cancel) { renaming = nil }
         } message: { Text(L("book.rename_description")) }
-        .confirmationDialog(L("manage.confirm"), isPresented: $confirmingDelete, titleVisibility: .visible) {
-            Button(L("manage.delete"), role: .destructive) { let ids = selected; Task { if await library.remove(ids) { selected.removeAll() } } }
+        // A shelf-wide confirmation has no stable popover anchor after the book menu closes.
+        .alert(L("archive.confirm"), isPresented: $confirmingArchive) {
+            Button(L("archive.action")) { let ids = selected; Task { if await library.remove(ids) { selected.removeAll() } } }
             Button(L("share.cancel"), role: .cancel) {}
-        } message: { Text(L("manage.delete_note")) }
+        } message: { Text(L("archive.note")) }
         .onDisappear {if !bottomSearch {shelfOrder.reset()}}
         .onChange(of: library.books.map(\.id)) { _, ids in selected.formIntersection(ids) }
     }
     private var libraryHeading: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(L("toolbar.library")).font(.system(size: 24, weight: .bold)).fixedSize()
+            HStack(spacing: 8) {
+                Text(L("toolbar.library")).font(.system(size: 24, weight: .bold)).fixedSize()
+                if account.syncing { syncIndicator.fixedSize(horizontal:true,vertical:false) }
+            }
             Text(readerI18n.count("ui.library_count", library.books.count)).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
-            if account.syncing { syncIndicator }
-        }.accessibilityAddTraits(.isHeader)
+        }.fixedSize(horizontal:true,vertical:false).accessibilityAddTraits(.isHeader)
     }
     private var syncIndicator: some View {
         HStack(spacing: 6) {
             ProgressView().controlSize(.small).tint(.secondary)
-            Text(L("cloud.syncing_indicator")).font(.caption).foregroundStyle(.secondary)
+            Text(L("cloud.syncing_indicator")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: true, vertical: false)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L("cloud.syncing"))

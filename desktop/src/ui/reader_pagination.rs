@@ -103,7 +103,9 @@ impl crate::app::ReaderApp {
         let family = if self.defer_custom_font_for_frame {
             "Sans"
         } else {
-            &self.reader_font_family
+            // Paint uses the composed Latin/CJK chain, not the preference's
+            // display name. Measuring another family changes wraps and clips rows.
+            "ReaderFont"
         };
         let galley_count = BLOCK_GALLEYS.with(|g| g.borrow().len());
         let correction_count = CSC_RECTS.with(|g| g.borrow().len());
@@ -483,7 +485,7 @@ mod tests {
         for _ in 0..12 {
             book.chapters[0].blocks.push(ContentBlock::Paragraph {
                 spans: vec![TextSpan {
-                    text: "普通段落也要逐行跨页，不能整段移到下一页。".repeat(8),
+                    text: "普通段落 Mixed WWW iii 英文也要跨页，不能漏行。".repeat(8),
                     style: InlineStyle::Normal,
                     link_url: None,
                     correction: None,
@@ -522,97 +524,108 @@ mod tests {
                 fonts.families[&egui::FontFamily::Proportional].clone(),
             );
         }
+        fonts.families.insert(
+            egui::FontFamily::Name("ReaderFont".into()),
+            fonts.families[&egui::FontFamily::Monospace].clone(),
+        );
         ctx.set_fonts(fonts);
-        for width in [280., 620.] {
-            let book = app.book.as_ref().unwrap();
-            super::super::reader_images::configure(Some(book), 600., false, 18., 1.5);
-            let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(width + 20., 600.),
-                )),
-                ..Default::default()
-            };
-            let mut ranges = PageRanges::default();
-            let _ = ctx.run(input.clone(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ranges = app.measured_chapter_pages(ui, 0, 600., width);
-                });
-            });
-            assert!(ranges.len() > 10);
-            let last = book.chapters[0].blocks.len() - 1;
-            let mut visible_rows = std::collections::BTreeMap::new();
-            let mut total_rows = std::collections::BTreeMap::new();
-            for (page, &(start, end)) in ranges.iter().enumerate() {
-                let fragment = ranges.fragment(page).unwrap();
-                assert!(
-                    fragment.height <= 600. - FRAME_MARGIN + 0.1,
-                    "page overflow: {fragment:?}"
-                );
-                BLOCK_GALLEYS.with(|g| g.borrow_mut().clear());
+        for (font, line) in [(18., 1.5), (17.3, 1.63)] {
+            app.font_size = font;
+            set_spacing(line, 0.5, 2.);
+            for width in [280., 620.] {
+                let book = app.book.as_ref().unwrap();
+                super::super::reader_images::configure(Some(book), 600., false, font, 1.5);
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width + 20., 600.),
+                    )),
+                    ..Default::default()
+                };
+                let mut ranges = PageRanges::default();
                 let _ = ctx.run(input.clone(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        render_content_layout(
-                            ui,
-                            0.,
-                            width,
-                            &book.chapters[0].title,
-                            &book.chapters[0].blocks,
-                            start,
-                            end,
-                            page == 0,
-                            Some(fragment),
-                            18.,
-                            1.5,
-                            egui::Color32::WHITE,
-                            0,
-                            None,
-                            "Sans",
-                            &app.i18n,
-                            &mut None,
-                            &Default::default(),
-                        );
+                        ranges = app.measured_chapter_pages(ui, 0, 600., width);
                     });
                 });
-                BLOCK_GALLEYS.with(|g| {
-                    for entry in g
-                        .borrow()
-                        .iter()
-                        .filter(|entry| entry.key.block >= first_added)
-                    {
-                        if entry.key.block == last {
-                            assert_eq!(entry.text, source);
-                        }
-                        total_rows.insert(entry.key.block, entry.galley.rows.len());
-                        for (row, value) in entry.galley.rows.iter().enumerate() {
-                            let rect = value.rect.translate(entry.rect.min.to_vec2());
-                            if rect.intersects(entry.clip)
-                                && rect.height() > 0.
-                                && rect.bottom() > entry.clip.top() + 0.1
-                                && rect.top() < entry.clip.bottom() - 0.1
-                            {
-                                assert!(
-                                    rect.top() >= entry.clip.top() - 0.1
-                                        && rect.bottom() <= entry.clip.bottom() + 0.1,
-                                    "partially clipped line {row}, {rect:?}, {:?}",
-                                    entry.clip
-                                );
-                                *visible_rows.entry((entry.key.block, row)).or_insert(0) += 1;
+                assert!(ranges.len() > 10);
+                let last = book.chapters[0].blocks.len() - 1;
+                let mut visible_rows = std::collections::BTreeMap::new();
+                let mut total_rows = std::collections::BTreeMap::new();
+                for (page, &(start, end)) in ranges.iter().enumerate() {
+                    let fragment = ranges.fragment(page).unwrap();
+                    assert!(
+                        fragment.height <= 600. - FRAME_MARGIN + 0.1,
+                        "page overflow: {fragment:?}"
+                    );
+                    BLOCK_GALLEYS.with(|g| g.borrow_mut().clear());
+                    let _ = ctx.run(input.clone(), |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            render_content_layout(
+                                ui,
+                                0.,
+                                width,
+                                &book.chapters[0].title,
+                                &book.chapters[0].blocks,
+                                start,
+                                end,
+                                page == 0,
+                                Some(fragment),
+                                font,
+                                1.5,
+                                egui::Color32::WHITE,
+                                0,
+                                None,
+                                "ReaderFont",
+                                &app.i18n,
+                                &mut None,
+                                &Default::default(),
+                            );
+                        });
+                    });
+                    BLOCK_GALLEYS.with(|g| {
+                        for entry in g
+                            .borrow()
+                            .iter()
+                            .filter(|entry| entry.key.block >= first_added)
+                        {
+                            if entry.key.block == last {
+                                assert_eq!(entry.text, source);
+                            }
+                            total_rows.insert(entry.key.block, entry.galley.rows.len());
+                            for (row, value) in entry.galley.rows.iter().enumerate() {
+                                let rect = value
+                                    .rect
+                                    .union(value.visuals.mesh_bounds)
+                                    .translate(entry.rect.min.to_vec2());
+                                if rect.intersects(entry.clip)
+                                    && rect.height() > 0.
+                                    && rect.bottom() > entry.clip.top() + 0.1
+                                    && rect.top() < entry.clip.bottom() - 0.1
+                                {
+                                    assert!(
+                                        rect.top() >= entry.clip.top() - 0.1
+                                            && rect.bottom() <= entry.clip.bottom() + 0.1,
+                                        "partially clipped line {row}, {rect:?}, {:?}",
+                                        entry.clip
+                                    );
+                                    *visible_rows.entry((entry.key.block, row)).or_insert(0) += 1;
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
+                assert_eq!(total_rows.len(), 13, "missing paragraphs");
+                assert_eq!(
+                    visible_rows.len(),
+                    total_rows.values().sum::<usize>(),
+                    "missing paragraph lines"
+                );
+                assert!(
+                    visible_rows.values().all(|count| *count == 1),
+                    "duplicated lines"
+                );
             }
-            assert_eq!(total_rows.len(), 13, "missing paragraphs");
-            assert_eq!(
-                visible_rows.len(),
-                total_rows.values().sum::<usize>(),
-                "missing paragraph lines"
-            );
-            assert!(
-                visible_rows.values().all(|count| *count == 1),
-                "duplicated lines"
-            );
         }
     }
 }

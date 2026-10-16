@@ -61,7 +61,7 @@ struct CloudProgress: Decodable, Identifiable {
     let char_offset: Int
     let chapter_title: String?
     let timestamp: UInt64
-    var id: String { "\(book_hash)-\(timestamp)" }
+    var id: String { "\(book_hash)-\(timestamp)-\(chapter)-\(block)-\(char_offset)" }
     var anchor: ReadingAnchor { .init(chapter: chapter, block: block, charOffset: char_offset) }
 }
 struct BookTransferFailure: Decodable, Identifiable {
@@ -73,15 +73,36 @@ struct SyncSummary: Decodable {
     let failed: [BookTransferFailure]?; let next_retry_after: UInt64?; let terminal_error: String?
 }
 
+struct ArchivedEntry: Decodable, Identifiable {
+    struct Book: Decodable { let hash: String; let title: String; let size: UInt64 }
+    let book: Book; let revision: UInt64; let local_available: Bool
+    var id: String { book.hash }
+}
+struct SyncMeter: Decodable {
+    let phase: String; let completed: Int; let total: Int; let title: String
+    var label: String {
+        switch phase {
+        case "progress": L("cloud.phase_progress")
+        case "uploading": L("cloud.phase_uploading")
+        case "downloading": L("cloud.phase_downloading")
+        case "deleting": L("cloud.phase_deleting")
+        case "saving": L("cloud.phase_saving")
+        default: L("cloud.phase_preparing")
+        }
+    }
+}
+
 @MainActor final class PreviewLibrary: ObservableObject {
     @Published var books: [LibraryEntry] = [] {
         didSet { recentBooks = books.sorted { $0.lastOpened > $1.lastOpened } }
     }
     @Published var anchors: [String: ReadingAnchor] = [:]
+    @Published var archived: [ArchivedEntry] = []
     @Published var busy = false
     @Published var error: String?
     @Published var errorTitle = L("common.error_operation_failed")
     @Published var offer: CloudProgress?
+    private(set) var progressRevision: UInt64 = 0
     var openPath = ""
     let client: CoreClient
     let store: CoreStore
@@ -89,6 +110,7 @@ struct SyncSummary: Decodable {
     lazy var bookSharing = BookSharing(library: self)
     @Published var receivingSharedBooks = false
     private var saveTask: Task<Void, Never>?
+    private var saveRevisions: [String:UInt64] = [:]
     var recent: String { recentBooks.first?.id ?? "" }
     private(set) var recentBooks: [LibraryEntry] = []
     init() {
@@ -107,6 +129,7 @@ struct SyncSummary: Decodable {
     func reload() async {
         do {
             let loaded = try await store.library(); books = loaded
+            archived = try await store.archiveList()
             anchors = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0.anchor) })
         } catch { fail(error, title: L("library.error_read_failed")) }
     }
@@ -121,8 +144,13 @@ struct SyncSummary: Decodable {
         guard !busy else { return false }
         busy = true; defer { busy = false }
         await flush()
-        do { try await store.remove(ids: Array(ids)); await reload(); return true }
+        do { try await store.archive(ids: Array(ids)); await reload(); return true }
         catch { fail(error, title: L("common.error_operation_failed")); return false }
+    }
+    func archiveAction(_ entry: ArchivedEntry, action: String) async {
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do { try await store.archiveAction(hash: entry.id, action: action); await reload() }
+        catch { fail(error, title: L("common.error_operation_failed")) }
     }
     func rename(_ entry: LibraryEntry, title: String) async -> Bool {
         guard !busy else { return false }
@@ -146,15 +174,22 @@ struct SyncSummary: Decodable {
         } catch { fail(error, title: L("reader.error_open_failed")); return nil }
     }
     func save(_ anchor: ReadingAnchor, for book: PreviewBook) {
+        guard books.contains(where: {$0.id==book.id}) else { return }
+        if anchors[book.id] != anchor { progressRevision &+= 1 }
         anchors[book.id] = anchor
+        saveRevisions[book.id,default:0] &+= 1
+        let saveRevision=saveRevisions[book.id]!
+        let editedAt=UInt64(Date().timeIntervalSince1970*1000)
         let previous = saveTask, store = self.store
         let backgroundID = UIApplication.shared.beginBackgroundTask(withName: "Save reading position")
         saveTask = Task {
             await previous?.value
             defer { if backgroundID != .invalid { UIApplication.shared.endBackgroundTask(backgroundID) } }
+            guard saveRevisions[book.id] == saveRevision else { return }
             do {
-                let saved = try await store.save(id: book.id, anchor: anchor)
+                let saved = try await store.save(id: book.id, anchor: anchor, editedAt: editedAt)
                 if let index = books.firstIndex(where: { $0.id == book.id }) { books[index] = saved }
+                if anchors[book.id] == anchor { anchors[book.id] = saved.anchor }
             } catch { fail(error, title: L("reader.error_save_progress_failed")) }
         }
     }

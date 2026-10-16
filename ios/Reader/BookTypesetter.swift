@@ -38,6 +38,7 @@ enum BookTypesetter {
     }
     static let listMarkerKey=NSAttributedString.Key("ReaderListMarker")
     static let noteKey = NSAttributedString.Key("ReaderNote")
+    static let linkKey = NSAttributedString.Key("ReaderLink")
     static let actionKey = NSAttributedString.Key("ReaderAction")
     static let imageDescriptionKey=NSAttributedString.Key("ReaderImageDescription")
     static let imageKey = NSAttributedString.Key("ReaderImage")
@@ -72,7 +73,9 @@ enum BookTypesetter {
                     lineParagraph.headIndent=max(nativeFont*1.2,left)+nativeFont*1.2*Double(max(0,item.depth-(native?.list_depth ?? 1)))
                     lineParagraph.firstLineHeadIndent=lineParagraph.headIndent;lineParagraph.minimumLineHeight=nativeFont*(native?.line ?? options.lineHeight);lineParagraph.maximumLineHeight=lineParagraph.minimumLineHeight;lineParagraph.paragraphSpacing=nativeFont*0.3
                     coordinates.append(.init(block:block.core_block ?? index,start:text.length,source:item.text,base:(block.core_char_offset ?? 0)+item.start))
+                    let start=text.length
                     text.append(NSAttributedString(string:item.text,attributes:[.font:font.withSize(nativeFont),.foregroundColor:options.ink,.paragraphStyle:lineParagraph,listMarkerKey:item.marker]))
+                    applyListInteractions(block.spans ?? [],inline:native?.inline ?? [],source:item.text,sourceOffset:item.start,start:start,to:text)
                     // Keep the marker on the first glyph only, so wrapping does not repeat it.
                     if item.text.utf16.count>1 {text.removeAttribute(listMarkerKey,range:NSRange(location:text.length-item.text.utf16.count+1,length:item.text.utf16.count-1))}
                     text.append(NSAttributedString(string:"\n",attributes:[.font:font,.paragraphStyle:lineParagraph]))
@@ -85,7 +88,7 @@ enum BookTypesetter {
                 let size: CGFloat
                 if let absolute=native?.size_px {size=min(96,max(6,absolute))}
                 else if let scale = native?.size { size = min(96, max(6, font.pointSize * CGFloat(scale))) }
-                else { size = heading ? font.pointSize * CGFloat(max(1.05, 1.5 - Double(block.level ?? 1) * 0.08)) : font.pointSize }
+                else { size = heading ? font.pointSize * CGFloat(max(1.1, 1.75 - Double(block.level ?? 1) * 0.1)) : font.pointSize }
                 paragraph.minimumLineHeight = size * max((native?.line ?? options.lineHeight) * (native?.inline ?? []).filter {!$0.hidden}.compactMap(\.size).reduce(1,max), (native?.ruby ?? []).isEmpty ? 1 : 1.7)
                 paragraph.maximumLineHeight = paragraph.minimumLineHeight
                 paragraph.firstLineHeadIndent = left + (heading ? 0 : (native?.indent_length?.resolve(size,rect.width) ?? size * (native?.indent ?? options.firstLineIndent)))
@@ -108,7 +111,11 @@ enum BookTypesetter {
                     let styled = base.fontDescriptor.withSymbolicTraits(traits).map { UIFont(descriptor: $0, size: size) } ?? base
                     var attrs: [NSAttributedString.Key: Any] = [.font: styled, .foregroundColor: (!options.darkAppearance ? native?.color.map {UIColor(hex:$0.replacingOccurrences(of:"#",with:""))} : nil) ?? options.ink, .paragraphStyle: paragraph]
                     if let action=native?.action {attrs[actionKey]=action;attrs[.underlineStyle]=NSUnderlineStyle.single.rawValue;attrs[.foregroundColor]=UIColor.systemBlue}
-                    if span.link_url != nil { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+                    if let href=span.link_url {
+                        attrs[linkKey]=href
+                        attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                        attrs[.foregroundColor]=UIColor.systemBlue
+                    }
                     text.append(NSAttributedString(string: span.text, attributes: attrs))
                 }
                 applyInline(native,source:source,start:blockStart,size:size,ink:options.ink,dark:options.darkAppearance,to:text)
@@ -134,6 +141,23 @@ enum BookTypesetter {
         }
         applyChineseFont(to: text, name: options.cjkFontName ?? options.fontName)
         return LaidOutChapter(text: text, coordinates: coordinates)
+    }
+    private static func applyListInteractions(_ spans:[BookSpan],inline:[NativeInline],source:String,sourceOffset:Int,start:Int,to text:NSMutableAttributedString) {
+        var offsets=[0]
+        for scalar in source.unicodeScalars {offsets.append(offsets.last!+String(scalar).utf16.count)}
+        func add(_ begin:Int,_ end:Int,_ href:String,_ key:NSAttributedString.Key) {
+            let left=max(0,begin-sourceOffset),right=min(offsets.count-1,end-sourceOffset)
+            guard right>left else{return}
+            let range=NSRange(location:start+offsets[left],length:offsets[right]-offsets[left])
+            text.addAttributes([key:href,.foregroundColor:UIColor.systemBlue,.underlineStyle:NSUnderlineStyle.single.rawValue],range:range)
+        }
+        var position=0
+        for span in spans {
+            let end=position+span.text.unicodeScalars.count
+            if let href=span.link_url {add(position,end,href,linkKey)}
+            position=end
+        }
+        for item in inline where !item.hidden {if let href=item.note {add(item.start,item.end,href,noteKey)}}
     }
     private static func applyInline(_ style:NativeStyle?,source:String,start:Int,size:CGFloat,ink:UIColor,dark:Bool,to text:NSMutableAttributedString) {
         var offsets=[0];for scalar in source.unicodeScalars {offsets.append(offsets.last!+String(scalar).utf16.count)}

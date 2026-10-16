@@ -5,9 +5,7 @@ use jni::{
     JNIEnv,
 };
 use reader_core::{
-    cloud_sync::{
-        latest_progress, valid_hash, CloudBook, DeviceSnapshot, SyncJournal, MAX_BOOK_BYTES,
-    },
+    cloud_sync::{valid_hash, CloudBook, DeviceSnapshot, SyncJournal, MAX_BOOK_BYTES},
     epub::EpubBook,
     github_sync::{
         complete_transfer, record_transfer_failure, sync_phase, LocalBook, SyncPhase,
@@ -43,6 +41,8 @@ struct PreparedResult {
     uploaded: usize,
     skipped: usize,
     #[serde(default)]
+    confirmed_archives: std::collections::BTreeSet<String>,
+    #[serde(default)]
     failed: Vec<TransferFailure>,
     #[serde(default)]
     next_retry_after: Option<u64>,
@@ -57,6 +57,16 @@ fn journal(data_dir: &str) -> SyncJournal {
         .device_id
         .clone();
     SyncJournal::load(data_dir, &device_id)
+}
+pub(super) fn seed_local(data_dir: &str, path: &str) {
+    let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut journal = journal(data_dir);
+    if let Ok(library) = Library::read_snapshot(data_dir) {
+        if let Some(entry) = library.books.iter().find(|e| e.path == path) {
+            journal.seed_entry(data_dir, entry);
+        }
+    }
+    let _ = journal.save(data_dir);
 }
 pub(super) fn record_local(data_dir: &str, device_id: &str, progress: ProgressEntry) {
     let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -112,7 +122,16 @@ fn run(
                             block: entry.last_block,
                             char_offset: entry.last_char_offset,
                             chapter_title: entry.last_chapter_title,
-                            timestamp: entry.last_opened,
+                            timestamp: if (
+                                entry.last_chapter,
+                                entry.last_block,
+                                entry.last_char_offset,
+                            ) == (0, 0, 0)
+                            {
+                                0
+                            } else {
+                                entry.last_opened
+                            },
                         });
                 }
             }
@@ -126,7 +145,10 @@ fn run(
             skipped += 1;
             continue;
         }
-        let Ok(hash) = EpubBook::file_hash(&entry.path) else {
+        let Some(hash) = Library::read_book_config(data_dir, &entry.id)
+            .and_then(|c| c.file_hash)
+            .or_else(|| EpubBook::file_hash(&entry.path).ok())
+        else {
             skipped += 1;
             continue;
         };
@@ -140,7 +162,13 @@ fn run(
                     block: entry.last_block,
                     char_offset: entry.last_char_offset,
                     chapter_title: entry.last_chapter_title.clone(),
-                    timestamp: entry.last_opened,
+                    timestamp: if (entry.last_chapter, entry.last_block, entry.last_char_offset)
+                        == (0, 0, 0)
+                    {
+                        0
+                    } else {
+                        entry.last_opened
+                    },
                 });
         }
         books.push(LocalBook {
@@ -198,6 +226,7 @@ fn run(
         downloaded,
         uploaded: result.uploaded,
         skipped,
+        confirmed_archives: result.confirmed_archives,
         failed: result.failed,
         next_retry_after: result.next_retry_after,
         terminal_error: result.terminal_error,
@@ -213,8 +242,15 @@ fn apply(
     journal.own.merge_own(&prepared.own)?;
     reader_core::reading_activity::import(data_dir, &journal.own.device_id, &prepared.snapshots)?;
     journal.seen.extend(prepared.own.progress.keys().cloned());
-    let latest = latest_progress(&prepared.snapshots, &journal.own);
+    let latest = reader_core::cloud_progress::latest_records(&prepared.snapshots, &journal.own);
     let mut library = Library::load_from(data_dir);
+    reader_core::library::archive::ArchiveStore::apply_verified(
+        data_dir,
+        &mut library,
+        &prepared.snapshots,
+        &journal.own,
+        &prepared.confirmed_archives,
+    )?;
     let mut paths = std::collections::BTreeMap::new();
     for entry in &library.books {
         if let Some(hash) = Library::read_book_config(data_dir, &entry.id)
@@ -227,6 +263,17 @@ fn apply(
     let mut imported = 0;
     for book in prepared.downloaded {
         let staged = stage_path(data_dir, &book.info.hash)?;
+        if reader_core::library::archive::ArchiveStore::load(data_dir)?.hidden(&book.info.hash) {
+            let _ = std::fs::remove_file(staged);
+            prepared.failed = complete_transfer(
+                data_dir,
+                &prepared.owner,
+                &journal.own.device_id,
+                "download",
+                &book.info.hash,
+            )?;
+            continue;
+        }
         if !paths.contains_key(&book.info.hash) {
             let import = (|| {
                 if EpubBook::file_hash(staged.to_str().ok_or("Invalid staging path")?)?
@@ -236,13 +283,22 @@ fn apply(
                 }
                 EpubBook::open(&staged)?;
                 let previous = library.clone();
-                let entry = library.add_or_update(
+                let entry = if let Some(restored) = reader_core::library::archive::restore_download(
                     data_dir,
-                    book.info.title.clone(),
-                    staged.to_string_lossy().into_owned(),
-                    0,
-                    None,
-                );
+                    &mut library,
+                    &book.info.hash,
+                    &std::fs::read(&staged).map_err(|_| "Cannot read staged book")?,
+                )? {
+                    restored
+                } else {
+                    library.add_or_update(
+                        data_dir,
+                        book.info.title.clone(),
+                        staged.to_string_lossy().into_owned(),
+                        0,
+                        None,
+                    )
+                };
                 if !PathBuf::from(&entry.path).starts_with(PathBuf::from(data_dir).join("books"))
                     || EpubBook::file_hash(&entry.path).ok().as_ref() != Some(&book.info.hash)
                 {
@@ -290,36 +346,43 @@ fn apply(
     }
     let mut offer = None;
     let mut updated = Vec::new();
-    for (hash, p) in latest {
-        if journal
-            .own
-            .progress
-            .get(&hash)
-            .is_some_and(|local| local.timestamp >= p.timestamp)
-            || journal
-                .applied
-                .get(&hash)
-                .is_some_and(|time| *time >= p.timestamp)
-        {
-            continue;
-        }
+    for (hash, record) in latest {
+        let p = &record.progress;
         let Some(path) = paths.get(&hash) else {
             continue;
         };
-        if path == open_path {
-            offer = Some(p);
+        let changed = library
+            .books
+            .iter()
+            .find(|e| &e.path == path)
+            .is_some_and(|e| {
+                (e.last_chapter, e.last_block, e.last_char_offset)
+                    != (p.chapter, p.block, p.char_offset)
+            });
+        if changed
+            && !EpubBook::open(path)
+                .is_ok_and(|book| reader_core::cloud_progress::validate_position(&book, p))
+        {
             continue;
         }
-        library.update_position(
-            data_dir,
-            path,
-            p.chapter,
-            p.chapter_title.clone(),
-            p.block,
-            p.char_offset,
-        );
+        if path == open_path && changed {
+            offer = Some(p.clone());
+        }
+        journal.accept(&record);
+        if changed {
+            library.update_position(
+                data_dir,
+                path,
+                p.chapter,
+                p.chapter_title.clone(),
+                p.block,
+                p.char_offset,
+            );
+        }
         journal.applied.insert(hash, p.timestamp);
-        updated.push(serde_json::json!({"path":path,"chapter":p.chapter}));
+        if changed {
+            updated.push(serde_json::json!({"path":path,"chapter":p.chapter}));
+        }
     }
     journal.save(data_dir)?;
     Ok(
@@ -471,6 +534,8 @@ mod tests {
             None,
         );
         let hash = EpubBook::file_hash(&entry.path).unwrap();
+        library.books[0].last_opened = 10;
+        library.save_to(&data_dir);
         (dir, entry.path, hash)
     }
     fn progress(hash: &str, chapter: usize, timestamp: u64) -> ProgressEntry {
@@ -496,19 +561,20 @@ mod tests {
             downloaded: vec![],
             uploaded: 0,
             skipped: 0,
+            confirmed_archives: Default::default(),
             failed: vec![],
             next_retry_after: None,
             terminal_error: None,
         }
     }
     #[test]
-    fn desktop_progress_is_offered_without_moving_current_android_book() {
+    fn latest_progress_updates_open_android_catalog_and_emits_ui_locator() {
         let _test = TEST_LOCK.lock().unwrap();
         let (dir, path, hash) = fixture();
         let data_dir = dir.path().to_str().unwrap();
         let result = apply(data_dir, prepared(&hash), &path).unwrap();
         assert_eq!(result["offer"]["chapter"], 0);
-        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 1);
+        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 0);
         assert!(SyncJournal::load(data_dir, "android-test")
             .own
             .validate()
@@ -520,6 +586,14 @@ mod tests {
         let (dir, _, hash) = fixture();
         let data_dir = dir.path().to_str().unwrap();
         record_local(data_dir, "android-test", progress(&hash, 2, 40));
+        Library::load_from(data_dir).update_position(
+            data_dir,
+            &Library::load_from(data_dir).books[0].path,
+            2,
+            None,
+            0,
+            0,
+        );
         let result = apply(data_dir, prepared(&hash), "").unwrap();
         assert!(result["offer"].is_null());
         assert_eq!(

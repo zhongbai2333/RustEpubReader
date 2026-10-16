@@ -78,6 +78,7 @@ struct ReadingWorkspace: View {
     @State private var nativeEvents: [Int:[Int]] = [:]
     @State private var nativeRevision = 0
     @State private var publicationNote: NativeNote?
+    @State private var publicationLinkTask: Task<Void,Never>?
     init(book: PreviewBook, library: PreviewLibrary, openSync: @escaping () -> Void = {}, close: @escaping () -> Void = {}, ready: @escaping () -> Void = {}, paperChanged: @escaping (UIColor) -> Void = { _ in }, contentVisible: Bool = true) {
         ReadingIntroduction.prepare()
         ReaderFontPicker.migrateLegacySettings()
@@ -94,6 +95,7 @@ struct ReadingWorkspace: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @AppStorage("preview.fontSize") private var fontSize = 18.0
     @AppStorage("preview.lineHeight") private var lineHeight = 1.65
     // Preserve the old key for the Chinese font during the split.
@@ -145,6 +147,18 @@ struct ReadingWorkspace: View {
                          }, publicationEvent: { chapter,node in
                              guard scriptsEnabled,(nativeEvents[chapter]?.count ?? 0)<128 else {return}
                              nativeEvents[chapter,default:[]].append(node)
+                         }, publicationLink: { chapter,href in
+                             publicationLinkTask?.cancel()
+                             let href=href.trimmingCharacters(in:.whitespacesAndNewlines)
+                             if let url=URL(string:href),let scheme=url.scheme?.lowercased(),["https","http","mailto","tel"].contains(scheme) {
+                                 openURL(url);return
+                             }
+                             let client=library.client,id=book.id
+                             publicationLinkTask=Task {
+                                 let target=await Task.detached {try? client.call("native_link",["id":id,"chapter":chapter,"href":href],as:ReadingAnchor?.self)}.value
+                                 guard !Task.isCancelled,let target else{return}
+                                 activity.touch();speech.detach();jump=target;jumpingID += 1;library.save(target,for:book)
+                             }
                          }, nativeStyles: nativeStyles, viewportChanged: { viewport = $0 }, contentVisible: contentVisible, immersiveStatus: showImmersiveStatus ? statusInfo : nil)
                 .ignoresSafeArea()
             }
@@ -314,7 +328,7 @@ struct ReadingWorkspace: View {
         .onChange(of: quickMenuOpen) { _, open in if open {activity.sample(reading:false,listening:speech.audible)} }
         .onChange(of: panel) { _, value in activity.touch(); if value != nil { activity.sample(reading: false, listening: speech.audible) } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { speech.pause(); activity.stop() } else {activity.touch()} }
-        .onDisappear { activity.stop() }
+        .onDisappear { activity.stop();publicationLinkTask?.cancel() }
         .task(id: "\(cssPolicy)/\(scriptsEnabled)/\(current.chapter)/\(nativeEvents)") {
             let client=library.client, id=book.id, mode=cssPolicy, enabled=scriptsEnabled, events=nativeEvents
             let indices=Array(max(0,current.chapter-2)..<min(book.chapters.count,current.chapter+3))
@@ -340,13 +354,10 @@ struct ReadingWorkspace: View {
         .onChange(of: cssPolicy) { _,_ in nativeStyles=[:] }
         .onChange(of: scriptsEnabled) { _,_ in nativeStyles=[:];nativeEvents=[:] }
         .onDisappear { speech.stop(); model.cancel() }
-        .alert(L("reader.new_position_detected"), isPresented: Binding(get: { library.offer != nil }, set: { if !$0 { library.offer = nil } })) {
-            Button(L("common.jump")) {
-                if let offer = library.offer { speech.detach(); jump = offer.anchor; jumpingID += 1; library.save(offer.anchor, for: book) }
-                library.offer = nil
-            }
-            Button(L("common.later"), role: .cancel) { library.offer = nil }
-        } message: { Text(library.offer?.chapter_title ?? L("annotations.chapter", 1 + (library.offer?.chapter ?? 0))) }
+        .onChange(of: library.offer?.id) { _, _ in
+            guard let offer=library.offer else { return }
+            speech.detach(); jump=offer.anchor; jumpingID += 1; library.offer=nil
+        }
         .alert(LM(library.errorTitle), isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) {
             Button(L("manage.done"), role: .cancel) { library.error = nil }
         } message: { Text(LM(library.error ?? "")) }

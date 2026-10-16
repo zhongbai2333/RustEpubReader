@@ -1,4 +1,5 @@
 //! Library management, book cataloging, and metadata parsing.
+pub mod archive;
 pub mod covers;
 mod types;
 pub use types::*;
@@ -292,6 +293,29 @@ impl Library {
         self.rebuild_index();
         self.save_to(data_dir);
         entry
+    }
+
+    pub fn hide_by_path(&mut self, data_dir: &str, path: &str) {
+        self.hide_paths(
+            data_dir,
+            &std::collections::HashSet::from([path.to_owned()]),
+        );
+    }
+    pub fn hide_paths(&mut self, data_dir: &str, paths: &std::collections::HashSet<String>) {
+        let before = self.books.len();
+        self.books.retain(|e| !paths.contains(&e.path));
+        if self.books.len() != before {
+            self.rebuild_index();
+            self.save_to(data_dir);
+        }
+    }
+    pub fn restore_entry(&mut self, data_dir: &str, entry: BookEntry) {
+        if !self.books.iter().any(|e| e.id == entry.id) {
+            self.write_book_config(data_dir, &entry, None);
+            self.books.push(entry);
+        }
+        self.rebuild_index();
+        self.save_to(data_dir);
     }
 
     pub fn remove(&mut self, data_dir: &str, idx: usize) {

@@ -20,6 +20,10 @@ pub struct DeviceSnapshot {
     pub books: BTreeMap<String, CloudBook>,
     pub progress: BTreeMap<String, ProgressEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub progress_versions: BTreeMap<String, crate::cloud_progress::ProgressVersion>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lifecycle: BTreeMap<String, crate::library::archive::BookLifecycle>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub activity: BTreeMap<String, crate::reading_activity::DeviceActivity>,
 }
 
@@ -45,6 +49,8 @@ impl DeviceSnapshot {
             device_id,
             books: BTreeMap::new(),
             progress: BTreeMap::new(),
+            progress_versions: BTreeMap::new(),
+            lifecycle: BTreeMap::new(),
             activity: BTreeMap::new(),
         }
     }
@@ -54,7 +60,9 @@ impl DeviceSnapshot {
             || !valid_device_id(&self.device_id)
             || self.books.len() > 5000
             || self.progress.len() > 5000
+            || self.progress_versions.len() > 5000
             || self.activity.len() > 5000
+            || self.lifecycle.len() > 5000
         {
             return Err("Unsupported or invalid sync snapshot".into());
         }
@@ -79,6 +87,16 @@ impl DeviceSnapshot {
                 return Err("Invalid remote progress".into());
             }
         }
+        for (hash, version) in &self.progress_versions {
+            if !self.progress.contains_key(hash) || !valid_device_id(&version.device) {
+                return Err("Invalid progress revision".into());
+            }
+        }
+        for (hash, state) in &self.lifecycle {
+            if !state.valid(hash) {
+                return Err("Invalid remote book lifecycle".into());
+            }
+        }
         for (hash, activity) in &self.activity {
             if !valid_hash(hash) || !activity.validate() {
                 return Err("Invalid remote reading activity".into());
@@ -93,18 +111,26 @@ impl DeviceSnapshot {
         if other.device_id != self.device_id {
             return Err("Device identity mismatch".into());
         }
+        crate::library::archive::merge_states(&mut self.lifecycle, &other.lifecycle);
         for (hash, book) in &other.books {
             self.books
                 .entry(hash.clone())
                 .or_insert_with(|| book.clone());
         }
         for (hash, p) in &other.progress {
+            let version = other.progress_version(hash);
             if self
                 .progress
                 .get(hash)
-                .is_none_or(|local| p.timestamp > local.timestamp)
+                .is_none_or(|_| version > self.progress_version(hash))
             {
                 self.progress.insert(hash.clone(), p.clone());
+                if let Some(explicit) = other.progress_versions.get(hash) {
+                    self.progress_versions
+                        .insert(hash.clone(), explicit.clone());
+                } else {
+                    self.progress_versions.remove(hash);
+                }
             }
         }
         for (hash, activity) in &other.activity {
@@ -122,18 +148,10 @@ pub fn latest_progress(
     snapshots: &[DeviceSnapshot],
     own: &DeviceSnapshot,
 ) -> BTreeMap<String, ProgressEntry> {
-    let mut result = own.progress.clone();
-    for snapshot in snapshots {
-        for (hash, p) in &snapshot.progress {
-            if result
-                .get(hash)
-                .is_none_or(|local| p.timestamp > local.timestamp)
-            {
-                result.insert(hash.clone(), p.clone());
-            }
-        }
-    }
-    result
+    crate::cloud_progress::latest_records(snapshots, own)
+        .into_iter()
+        .map(|(hash, record)| (hash, record.progress))
+        .collect()
 }
 
 #[cfg(test)]
@@ -151,7 +169,7 @@ mod tests {
         }
     }
     #[test]
-    fn latest_can_move_backwards_and_equal_time_keeps_local() {
+    fn latest_can_move_backwards_and_equal_time_is_device_deterministic() {
         let mut own = DeviceSnapshot::new("local".into());
         let p = progress(10, 20);
         own.progress.insert(p.book_hash.clone(), p);
@@ -163,10 +181,7 @@ mod tests {
             2
         );
         remote.progress.get_mut(&"a".repeat(64)).unwrap().timestamp = 20;
-        assert_eq!(
-            latest_progress(&[remote], &own)[&"a".repeat(64)].chapter,
-            10
-        );
+        assert_eq!(latest_progress(&[remote], &own)[&"a".repeat(64)].chapter, 2);
     }
     #[test]
     fn rejects_paths_large_books_and_unknown_versions() {
@@ -226,7 +241,8 @@ mod tests {
         journal.record(progress(10, 20));
         journal.record(progress(2, 20));
         assert_eq!(journal.own.progress[&"a".repeat(64)].chapter, 2);
-        assert_eq!(journal.own.progress[&"a".repeat(64)].timestamp, 21);
+        assert_eq!(journal.own.progress[&"a".repeat(64)].timestamp, 20);
+        assert!(journal.own.progress_version(&"a".repeat(64)).modified_ms > 20_000);
     }
 }
 
@@ -259,6 +275,16 @@ impl SyncJournal {
             seen: Default::default(),
             applied: Default::default(),
         });
+        if journal.own.progress.is_empty() {
+            if let Ok(library) = crate::library::Library::read_snapshot(data_dir) {
+                for entry in &library.books {
+                    journal.seed_entry(data_dir, entry);
+                }
+            }
+        }
+        if let Ok(archive) = crate::library::archive::ArchiveStore::load(data_dir) {
+            crate::library::archive::merge_states(&mut journal.own.lifecycle, &archive.states());
+        }
         if let Ok(activity) = crate::reading_activity::export(data_dir, device_id) {
             for (hash, value) in activity {
                 journal.own.activity.entry(hash).or_default().merge(&value);
@@ -275,20 +301,44 @@ impl SyncJournal {
             .and_then(|_| std::fs::rename(&temporary, path))
             .map_err(|_| "Cannot save local sync journal".into())
     }
-    pub fn record(&mut self, mut progress: ProgressEntry) -> bool {
-        if let Some(previous) = self.own.progress.get(&progress.book_hash) {
-            if previous.chapter == progress.chapter
-                && previous.block == progress.block
-                && previous.char_offset == progress.char_offset
-            {
-                return false;
-            }
-            progress.timestamp = progress.timestamp.max(previous.timestamp.saturating_add(1));
-        }
-        self.seen.insert(progress.book_hash.clone());
-        self.own
+    pub fn record(&mut self, progress: ProgressEntry) -> bool {
+        let hash = progress.book_hash.clone();
+        if self
+            .own
             .progress
-            .insert(progress.book_hash.clone(), progress);
+            .get(&hash)
+            .is_some_and(|old| crate::cloud_progress::same_position(old, &progress))
+        {
+            return false;
+        }
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let event_ms = if progress.timestamp < 100_000_000_000 {
+            progress
+                .timestamp
+                .saturating_mul(1000)
+                .saturating_add(wall % 1000)
+        } else {
+            progress.timestamp
+        };
+        let previous = self.own.progress_version(&hash);
+        let modified_ms = if previous.legacy {
+            event_ms
+        } else {
+            event_ms.max(previous.modified_ms.saturating_add(1))
+        };
+        self.own.progress_versions.insert(
+            hash.clone(),
+            crate::cloud_progress::ProgressVersion {
+                modified_ms,
+                device: self.own.device_id.clone(),
+                legacy: false,
+            },
+        );
+        self.seen.insert(hash.clone());
+        self.own.progress.insert(hash, progress);
         true
     }
 }

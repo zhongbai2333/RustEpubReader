@@ -499,6 +499,44 @@ impl EpubBook {
 }
 
 impl EpubBook {
+    /// Resolve only book-local navigation, relative to the clicked chapter.
+    pub fn native_link(
+        &self,
+        chapter: usize,
+        href: &str,
+    ) -> Option<super::native::NativeLinkTarget> {
+        let href = href.trim();
+        if href.len() > 8192 || href.chars().any(char::is_control) {
+            return None;
+        }
+        let (path, fragment) = href
+            .split_once('#')
+            .map_or((href, None), |(p, id)| (p, Some(id)));
+        let path = decode_fragment(path.split('?').next()?)?;
+        let current = self.chapters.get(chapter)?;
+        let target = if path.is_empty() {
+            chapter
+        } else {
+            let resolved = super::native::resolve(current.source_href.as_deref()?, &path)?;
+            self.chapters.iter().position(|c| {
+                c.source_href.as_deref().is_some_and(|p| {
+                    normalize_resource_path(p) == normalize_resource_path(&resolved)
+                })
+            })?
+        };
+        let (block, char_offset) = match fragment.filter(|id| !id.is_empty()) {
+            Some(id) => self.chapters[target]
+                .native_document
+                .anchor(&decode_fragment(id)?)?,
+            None => (0, 0),
+        };
+        Some(super::native::NativeLinkTarget {
+            chapter: target,
+            block,
+            char_offset,
+        })
+    }
+
     pub fn native_note(&self, chapter: usize, href: &str) -> Option<super::native::NativeNote> {
         let (path, id) = href.split_once('#')?;
         if id.is_empty() {

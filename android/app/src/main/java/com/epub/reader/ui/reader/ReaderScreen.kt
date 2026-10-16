@@ -83,6 +83,8 @@ fun ReaderScreen(
     bookPath: String = "",
     currentChapter: Int,
     currentBlock: Int = 0,
+    currentCharOffset: Int = 0,
+    positionRevision: Int = 0,
     fontSize: Float,
     isDarkMode: Boolean,
     scrollMode: Boolean,
@@ -108,7 +110,7 @@ fun ReaderScreen(
     showToc: Boolean,
     onNavigateBack: () -> Unit,
     onChapterChange: (Int) -> Unit,
-    onPositionChange: (Int) -> Unit = {},
+    onPositionChange: (Int,Int) -> Unit = { _,_ -> },
     previousChapter: Int?,
     onGoBackChapter: () -> Unit,
     onFontSizeChange: (Float) -> Unit,
@@ -954,6 +956,8 @@ fun ReaderScreen(
                             }
                         },
                         initialBlock = currentBlock,
+                        initialCharOffset = currentCharOffset,
+                        positionRevision = positionRevision,
                         onPositionChange = onPositionChange,
                     )
 
@@ -1056,6 +1060,8 @@ fun ReaderScreen(
                         }
                     },
                     initialBlock = currentBlock,
+                        initialCharOffset = currentCharOffset,
+                        positionRevision = positionRevision,
                     onPositionChange = onPositionChange,
                 )
             }

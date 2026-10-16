@@ -88,6 +88,7 @@ enum NativePresentationRuntimeCheck {
                 }
                 let note:NativeNote=try client.call("native_note",["id":typography.id,"chapter":0,"href":"notes.xhtml#n%E4%B8%80"])
                 try require(note.text.contains("这是跨章节的注释原文"),"Note resolution failed")
+                let linkChecks=try checkBodyLinks(client:client,book:typographyBook)
                 var corpusChecks:[[String:Any]]=[]
                 for (name,chapterIndex) in [("pride-and-prejudice",1),("alice-standard",2),("accessible-epub-3",18),("hefty-water",0),("kusamakura",2),("hongloumeng",1),("aq",1),("zhaohuaxishi",1),("tiangongkaiwu",1),("pagination-stress",0)] {
                     let path=documents.appendingPathComponent(name+".epub")
@@ -117,10 +118,54 @@ enum NativePresentationRuntimeCheck {
                         corpusChecks.append(["name":name,"chapter":chapterIndex,"width":width,"pages":pages.count,"drawnPages":min(3,pages.count),"contiguousCoverage":true])
                     }
                 }
-                result=["passed":true,"styles":3,"flows":3,"scriptSwitch":true,"stableCoordinates":true,"typographyLayouts":typographyChecks,"nativeNotes":true,"corpusLayouts":corpusChecks]
+                result=["passed":true,"styles":3,"flows":3,"scriptSwitch":true,"stableCoordinates":true,"typographyLayouts":typographyChecks,"nativeNotes":true,"bodyLinkLayouts":linkChecks,"corpusLayouts":corpusChecks]
             }catch{result=["passed":false,"error":error.localizedDescription]}
             if let data=try? JSONSerialization.data(withJSONObject:result,options:[.prettyPrinted,.sortedKeys]) {try? data.write(to:caches.appendingPathComponent("native-verification.json"))}
         }
+    }
+    @MainActor private static func checkBodyLinks(client:CoreClient,book:PreviewBook) throws -> Int {
+        let href="notes.xhtml#n%E4%B8%80",source="目录😀"
+        let target:ReadingAnchor?=try client.call("native_link",["id":book.id,"chapter":0,"href":href])
+        try require(target != nil && target?.chapter != 0,"Body-link bridge target missing")
+        let options=ReaderOptions(fontSize:18,lineHeight:1.5,fontName:"Helvetica",theme:"light",sliding:false,cjkFontName:"PingFangSC-Regular")
+        let rect=CGRect(x:20,y:200,width:300,height:130)
+        for list in [false,true] {
+            var style=NativeStyle(align:nil,size:nil,line:nil,indent:nil,before:nil,after:nil,color:nil,family:nil,bold:false,italic:false,hidden:false,action:nil,text:nil)
+            if list {style.list=[NativeList(start:0,end:source.unicodeScalars.count,text:source,depth:1,marker:"1.")]}
+            let block=BookBlock(native_style:style,type:"Paragraph",core_block:0,core_char_offset:0,level:nil,spans:[BookSpan(text:source,style:"Normal",link_url:href)],data:nil,alt:nil)
+            let chapter=BookChapter(title:"Contents",blocks:[block])
+            let laid=BookTypesetter.chapters([chapter],options:options,rect:rect)
+            guard let page=ReadingLayout.paginate(laid,in:rect).first else{throw CoreFailure(message:"Body-link page missing")}
+            let at=(page.text.string as NSString).range(of:source).location
+            try require(at != NSNotFound && page.text.attribute(BookTypesetter.linkKey,at:at,effectiveRange:nil) as? String == href,"Link target lost during typesetting")
+            let frame=CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(page.text),page.range,CGPath(rect:rect,transform:nil),nil)
+            let lines=CTFrameGetLines(frame) as! [CTLine]
+            var origins=Array(repeating:CGPoint.zero,count:lines.count);CTFrameGetLineOrigins(frame,CFRange(location:0,length:0),&origins)
+            guard let row=lines.firstIndex(where:{let r=CTLineGetStringRange($0);return at>=r.location && at<r.location+r.length}) else{throw CoreFailure(message:"Link line missing")}
+            let point=CGPoint(x:rect.minX+origins[row].x+CTLineGetOffsetForStringIndex(lines[row],at,nil)+3,y:400-rect.minY-origins[row].y-3)
+            let paper=PaperSurface(frame:CGRect(x:0,y:0,width:340,height:400));paper.page=page
+            let controller=NativeReadingController(book:book,anchor:.init(chapter:0),options:options)
+            var opened:String?,noted:String?
+            controller.publicationLink={_,value in opened=value};controller.publicationNote={_,value in noted=value}
+            try require(controller.activatePublication(at:point,in:paper) && opened==href,"Native body-link hit testing failed")
+            let annotated=NSMutableAttributedString(attributedString:page.text)
+            annotated.addAttribute(BookTypesetter.noteKey,value:href,range:NSRange(location:at,length:source.utf16.count))
+            paper.page=ReadingPage(chapter:page.chapter,content:LaidOutChapter(text:annotated,coordinates:page.content.coordinates),range:page.range,textRect:page.textRect)
+            try require(controller.activatePublication(at:point,in:paper) && noted==href,"Note did not take precedence over navigation")
+            try require(!controller.activatePublication(at:CGPoint(x:0,y:0),in:paper),"Blank margin activated a link")
+            if let target {
+                for flow in ReadingMode.allCases {
+                    var flowOptions=options;flowOptions.readingMode=flow;flowOptions.sliding=flow == .slide
+                    let reader=NativeReadingController(book:book,anchor:.init(chapter:0),options:flowOptions)
+                    reader.loadViewIfNeeded();reader.view.frame=CGRect(x:0,y:0,width:340,height:600);reader.view.setNeedsLayout();reader.view.layoutIfNeeded()
+                    reader.publicationLink={ [weak reader] _,_ in reader?.update(options:flowOptions,jump:target,jumpID:1,annotations:.empty,revision:0)}
+                    // Restore the ordinary link after testing footnote precedence.
+                    paper.page=page
+                    try require(reader.activatePublication(at:point,in:paper) && reader.anchor.chapter==target.chapter,"Link did not navigate in \(flow)")
+                }
+            }
+        }
+        return 2
     }
     private static func checkLines(_ frame:CTFrame) throws {
         let lines=CTFrameGetLines(frame) as! [CTLine];var origins=Array(repeating:CGPoint.zero,count:lines.count);CTFrameGetLineOrigins(frame,CFRange(location:0,length:0),&origins)

@@ -1,8 +1,6 @@
 //! iOS sync adapter. Network work stages validated EPUBs; apply merges against the latest local journal.
 use reader_core::{
-    cloud_sync::{
-        latest_progress, valid_hash, CloudBook, DeviceSnapshot, SyncJournal, MAX_BOOK_BYTES,
-    },
+    cloud_sync::{valid_hash, CloudBook, DeviceSnapshot, SyncJournal, MAX_BOOK_BYTES},
     epub::EpubBook,
     github_sync::{
         complete_transfer, record_transfer_failure, sync_phase, LocalBook, SyncPhase,
@@ -33,6 +31,8 @@ pub(crate) struct PreparedResult {
     downloaded: Vec<StagedBook>,
     uploaded: usize,
     skipped: usize,
+    #[serde(default)]
+    confirmed_archives: std::collections::BTreeSet<String>,
     #[serde(default)]
     failed: Vec<TransferFailure>,
     #[serde(default)]
@@ -107,7 +107,16 @@ pub(crate) fn run(
                             block: entry.last_block,
                             char_offset: entry.last_char_offset,
                             chapter_title: entry.last_chapter_title,
-                            timestamp: entry.last_opened,
+                            timestamp: if (
+                                entry.last_chapter,
+                                entry.last_block,
+                                entry.last_char_offset,
+                            ) == (0, 0, 0)
+                            {
+                                0
+                            } else {
+                                entry.last_opened
+                            },
                         });
                 }
             }
@@ -121,7 +130,10 @@ pub(crate) fn run(
             skipped += 1;
             continue;
         }
-        let Ok(hash) = EpubBook::file_hash(&entry.path) else {
+        let Some(hash) = Library::read_book_config(data_dir, &entry.id)
+            .and_then(|c| c.file_hash)
+            .or_else(|| EpubBook::file_hash(&entry.path).ok())
+        else {
             skipped += 1;
             continue;
         };
@@ -135,7 +147,13 @@ pub(crate) fn run(
                     block: entry.last_block,
                     char_offset: entry.last_char_offset,
                     chapter_title: entry.last_chapter_title.clone(),
-                    timestamp: entry.last_opened,
+                    timestamp: if (entry.last_chapter, entry.last_block, entry.last_char_offset)
+                        == (0, 0, 0)
+                    {
+                        0
+                    } else {
+                        entry.last_opened
+                    },
                 });
         }
         books.push(LocalBook {
@@ -188,6 +206,7 @@ pub(crate) fn run(
         downloaded,
         uploaded: result.uploaded,
         skipped,
+        confirmed_archives: result.confirmed_archives,
         failed: result.failed,
         next_retry_after: result.next_retry_after,
         terminal_error: result.terminal_error,
@@ -204,8 +223,15 @@ pub(crate) fn apply(
     journal.own.merge_own(&prepared.own)?;
     reader_core::reading_activity::import(data_dir, device_id, &prepared.snapshots)?;
     journal.seen.extend(prepared.own.progress.keys().cloned());
-    let latest = latest_progress(&prepared.snapshots, &journal.own);
+    let latest = reader_core::cloud_progress::latest_records(&prepared.snapshots, &journal.own);
     let mut library = Library::load_from(data_dir);
+    reader_core::library::archive::ArchiveStore::apply_verified(
+        data_dir,
+        &mut library,
+        &prepared.snapshots,
+        &journal.own,
+        &prepared.confirmed_archives,
+    )?;
     let mut paths = std::collections::BTreeMap::new();
     for entry in &library.books {
         if let Some(hash) = Library::read_book_config(data_dir, &entry.id)
@@ -216,14 +242,9 @@ pub(crate) fn apply(
         }
     }
     let mut imported = 0;
-    let deleted: std::collections::BTreeSet<String> =
-        std::fs::read(PathBuf::from(data_dir).join("deleted-local-books.json"))
-            .ok()
-            .and_then(|d| serde_json::from_slice(&d).ok())
-            .unwrap_or_default();
     for book in prepared.downloaded {
         let staged = stage_path(data_dir, &book.info.hash)?;
-        if deleted.contains(&book.info.hash) {
+        if reader_core::library::archive::ArchiveStore::load(data_dir)?.hidden(&book.info.hash) {
             let _ = std::fs::remove_file(staged);
             prepared.failed = complete_transfer(
                 data_dir,
@@ -243,13 +264,22 @@ pub(crate) fn apply(
                 }
                 EpubBook::open(&staged)?;
                 let previous = library.clone();
-                let entry = library.add_or_update(
+                let entry = if let Some(restored) = reader_core::library::archive::restore_download(
                     data_dir,
-                    book.info.title.clone(),
-                    staged.to_string_lossy().into_owned(),
-                    0,
-                    None,
-                );
+                    &mut library,
+                    &book.info.hash,
+                    &std::fs::read(&staged).map_err(|_| "Cannot read staged book")?,
+                )? {
+                    restored
+                } else {
+                    library.add_or_update(
+                        data_dir,
+                        book.info.title.clone(),
+                        staged.to_string_lossy().into_owned(),
+                        0,
+                        None,
+                    )
+                };
                 if !PathBuf::from(&entry.path).starts_with(PathBuf::from(data_dir).join("books"))
                     || EpubBook::file_hash(&entry.path).ok().as_ref() != Some(&book.info.hash)
                 {
@@ -298,47 +328,44 @@ pub(crate) fn apply(
     let mut skipped = prepared.skipped;
     let mut offer = None;
     let mut updated = Vec::new();
-    for (hash, p) in latest {
-        if journal
-            .own
-            .progress
-            .get(&hash)
-            .is_some_and(|local| local.timestamp >= p.timestamp)
-            || journal
-                .applied
-                .get(&hash)
-                .is_some_and(|time| *time >= p.timestamp)
-        {
-            continue;
-        }
+    for (hash, record) in latest {
+        let p = &record.progress;
         let Some(path) = paths.get(&hash) else {
             continue;
         };
-        let parsed = match EpubBook::open(path) {
-            Ok(book) => book,
-            Err(_) => {
-                skipped += 1;
-                continue;
-            }
-        };
-        if super::validate_position(&parsed, p.chapter, p.block, p.char_offset).is_err() {
+        let changed = library
+            .books
+            .iter()
+            .find(|e| &e.path == path)
+            .is_some_and(|e| {
+                (e.last_chapter, e.last_block, e.last_char_offset)
+                    != (p.chapter, p.block, p.char_offset)
+            });
+        if changed
+            && !EpubBook::open(path)
+                .is_ok_and(|book| reader_core::cloud_progress::validate_position(&book, p))
+        {
             skipped += 1;
             continue;
         }
-        if path == open_path {
-            offer = Some(p);
-            continue;
+        if path == open_path && changed {
+            offer = Some(p.clone());
         }
-        library.update_position(
-            data_dir,
-            path,
-            p.chapter,
-            p.chapter_title.clone(),
-            p.block,
-            p.char_offset,
-        );
+        journal.accept(&record);
+        if changed {
+            library.update_position(
+                data_dir,
+                path,
+                p.chapter,
+                p.chapter_title.clone(),
+                p.block,
+                p.char_offset,
+            );
+        }
         journal.applied.insert(hash, p.timestamp);
-        updated.push(serde_json::json!({"path":path,"chapter":p.chapter}));
+        if changed {
+            updated.push(serde_json::json!({"path":path,"chapter":p.chapter}));
+        }
     }
     journal.save(data_dir)?;
     Ok(
@@ -371,6 +398,8 @@ mod tests {
             None,
         );
         let hash = EpubBook::file_hash(&entry.path).unwrap();
+        library.books[0].last_opened = 10;
+        library.save_to(&data_dir);
         (dir, entry.path, hash)
     }
     fn progress(hash: &str, chapter: usize, timestamp: u64) -> ProgressEntry {
@@ -396,19 +425,20 @@ mod tests {
             downloaded: vec![],
             uploaded: 0,
             skipped: 0,
+            confirmed_archives: Default::default(),
             failed: vec![],
             next_retry_after: None,
             terminal_error: None,
         }
     }
     #[test]
-    fn remote_progress_is_offered_without_moving_open_ios_book() {
+    fn latest_progress_updates_open_ios_catalog_and_emits_ui_locator() {
         let _test = TEST_LOCK.lock().unwrap();
         let (dir, path, hash) = fixture();
         let data_dir = dir.path().to_str().unwrap();
         let result = apply(data_dir, "ios-test", prepared(&hash), &path).unwrap();
         assert_eq!(result["offer"]["chapter"], 0);
-        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 1);
+        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 0);
         assert!(SyncJournal::load(data_dir, "ios-test")
             .own
             .validate()
@@ -422,6 +452,14 @@ mod tests {
         let mut journal = SyncJournal::load(data_dir, "ios-test");
         journal.record(progress(&hash, 2, 40));
         journal.save(data_dir).unwrap();
+        Library::load_from(data_dir).update_position(
+            data_dir,
+            &Library::load_from(data_dir).books[0].path,
+            2,
+            None,
+            0,
+            0,
+        );
         let result = apply(data_dir, "ios-test", prepared(&hash), "").unwrap();
         assert!(result["offer"].is_null());
         assert_eq!(

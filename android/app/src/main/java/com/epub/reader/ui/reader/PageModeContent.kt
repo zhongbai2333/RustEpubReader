@@ -28,6 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -105,7 +106,9 @@ internal fun PageModeContent(
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
     initialBlock: Int = 0,
-    onPositionChange: (Int) -> Unit = {},
+    initialCharOffset: Int = 0,
+    positionRevision: Int = 0,
+    onPositionChange: (Int,Int) -> Unit = { _,_ -> },
     onContentPrepared: () -> Unit = {},
 ) {
     val configuration = LocalConfiguration.current
@@ -199,12 +202,12 @@ internal fun PageModeContent(
     val trailingVirtual = if (hasNextChapter) 1 else 0
     val totalSlots = (pairedPages.size + leadingVirtual + trailingVirtual).coerceAtLeast(1)
 
-    fun slotForBlock(block: Int): Int {
+    fun slotForBlock(block: Int, offset:Int = initialCharOffset): Int {
         val target = block.coerceIn(0, chapter.blocks.lastIndex.coerceAtLeast(0))
         val pageIndex =
             pages
-                .indexOfFirst { page ->
-                    page.any { it.sourceBlockIndex == target }
+                .indexOfLast { page ->
+                    page.any { it.sourceBlockIndex == target && it.sourceCharOffset <= offset }
                 }
                 .let { if (it >= 0) it else pages.lastIndex.coerceAtLeast(0) }
         val pairedIndex = if (isTwoColumn) pageIndex / 2 else pageIndex
@@ -400,7 +403,7 @@ internal fun PageModeContent(
     bookSpreadCurlConfig.backPageColor = bgColor
 
     // 章节切换时重置页码
-    LaunchedEffect(currentChapter, pageAnimation) {
+    LaunchedEffect(currentChapter, pageAnimation, positionRevision, layoutTag) {
         val isRealChapterChange = prevChapterKey != currentChapter
         // 立即阻断边界检测，防止切换期间级联跳章
         chapterJumpTriggered = true
@@ -459,21 +462,24 @@ internal fun PageModeContent(
         chapterJumpTriggered = false
     }
 
-    LaunchedEffect(currentChapter, pageAnimation, isBookSpread) {
+    LaunchedEffect(currentChapter, pageAnimation, isBookSpread, positionRevision, layoutTag) {
+        var lastReported = slotForBlock(initialBlock)
         snapshotFlow {
             when {
                 isBookSpread -> bookSpreadPageCurlState.current
                 pageAnimation == "Realistic" -> pageCurlState.current
-                else -> pagerState.currentPage
+                else -> pagerState.settledPage
             }
         }
-            .collect { slot ->
-                delay(350)
+            .collectLatest { slot ->
                 if (
-                    !chapterJumpTriggered &&
+                    !chapterJumpTriggered && slot != lastReported &&
                         slot in leadingVirtual until (leadingVirtual + pairedPages.size)
                 ) {
-                    onPositionChange(blockForSlot(slot))
+                    lastReported=slot
+                    val pageIndex=(slot-leadingVirtual).coerceAtLeast(0)*(if(isTwoColumn) 2 else 1)
+                    val first=pages.getOrNull(pageIndex)?.firstOrNull()
+                    onPositionChange(first?.sourceBlockIndex ?: blockForSlot(slot),first?.sourceCharOffset ?: 0)
                 }
             }
     }

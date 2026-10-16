@@ -83,6 +83,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     // ---- ���״̬ ----
     val books = mutableStateListOf<BookEntry>()
+    var archivedBooks by mutableStateOf<List<JSONObject>>(emptyList())
+        private set
+    var githubSyncMeter by mutableStateOf<JSONObject?>(null)
+        private set
+    private var githubMeterJob: Job? = null
     val coverCache = mutableStateMapOf<String, ByteArray?>()
 
     // ---- �Ķ���״̬ ----
@@ -93,6 +98,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var currentPage by mutableIntStateOf(0)
         private set
     var currentBlock by mutableIntStateOf(0)
+        private set
+    var currentCharOffset by mutableIntStateOf(0)
+        private set
+    var positionRevision by mutableIntStateOf(0)
         private set
     var previousChapter by mutableStateOf<Int?>(null)
         private set
@@ -337,6 +346,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private var githubSyncRetryMs = 300_000L
     private var githubSyncGeneration = 0L
     private var githubSyncJob: Job? = null
+    private var localProgressRevision=0L
+    private var uploadedProgressRevision=0L
     private var githubLoginJob: Job? = null
 
     private var contributePrompted = false
@@ -369,7 +380,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             while (isActive) {
                 delay(5_000)
-                if (githubSyncEnabled && githubSyncForeground && !isLoading && !githubSyncNeedsAuth && !githubSyncRunning && (githubSyncAttemptAt == 0L || android.os.SystemClock.elapsedRealtime() - githubSyncAttemptAt >= githubSyncRetryMs)) {
+                if (githubSyncEnabled && githubSyncForeground && !isLoading && !githubSyncNeedsAuth && !githubSyncRunning && (githubSyncAttemptAt == 0L || android.os.SystemClock.elapsedRealtime() - githubSyncAttemptAt >= githubSyncRetryMs || (!githubSyncThrottled && localProgressRevision != uploadedProgressRevision && android.os.SystemClock.elapsedRealtime() - githubSyncAttemptAt >= 5_000))) {
                     syncGithubNow()
                 }
             }
@@ -530,6 +541,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     // ---- ������ ----
 
     private fun loadLibrary() {
+        reloadArchive()
+
         val sorted = library.sortedIndicesByRecent().map { library.books[it] }
         androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
             books.clear(); books.addAll(sorted)
@@ -641,11 +654,33 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         catch (error: Exception) { errorMessage = error.message ?: I18n.t("common.error_unknown") }
     }
 
+    private fun reloadArchive() {
+        runCatching {
+            val response = JSONObject(RustBridge.bookArchive(dataDir, "{}") ?: error("Missing archive"))
+            check(response.getBoolean("ok")) { response.optString("error") }
+            val values=response.getJSONArray("result")
+            archivedBooks=(0 until values.length()).map { values.getJSONObject(it) }
+        }.onFailure { errorMessage=it.message }
+    }
+    fun archiveAction(hash: String, action: String) {
+        cancelGithubSyncWork()
+        viewModelScope.launch {
+            try {
+                val response=withContext(Dispatchers.IO) { JSONObject(RustBridge.bookArchive(dataDir,JSONObject().put("hash",hash).put("action",action).toString()) ?: error("Missing archive result")) }
+                check(response.getBoolean("ok")) { response.optString("error") }
+                withContext(Dispatchers.IO) { library.reload() }; loadLibrary()
+                githubSyncAttemptAt=0L
+            } catch (error:Exception) { errorMessage=error.message }
+        }
+    }
+
     fun removeBook(entry: BookEntry) {
         removeBookByUri(entry.uri)
     }
 
     fun removeBookByUri(uri: String) {
+        cancelGithubSyncWork()
+        githubSyncAttemptAt=0L
         val removed = library.removeByUri(uri)
         if (removed) {
             coverCache.remove(uri)
@@ -675,6 +710,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val dir = File(booksDir)
         if (!dir.isDirectory) return
         val knownUris = library.books.map { it.uri }.toMutableSet()
+        val archivePayload=JSONObject(RustBridge.bookArchive(dataDir,"{}") ?: return)
+        if (!archivePayload.optBoolean("ok")) return
+        val archives=archivePayload.getJSONArray("result")
+        for (index in 0 until archives.length()) { archives.getJSONObject(index).optJSONObject("entry")?.optString("path")?.let { knownUris.add(it) } }
         val epubs = dir.listFiles { f -> f.extension.equals("epub", ignoreCase = true) } ?: return
         var added = 0
         for (file in epubs) {
@@ -967,6 +1006,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         android.util.Log.d("READER-RESUME",
             "parseAndOpen startChapter=$startChapter chapterCount=${book.chapters.size} => currentChapter=$currentChapter")
 
+        val savedPosition=library.books.firstOrNull { it.uri==managedPath }
+        val savedBlock=book.chapters.getOrNull(currentChapter)?.blocks?.getOrNull(currentBlock)
+        val savedText=when(savedBlock) {is ContentBlock.Paragraph->savedBlock.spans.joinToString(""){it.text};is ContentBlock.Heading->savedBlock.spans.joinToString(""){it.text};else->""}
+        currentCharOffset=savedText.offsetByCodePoints(0,(savedPosition?.lastCharOffset ?: 0).coerceIn(0,savedText.codePointCount(0,savedText.length)))
+        positionRevision++
         val chapterTitle = try {
             book.chapters[currentChapter].title
         } catch (_: Exception) { null }
@@ -1034,6 +1078,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         currentChapter = target
         currentPage = 0
         currentBlock = 0
+        currentCharOffset = 0
         // Close review panel if open so a stale panel doesn't linger after TOC navigation
         showReviewPanel = false
         reviewPanelChapter = null
@@ -1050,6 +1095,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         currentChapter = target
         currentPage = 0
         currentBlock = 0
+        currentCharOffset = 0
         saveProgress()
     }
 
@@ -1068,6 +1114,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 currentChapter = next
                 currentPage = 0
                 currentBlock = 0
+                currentCharOffset = 0
                 saveProgress()
                 updateBookmarkState()
                 checkContributionPrompt()
@@ -1092,6 +1139,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 currentChapter = prev
                 currentPage = 0
                 currentBlock = 0
+                currentCharOffset = 0
                 saveProgress()
                 updateBookmarkState()
                 checkContributionPrompt()
@@ -1126,11 +1174,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         currentPage = page
     }
 
-    fun updateReadingPosition(block: Int) {
+    fun updateReadingPosition(block: Int, charOffset: Int = 0) {
         val maxBlock = currentBook?.chapters?.getOrNull(currentChapter)?.blocks?.lastIndex ?: 0
         val next = block.coerceIn(0, maxBlock.coerceAtLeast(0))
-        if (next == currentBlock) return
+        if (next == currentBlock && charOffset == currentCharOffset) return
         currentBlock = next
+        currentCharOffset = charOffset.coerceAtLeast(0)
         saveProgress()
     }
 
@@ -1470,14 +1519,21 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         currentChapter = 0
         currentPage = 0
         currentBlock = 0
+        currentCharOffset = 0
     }
 
     private fun saveProgress() {
         val uri = currentBookUri ?: return
+        if(library.books.none {it.uri==uri}) return
         val chapterTitle = try {
             currentBook?.chapters?.get(currentChapter)?.title
         } catch (_: Exception) { null }
-        library.updatePosition(uri, currentChapter, chapterTitle, currentBlock, 0)
+        val block=currentBook?.chapters?.getOrNull(currentChapter)?.blocks?.getOrNull(currentBlock)
+        val text=when(block) { is ContentBlock.Paragraph->block.spans.joinToString("") {it.text}; is ContentBlock.Heading->block.spans.joinToString("") {it.text}; else->"" }
+        val scalarOffset=text.codePointCount(0,currentCharOffset.coerceIn(0,text.length))
+        val previous=library.books.firstOrNull {it.uri==uri}
+        if(previous?.lastChapter != currentChapter || previous.lastBlock != currentBlock || previous.lastCharOffset != scalarOffset) localProgressRevision++
+        library.updatePosition(uri, currentChapter, chapterTitle, currentBlock, scalarOffset)
 
         // Write chapter to SharedPreferences: global key + per-book key (resilient backup)
         val bookId = library.books.firstOrNull { it.uri == uri }?.id
@@ -1488,7 +1544,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             }
         }.apply()
 
-        loadLibrary()
+        val shelfIndex=books.indexOfFirst {it.uri==uri}
+        if(shelfIndex>=0) library.books.firstOrNull {it.uri==uri}?.let {books[shelfIndex]=it}
     }
 
     fun dismissError() {
@@ -1522,7 +1579,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 appendLine("generated_at=${java.util.Date()}")
                 appendLine("package=${context.packageName}")
                 appendLine("version_name=${pkgInfo.versionName ?: "unknown"}")
-                appendLine("version_code=${pkgInfo.longVersionCode}")
+                appendLine("version_code=${androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(pkgInfo)}")
                 appendLine("device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
                 appendLine("android=${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
                 appendLine("data_dir=$dataDir")
@@ -1936,6 +1993,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private fun cancelGithubSyncWork() {
         githubSyncGeneration++
         runCatching { RustBridge.cancelGithubSync() }
+        githubMeterJob?.cancel(); githubMeterJob=null; githubSyncMeter=null
         githubSyncJob?.cancel()
         githubSyncRunning = false
         githubSyncOffer = null
@@ -1992,9 +2050,19 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val token = githubToken ?: run { githubSyncNeedsAuth = true; return }
         val owner = githubUsername ?: run { githubSyncNeedsAuth = true; return }
         val generation = githubSyncGeneration
+        val progressRevision=localProgressRevision
         val nativeEpoch = RustBridge.githubSyncEpoch()
         val countContributions = githubSyncContributions
         githubSyncRunning = true
+        githubSyncMeter=null
+        githubMeterJob=viewModelScope.launch {
+            while (isActive && generation == githubSyncGeneration) {
+                val status=withContext(Dispatchers.IO) { runCatching { JSONObject(RustBridge.githubSyncStatus(dataDir) ?: "{}") }.getOrNull() }
+                if (generation != githubSyncGeneration) return@launch
+                githubSyncMeter=status
+                delay(200)
+            }
+        }
         githubSyncStatus = I18n.t("cloud.syncing")
         githubSyncJob = viewModelScope.launch {
             libraryStartup?.join()
@@ -2014,6 +2082,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     val result = applied.getJSONObject("result")
                     library.reload()
                     loadLibrary()
+                    if(currentBookUri != null && library.books.none {it.uri==currentBookUri}) closeBook()
                     val updated = result.getJSONArray("updated")
                     prefs.edit().apply {
                         for (index in 0 until updated.length()) {
@@ -2022,7 +2091,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             putInt("book_ch_$id", update.getInt("chapter"))
                         }
                     }.apply()
+                    if (progressOnly) uploadedProgressRevision=progressRevision
                     githubSyncOffer = result.optJSONObject("offer")
+                    if (githubSyncOffer != null) applyGithubProgress()
                     githubSyncNeedsAuth = false
                     githubRepoAuthorized = true
                     prefs.edit().putBoolean("github_repo_authorized", true).apply()
@@ -2050,6 +2121,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 githubSyncStatus = if (githubSyncNeedsAuth) I18n.t("cloud.need_auth") else "${I18n.t("cloud.failed")}: ${if (message.startsWith("RETRY_AFTER:")) message.substringAfter(":").substringAfter(":") else message}"
             } finally {
                 if (generation == githubSyncGeneration) {
+                    githubMeterJob?.cancel(); githubMeterJob=null; githubSyncMeter=null
                     githubSyncRunning = false
                     githubSyncAttemptAt = android.os.SystemClock.elapsedRealtime()
                 }
@@ -2069,8 +2141,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         previousChapter = currentChapter
         currentChapter = chapter
         currentBlock = block
+        val content=book.chapters[chapter].blocks.getOrNull(block)
+        val text=when(content) {is ContentBlock.Paragraph->content.spans.joinToString(""){it.text};is ContentBlock.Heading->content.spans.joinToString(""){it.text};else->""}
+        currentCharOffset=text.offsetByCodePoints(0,offer.optInt("char_offset",0).coerceIn(0,text.codePointCount(0,text.length)))
+        positionRevision++
         currentPage = 0
-        saveProgress()
         githubSyncOffer = null
     }
 

@@ -35,17 +35,25 @@ synchronized. Bookmarks, highlights and notes remain local, along with settings.
 Activity merges preserve device ownership and avoid double-counting; see
 [reading activity](READING_ACTIVITY.md). Positions currently use the
 shared parser's chapter/block/character coordinates; EPUB CFI is not implemented.
-Progress suggestions select the latest timestamp, so intentional rereading can
-move backwards. Each device's record remains separate; device clocks should be
-correct. The current open book never jumps automatically: use the settings
-button to apply another device's suggested position. Books not currently open
-receive newer positions automatically. Uploads use SHA-based compare-and-set;
-conflicts are reread and retried without force updates.
+Progress uses the newest actual reading edit, including rereading an earlier
+chapter. New records carry millisecond edit revisions and their original device
+identity; equal-time legacy records use a deterministic device tie-break. Applying
+another device's record preserves that revision. Opening, closing and restoring a
+book do not create a newer edit. All clients persist the winning locator and
+update an open reader automatically. A local edit made while a network request is
+in flight is compared again before applying the response. Device clocks should be
+correct; the original order of conflicting legacy edits within the same second
+cannot be reconstructed. After upgrade, actual edits supersede legacy records
+without inheriting artificially inflated legacy seconds; unread imports are
+bootstrap state and cannot reset an existing reading position. Uploads use SHA-based compare-and-set; conflicts are
+reread and retried without force updates.
 
 All three clients sync and apply reading progress before starting EPUB transfers.
 The file phase uses validated device manifests as an index to avoid checking every
 already uploaded book individually. Automatic sync runs while the desktop app is
-open or a mobile app is in the foreground, normally every five minutes. Mobile clients cancel further requests when
+open or a mobile app is in the foreground, normally every five minutes when idle. Changed reading positions are scheduled
+within about five seconds in the foreground, subject to network/backoff and an
+already-running sync. Mobile clients cancel further requests when
 backgrounded, disabled, signed out, or when the account changes. Network
 failures retain local records and retry; missing permissions require renewed
 authorization. GitHub rate-limit delays are respected. Background downloads are
@@ -59,8 +67,43 @@ only after EPUB validation and a successful library save.
 Downloads are verified by size and SHA-256 before import. Unreadable/oversized
 local books are skipped and counted. Disabling sync or signing out cancels future
 requests without deleting local books or the repository; an already sent request
-may complete. Local deletions do not delete cloud files; a previously advertised
-book removed on this device is not automatically restored on the same device.
+may complete. File availability is checked against the current local library,
+rather than the historical upload/download inventory, so a missing local book can
+be downloaded again. Legacy local deletion markers no longer suppress cloud
+imports.
+
+## Archive and permanent deletion
+
+The shelf's single-book and batch actions archive books. Local-only archiving
+hides entries while retaining their managed EPUBs, UUIDs, progress and annotation
+configs. The archive list supports restoration and a separately confirmed
+permanent deletion. Archive records rebase owned paths after an iOS sandbox move.
+
+Snapshots include a per-hash lifecycle record (`active`, `archived`, `deleted`),
+with a revision and event identifier. Newer lifecycle events converge across
+devices. On sync, archived books leave every shelf; a retained local EPUB is
+uploaded if needed. Before unlinking an archived local file, the file phase reads
+the actual remote EPUB and verifies its size and SHA-256. A manifest alone is not
+sufficient. Missing/corrupt cloud copies leave the local file intact and enter the
+per-book retry queue. Oversized local-only archives remain on disk. Restoration
+uses the original local UUID/config when available and downloads missing EPUBs on
+the next sync.
+
+Permanent deletion publishes a durable tombstone before deleting only the
+hash-named EPUB from the private sync repository. Other updated clients suppress
+stale uploads/downloads and remove local copies on their next sync. Failed cloud
+deletions are retried separately. Deleting a file does not rewrite Git history;
+old commits may retain the bytes. The deletion record remains to prevent stale
+inventories from resurrecting the book. All devices must run a version that
+understands lifecycle records and progress revisions for these rules to hold.
+
+## Status and verification
+
+The shelf and sync settings show the same current stage, processed book count
+and per-stage progress. Unknown work uses an indeterminate indicator. Counts
+represent processed files (including attempts), not elapsed-time estimates;
+individual failures remain visible and retryable. iOS device authorization shows
+an inline copied confirmation and browser-opening feedback.
 
 `reader_core` exposes the portable schema and the optional `github-sync` API
 transport. Desktop, Android and iOS use this transport and repository format.
