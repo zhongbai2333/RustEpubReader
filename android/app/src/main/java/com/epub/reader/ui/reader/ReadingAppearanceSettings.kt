@@ -83,13 +83,15 @@ internal fun ReadingAppearanceSettings(value: ReadingAppearance, activeDark: Boo
     FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp), maxItemsInEachRow = 3) {
         value.choices.forEach { style ->
             val variant = style.variant(activeDark)
+            val cardPaper = com.zhongbai233.epub.reader.ui.theme.appearanceColor(Color(variant.paper), "theme card paper")
+            val cardInk = com.zhongbai233.epub.reader.ui.theme.appearanceColor(Color(variant.ink), "theme card ink")
             val creating = style.id == "custom" && value.custom == null
             val label = I18n.t("appearance.style_${style.id}")
             Column(Modifier.widthIn(min = minimumCardWidth).weight(1f).clip(RoundedCornerShape(10.dp)).border(if(value.selected == style.id) 2.dp else 1.dp, if(value.selected == style.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp)).clickable(role = Role.Button) {
                 if(creating) editing = ReadingStyle.customTemplate else onChange(value.copy(selected = style.id))
             }.semantics { contentDescription = if(creating) I18n.t("appearance.create_custom") else label; selected = value.selected == style.id }) {
-                Box(Modifier.fillMaxWidth().height(64.dp).background(if(creating) MaterialTheme.colorScheme.surfaceContainer else Color(variant.paper)), contentAlignment = Alignment.Center) {
-                    Text(if(creating) "+" else "Aa", color = if(creating) MaterialTheme.colorScheme.primary else Color(variant.ink), fontFamily = if(creating) FontFamily.Default else FontFamily.Serif, fontSize = 24.sp)
+                Box(Modifier.fillMaxWidth().height(64.dp).background(if(creating) MaterialTheme.colorScheme.surfaceContainer else cardPaper), contentAlignment = Alignment.Center) {
+                    Text(if(creating) "+" else "Aa", color = if(creating) MaterialTheme.colorScheme.primary else cardInk, fontFamily = if(creating) FontFamily.Default else FontFamily.Serif, fontSize = 24.sp)
                 }
                 Text((if(value.selected == style.id) "✓ " else "") + label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(8.dp))
             }
@@ -229,11 +231,13 @@ internal fun ReadingStyleEditor(initial: ReadingStyle, initiallyDark: Boolean, f
 
 @Composable
 internal fun ReadingAppearanceSample(variant: ReadingAppearanceVariant, fontSize: Float, fontFamily: FontFamily, editingDark: Boolean? = null) {
-    Box(Modifier.fillMaxWidth().background(Color(variant.paper)).clip(RoundedCornerShape(4.dp))) {
+    val paper = if (editingDark != null) Color(variant.paper) else com.zhongbai233.epub.reader.ui.theme.appearanceColor(Color(variant.paper), "theme sample paper")
+    val ink = if (editingDark != null) Color(variant.ink) else com.zhongbai233.epub.reader.ui.theme.appearanceColor(Color(variant.ink), "theme sample ink")
+    Box(Modifier.fillMaxWidth().background(paper).clip(RoundedCornerShape(4.dp))) {
         if(variant.image != null) AsyncImage(model = variant.image, contentDescription = null, contentScale = ContentScale.Crop, alpha = variant.strength, modifier = Modifier.matchParentSize())
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if(editingDark != null) Text(I18n.t("appearance.preview") + " · " + I18n.t(if(editingDark) "appearance.mode_dark" else "appearance.mode_light"), style = MaterialTheme.typography.labelSmall, color = Color(variant.ink))
-            Text(I18n.t("appearance.sample"), fontSize = fontSize.sp, lineHeight = (fontSize * 1.65f).sp, fontFamily = fontFamily, color = Color(variant.ink))
+            Text(I18n.t("appearance.sample"), fontSize = fontSize.sp, lineHeight = (fontSize * 1.65f).sp, fontFamily = fontFamily, color = ink)
         }
     }
 }

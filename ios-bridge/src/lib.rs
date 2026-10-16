@@ -407,6 +407,11 @@ fn dispatch(v: Value) -> Result<Value, String> {
                 "open" => {
                     let e = entry(root, field(&v, "id")?)?;
                     let parsed = book(root, &e)?;
+                    let mut library = Library::load_from(root);
+                    library.set_last_opened(root, &e.path, reader_core::now_millis());
+                    let journal = SyncJournal::load(root, device);
+                    journal.save(root)?;
+                    let e = entry(root, &e.id)?;
                     nearby::opened(root, &e.path);
                     Ok(json!({"entry":entry_value(root,&e),
                         "chapters":parsed.chapters.iter().map(|ch| json!({"title":ch.title,"blocks":[]})).collect::<Vec<_>>(),
@@ -489,7 +494,16 @@ fn dispatch(v: Value) -> Result<Value, String> {
                         return Ok(entry_value(root, &e));
                     }
                     let mut lib = Library::load_from(root);
-                    lib.update_position(root, &e.path, chapter, title.clone(), block, offset);
+                    lib.apply_position(root, &e.path, chapter, title.clone(), block, offset);
+                    if changed {
+                        lib.set_last_opened(
+                            root,
+                            &e.path,
+                            v["edited_at"]
+                                .as_u64()
+                                .unwrap_or_else(reader_core::now_millis),
+                        );
+                    }
                     let saved = entry(root, &e.id)?;
                     let config = Library::read_book_config(root, &e.id)
                         .ok_or("Cannot save reading position")?;
@@ -503,6 +517,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     {
                         return Err("Cannot save reading position".into());
                     }
+                    journal.capture_recent(root);
                     journal.save(root)?;
                     Ok(entry_value(root, &saved))
                 }

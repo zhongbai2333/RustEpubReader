@@ -651,11 +651,13 @@ fun ReaderScreen(
 
     val appearanceDark = appearanceLinkage?.readingDark(systemAppearanceDark,ambientAppearanceDark) ?: appearance?.mode?.isDark(automaticAppearanceDark) ?: isDarkMode
     val appearanceVariant = appearance?.style?.variant(appearanceDark)
-    val textColor = appearanceVariant?.let { Color(it.ink) } ?: if (selectedFont == Color.Unspecified) autoText else selectedFont
-    val bgColor = appearanceVariant?.let { Color(it.paper) } ?: selectedBg
+    val targetTextColor = appearanceVariant?.let { Color(it.ink) } ?: if (selectedFont == Color.Unspecified) autoText else selectedFont
+    val textColor = com.zhongbai233.epub.reader.ui.theme.appearanceColor(targetTextColor, "reader ink")
+    val bgColor = com.zhongbai233.epub.reader.ui.theme.appearanceColor(appearanceVariant?.let { Color(it.paper) } ?: selectedBg, "reader paper")
     val activeBgImageUri = if(appearanceVariant != null) appearanceVariant.image else bgImageUri
     val activeBgImageAlpha = appearanceVariant?.strength ?: bgImageAlpha
-    val linkColor = if (textColor.luminance() < 0.45f) Color(0xFF78B4FF) else Color(0xFF3366CC)
+    val linkColor = com.zhongbai233.epub.reader.ui.theme.appearanceColor(
+        if (targetTextColor.luminance() < 0.45f) Color(0xFF78B4FF) else Color(0xFF3366CC), "reader links")
 
     val fontContext = androidx.compose.ui.platform.LocalContext.current
     val availableFonts = remember(systemFonts, com.zhongbai233.epub.reader.util.FontLibrary.revision) {
@@ -849,9 +851,11 @@ fun ReaderScreen(
                         }
                     }
         ) {
-            if (!activeBgImageUri.isNullOrBlank()) {
-                AsyncImage(
-                    model = activeBgImageUri,
+            Crossfade(targetState = activeBgImageUri,
+                animationSpec = tween(com.zhongbai233.epub.reader.ui.theme.APPEARANCE_TRANSITION_MILLIS),
+                modifier = Modifier.fillMaxSize(), label = "reader background image") { uri ->
+                if (!uri.isNullOrBlank()) AsyncImage(
+                    model = uri,
                     contentDescription = I18n.t("reader.bg_image_desc"),
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,

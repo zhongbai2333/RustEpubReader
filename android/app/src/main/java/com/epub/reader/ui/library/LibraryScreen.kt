@@ -107,13 +107,13 @@ fun LibraryScreen(
     var refreshing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val shelfBooks = books.toList()
-    val ranked = remember(shelfBooks, sortTitle) { if(sortTitle) shelfBooks.sortedBy {it.title.lowercase()} else shelfBooks.sortedByDescending {it.lastOpened} }
+    val ranked = remember(shelfBooks, sortTitle) { if(sortTitle) shelfBooks.sortedBy {it.title.lowercase()} else shelfBooks.sortedWith(compareBy({ -it.lastOpened }, { it.title })) }
     val ranks = remember(ranked, sortTitle, shelfRevision) {
         shelfOrder.resolve(ranked.map {it.uri},sortTitle,shelfRevision).withIndex().associate {it.value to it.index}
     }
     val searchTerm = query.trim()
     val filtered = remember(ranked, ranks, searchTerm) { ranked.sortedBy {ranks[it.uri] ?: Int.MAX_VALUE}.filter {it.title.contains(searchTerm,ignoreCase=true)} }
-    val recent = remember(shelfBooks) { shelfBooks.maxByOrNull { it.lastOpened }?.takeIf { it.lastOpened > 0 } }
+    val recent = remember(shelfBooks) { shelfBooks.sortedWith(compareBy({ -it.lastOpened }, { it.title })).firstOrNull()?.takeIf { it.lastOpened > 0 } }
     val libraryHeader: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) {

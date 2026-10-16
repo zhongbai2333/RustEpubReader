@@ -33,15 +33,15 @@ before retrying. The client never deletes or changes repository visibility.
 - Private draft releases tagged `reader-file-v2-<sha256>`: 8 MiB binary assets
   for each large file, with a shorter final part. They remain unpublished so
   repository release immutability cannot prevent repair or permanent deletion.
-- `devices/<device-id>.json`: device-specific book inventory, reading positions and daily reading/listening activity.
+- `devices/<device-id>.json`: device-specific book inventory, reading positions, recent-reading events and daily reading/listening activity.
 
 The existing private repository and authorization are reused; users configure no
 additional storage. Device snapshots retain schema version 1 and add an optional
 `large_books` inventory. Older clients can exchange progress and small books while
 ignoring this field; large files require an updated client on each device.
 
-EPUB files, reading progress and per-device daily reading/listening activity are
-synchronized. Bookmarks, highlights and notes remain local, along with settings.
+EPUB files, reading progress, recently read ordering / continue-reading selection,
+and per-device daily reading/listening activity are synchronized. Bookmarks, highlights and notes remain local, along with settings.
 Activity merges preserve device ownership and avoid double-counting; see
 [reading activity](READING_ACTIVITY.md). Positions currently use the
 shared parser's chapter/block/character coordinates; EPUB CFI is not implemented.
@@ -57,6 +57,19 @@ cannot be reconstructed. After upgrade, actual edits supersede legacy records
 without inheriting artificially inflated legacy seconds; unread imports are
 bootstrap state and cannot reset an existing reading position. Uploads use SHA-based compare-and-set; conflicts are
 reread and retried without force updates.
+
+Recent reading is independent of progress revisions. The optional `recent_reading`
+map stores each book's original millisecond reading time and originating device.
+Successfully opening a book counts even when its locator stays unchanged; importing,
+downloading and applying remote positions do not count as reading. The newest event
+wins, with device identity as a deterministic equal-time tie-break. All clients use
+that time for shelf ordering and continue-reading selection, considering only locally
+available, visible books. Events for files not downloaded yet are retained and applied
+when the file arrives. Applying an event preserves its original author/time, so syncing
+cannot turn it into another reading event. Older catalogs' second-based times are
+normalized and retained as best-effort history; past ordering already distorted by old
+sync behavior cannot be reconstructed. Old snapshots without this optional field remain
+readable, but all devices need upgrading to publish new recent-reading events.
 
 All three clients sync and apply reading progress before starting EPUB transfers.
 The file phase uses validated device manifests as an index to avoid checking every

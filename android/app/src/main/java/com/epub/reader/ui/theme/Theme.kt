@@ -69,15 +69,11 @@ fun EpubReaderTheme(
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme =
-        when {
-            dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-                val context = LocalContext.current
-                if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-            }
-            darkTheme -> DarkColorScheme
-            else -> LightColorScheme
-        }
+    val context = LocalContext.current
+    val dynamic = dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val light = if (dynamic) dynamicLightColorScheme(context) else LightColorScheme
+    val dark = if (dynamic) dynamicDarkColorScheme(context) else DarkColorScheme
+    val colorScheme = appearanceColorScheme(light, dark, darkTheme)
 
     MaterialTheme(
         colorScheme = colorScheme,

@@ -988,6 +988,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             )
         } ?: throw Exception("EPUB ����ʧ��")
 
+        withContext(Dispatchers.IO) { RustBridge.recordBookOpened(dataDir, managedPath) }
+        localProgressRevision++ // Recent-reading metadata is also part of the fast sync phase.
         currentBook = book
         currentBookUri = managedPath
         currentChapter = startChapter.coerceIn(0, (book.chapters.size - 1).coerceAtLeast(0))

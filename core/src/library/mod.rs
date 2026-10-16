@@ -198,7 +198,6 @@ impl Library {
             if chapter_title.is_some() {
                 entry.last_chapter_title = chapter_title;
             }
-            entry.last_opened = now;
         } else {
             self.books.push(BookEntry {
                 id,
@@ -208,7 +207,7 @@ impl Library {
                 last_block: 0,
                 last_char_offset: 0,
                 last_chapter_title: chapter_title,
-                last_opened: now,
+                last_opened: 0,
             });
         }
 
@@ -272,7 +271,6 @@ impl Library {
             if chapter_title.is_some() {
                 entry.last_chapter_title = chapter_title;
             }
-            entry.last_opened = now;
         } else {
             self.books.push(BookEntry {
                 id,
@@ -282,7 +280,7 @@ impl Library {
                 last_block: 0,
                 last_char_offset: 0,
                 last_chapter_title: chapter_title,
-                last_opened: now,
+                last_opened: 0,
             });
         }
 
@@ -516,6 +514,28 @@ impl Library {
         block: usize,
         char_offset: usize,
     ) {
+        let changed = self.find_by_path(path).is_some_and(|i| {
+            let e = &self.books[i];
+            (e.last_chapter, e.last_block, e.last_char_offset) != (chapter, block, char_offset)
+        });
+        if changed {
+            if let Some(idx) = self.find_by_path(path) {
+                self.books[idx].last_opened = crate::now_millis();
+            }
+        }
+        self.apply_position(data_dir, path, chapter, chapter_title, block, char_offset);
+    }
+
+    /// Applying a locator from another device must not create a reading event.
+    pub fn apply_position(
+        &mut self,
+        data_dir: &str,
+        path: &str,
+        chapter: usize,
+        chapter_title: Option<String>,
+        block: usize,
+        char_offset: usize,
+    ) {
         if let Some(idx) = self.find_by_path(path) {
             let entry = &mut self.books[idx];
             entry.last_chapter = chapter;
@@ -524,16 +544,53 @@ impl Library {
             if chapter_title.is_some() {
                 entry.last_chapter_title = chapter_title;
             }
-            entry.last_opened = now_secs();
             let entry_snapshot = entry.clone();
             self.write_book_config(data_dir, &entry_snapshot, None);
             self.save_to(data_dir);
         }
     }
 
+    /// The caller supplies the originating reading time, never the sync time.
+    pub fn set_last_opened(&mut self, data_dir: &str, path: &str, at_ms: u64) {
+        if let Some(idx) = self.find_by_path(path) {
+            if self.books[idx].last_opened == at_ms {
+                return;
+            }
+            self.books[idx].last_opened = at_ms;
+            self.write_book_config(data_dir, &self.books[idx], None);
+            self.save_to(data_dir);
+        }
+    }
+
+    /// Batch remote history projection: write the catalog once, not once per book.
+    pub fn apply_reading_times(
+        &mut self,
+        data_dir: &str,
+        times: &std::collections::BTreeMap<String, u64>,
+    ) {
+        let mut changed = false;
+        for (path, at) in times {
+            if let Some(idx) = self.find_by_path(path) {
+                if self.books[idx].last_opened != *at {
+                    self.books[idx].last_opened = *at;
+                    self.write_book_config(data_dir, &self.books[idx], None);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.save_to(data_dir);
+        }
+    }
+
     pub fn sorted_indices_by_recent(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = (0..self.books.len()).collect();
-        indices.sort_by(|&a, &b| self.books[b].last_opened.cmp(&self.books[a].last_opened));
+        indices.sort_by(|&a, &b| {
+            self.books[b]
+                .last_opened
+                .cmp(&self.books[a].last_opened)
+                .then_with(|| self.books[a].title.cmp(&self.books[b].title))
+        });
         indices
     }
 
@@ -595,11 +652,6 @@ impl Library {
             if !seen_paths.insert(entry.path.clone()) {
                 changed = true;
                 continue;
-            }
-
-            if entry.last_opened == 0 {
-                entry.last_opened = now_secs();
-                changed = true;
             }
 
             if original.id != entry.id

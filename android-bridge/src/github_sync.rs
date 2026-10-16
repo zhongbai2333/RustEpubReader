@@ -71,9 +71,8 @@ pub(super) fn seed_local(data_dir: &str, path: &str) {
 pub(super) fn record_local(data_dir: &str, device_id: &str, progress: ProgressEntry) {
     let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut journal = SyncJournal::load(data_dir, device_id);
-    if journal.record(progress) {
-        let _ = journal.save(data_dir);
-    }
+    journal.record(progress);
+    let _ = journal.save(data_dir);
 }
 fn stage_path(data_dir: &str, hash: &str) -> Result<PathBuf, String> {
     if !valid_hash(hash) {
@@ -375,7 +374,7 @@ fn apply(
         }
         journal.accept(&record);
         if changed {
-            library.update_position(
+            library.apply_position(
                 data_dir,
                 path,
                 p.chapter,
@@ -389,6 +388,7 @@ fn apply(
             updated.push(serde_json::json!({"path":path,"chapter":p.chapter}));
         }
     }
+    journal.apply_recent(data_dir, &mut library, &prepared.snapshots);
     journal.save(data_dir)?;
     Ok(
         serde_json::json!({"uploaded":prepared.uploaded,"downloaded":imported,"skipped":prepared.skipped,"offer":offer,"updated":updated,"failed":prepared.failed,"next_retry_after":prepared.next_retry_after,"terminal_error":prepared.terminal_error}),
@@ -620,6 +620,37 @@ mod tests {
         );
     }
     #[test]
+    fn recent_only_update_keeps_source_time_and_never_becomes_a_local_open() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let (dir, _, hash) = fixture();
+        let root = dir.path().to_str().unwrap();
+        let mut incoming = prepared(&hash);
+        incoming.snapshots[0]
+            .progress
+            .get_mut(&hash)
+            .unwrap()
+            .chapter = 1;
+        let event = reader_core::cloud_recent::ReadingEvent {
+            opened_ms: 1_800_000_000_321,
+            device: "desktop-test".into(),
+        };
+        incoming.snapshots[0]
+            .recent_reading
+            .insert(hash.clone(), event.clone());
+        apply(root, incoming, "").unwrap();
+        assert_eq!(
+            Library::load_from(root).books[0].last_opened,
+            event.opened_ms
+        );
+        let journal = SyncJournal::load(root, "android-test");
+        assert_eq!(journal.own.recent_reading[&hash], event);
+        apply(root, prepared(&hash), "").unwrap();
+        assert_eq!(
+            SyncJournal::load(root, "android-test").own.recent_reading[&hash],
+            event
+        );
+    }
+    #[test]
     fn staging_rejects_path_traversal() {
         assert!(stage_path("/tmp", "../../secret").is_err());
     }
@@ -643,4 +674,12 @@ mod tests {
         assert_eq!(Library::load_from(root).books[0].last_chapter, 0);
         assert_eq!(SyncJournal::load(root, "android-test").applied[&hash], 30);
     }
+}
+
+pub(super) fn opened(data_dir: &str, path: &str) {
+    let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut library = Library::load_from(data_dir);
+    library.set_last_opened(data_dir, path, reader_core::now_millis());
+    let journal = journal(data_dir);
+    let _ = journal.save(data_dir);
 }

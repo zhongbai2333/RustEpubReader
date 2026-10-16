@@ -119,7 +119,11 @@ fn snapshot(root: &str, device: &str) -> Result<Snapshot, String> {
             block: entry.last_block,
             char_offset: entry.last_char_offset,
             chapter_title: entry.last_chapter_title.clone(),
-            timestamp: entry.last_opened,
+            timestamp: if entry.last_opened >= 100_000_000_000 {
+                entry.last_opened / 1000
+            } else {
+                entry.last_opened
+            },
         };
         store.merge_progress(&[progress]);
     }
@@ -204,7 +208,7 @@ fn apply(
             .find(|e| EpubBook::file_hash(&e.path).ok().as_ref() == Some(&progress.book_hash))
             .cloned();
         let Some(entry) = matched else { continue };
-        if progress.timestamp <= entry.last_opened {
+        if reader_core::cloud_recent::timestamp_millis(progress.timestamp) <= entry.last_opened {
             continue;
         }
         let parsed = book(root, &entry)?;
@@ -222,7 +226,7 @@ fn apply(
             offer = Some(progress.clone());
             continue;
         }
-        library.update_position(
+        library.apply_position(
             root,
             &entry.path,
             progress.chapter,

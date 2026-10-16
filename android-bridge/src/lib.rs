@@ -100,8 +100,7 @@ fn get_book(path: &str) -> std::result::Result<Arc<EpubBook>, String> {
 }
 
 fn to_android_last_opened(ts: u64) -> u64 {
-    // Rust core stores seconds; historical Android data may be millis.
-    // Normalize to millis for Android UI sorting compatibility.
+    // Core reading clocks use milliseconds; tolerate older second-based catalogs.
     if ts < 10_000_000_000 {
         ts.saturating_mul(1000)
     } else {
@@ -2226,4 +2225,23 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_chapterCacheStats(
         Ok(value) => jni_string_or_null!(env, value),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+/// A successful reader open is independent of importing metadata or changing page.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_recordBookOpened(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    path: JString,
+) {
+    let Ok(root) = env.get_string(&data_dir) else {
+        return;
+    };
+    let root: String = root.into();
+    let Ok(path) = env.get_string(&path) else {
+        return;
+    };
+    let path: String = path.into();
+    github_sync::opened(&root, &path);
 }

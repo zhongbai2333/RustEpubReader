@@ -3,13 +3,40 @@ import UIKit
 
 @MainActor final class AppearanceCoordinator: ObservableObject {
     @Published var value: AppearanceLinkage {
+        willSet { transition(app: newValue.appDark(system: systemDark, ambient: ambientDark), reading: newValue.readingDark(system: systemDark, ambient: ambientDark)) }
         didSet {
             defaults.set(value.encoded, forKey: AppearanceLinkage.storageKey)
             refreshAmbient()
         }
     }
-    @Published var systemDark = UIScreen.main.traitCollection.userInterfaceStyle == .dark
-    @Published private(set) var ambientDark: Bool?
+    @Published var systemDark = UIScreen.main.traitCollection.userInterfaceStyle == .dark {
+        willSet { transition(app: value.appDark(system: newValue, ambient: ambientDark), reading: value.readingDark(system: newValue, ambient: ambientDark)) }
+    }
+    @Published private(set) var ambientDark: Bool? {
+        willSet { transition(app: value.appDark(system: systemDark, ambient: newValue), reading: value.readingDark(system: systemDark, ambient: newValue)) }
+    }
+    private var fadingAppearance: UIView?
+    private func transition(app: Bool, reading: Bool) {
+        guard app != appDark || reading != readingDark, !UIAccessibility.isReduceMotionEnabled,
+              let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).filter({ $0.activationState == .foregroundActive })
+                .flatMap(\.windows).first(where: \.isKeyWindow),
+              let frozen = window.snapshotView(afterScreenUpdates: false) else { return }
+        fadingAppearance?.removeFromSuperview()
+        frozen.frame = window.bounds
+        frozen.isUserInteractionEnabled = false
+        frozen.accessibilityElementsHidden = true
+        fadingAppearance = frozen
+        window.addSubview(frozen)
+        DispatchQueue.main.async { [weak window] in
+            window?.layoutIfNeeded()
+            UIView.animate(withDuration: 0.6, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) {
+                frozen.alpha = 0
+            } completion: { [weak self] _ in
+                frozen.removeFromSuperview()
+                if self?.fadingAppearance === frozen { self?.fadingAppearance = nil }
+            }
+        }
+    }
     @Published private(set) var sensorAvailable = false
     private(set) var ambientLevel: Double?
     private let ambient: AmbientAppearanceMonitor

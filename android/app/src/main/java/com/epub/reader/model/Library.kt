@@ -116,7 +116,7 @@ class Library(private val context: Context, loadImmediately: Boolean = true) {
             books[idx] = prev.copy(
                 lastChapter = chapter,
                 lastChapterTitle = mergedTitle,
-                lastOpened = System.currentTimeMillis()
+                lastOpened = if (prev.lastChapter != chapter || prev.lastBlock != 0 || prev.lastCharOffset != 0) System.currentTimeMillis() else prev.lastOpened
             )
         } else {
             load()
@@ -148,7 +148,7 @@ class Library(private val context: Context, loadImmediately: Boolean = true) {
                 lastBlock = safeBlock,
                 lastCharOffset = safeOffset,
                 lastChapterTitle = chapterTitle ?: previous.lastChapterTitle,
-                lastOpened = System.currentTimeMillis()
+                lastOpened = if (previous.lastChapter != chapter || previous.lastBlock != safeBlock || previous.lastCharOffset != safeOffset) System.currentTimeMillis() else previous.lastOpened
             )
         }
     }

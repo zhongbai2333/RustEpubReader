@@ -143,7 +143,7 @@ struct SyncMeter: Decodable {
 
 @MainActor final class PreviewLibrary: ObservableObject {
     @Published var books: [LibraryEntry] = [] {
-        didSet { recentBooks = books.sorted { $0.lastOpened > $1.lastOpened } }
+        didSet { recentBooks = books.sorted { $0.lastOpened == $1.lastOpened ? $0.title < $1.title : $0.lastOpened > $1.lastOpened } }
     }
     @Published var anchors: [String: ReadingAnchor] = [:]
     @Published var archived: [ArchivedEntry] = []
@@ -160,7 +160,7 @@ struct SyncMeter: Decodable {
     @Published var receivingSharedBooks = false
     private var saveTask: Task<Void, Never>?
     private var saveRevisions: [String:UInt64] = [:]
-    var recent: String { recentBooks.first?.id ?? "" }
+    var recent: String { recentBooks.first(where: { $0.lastOpened > 0 })?.id ?? "" }
     private(set) var recentBooks: [LibraryEntry] = []
     init() {
         let documents = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -217,6 +217,7 @@ struct SyncMeter: Decodable {
         do {
             await flush()
             let book = try await store.open(id: entry.id)
+            progressRevision &+= 1 // Reopening the same page still changes recent-reading metadata.
             openPath = book.entry.path
             save(book.entry.anchor, for: book)
             return book

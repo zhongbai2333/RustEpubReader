@@ -653,6 +653,7 @@ pub struct ReaderApp {
     pub reading_themes: crate::ui::reading_themes::ReadingThemes,
     pub reading_theme_editor: Option<crate::ui::reading_themes::ReadingThemeDraft>,
     pub appearance_current_dark: bool,
+    appearance_transition: crate::ui::appearance_transition::AppearanceTransition,
     pub system_appearance_dark: bool,
     pub show_appearance_linkage: bool,
     pub appearance_selected_node: usize,
@@ -1022,6 +1023,7 @@ impl ReaderApp {
             reading_themes: Default::default(),
             reading_theme_editor: None,
             appearance_current_dark: false,
+            appearance_transition: Default::default(),
             system_appearance_dark: false,
             show_appearance_linkage: false,
             appearance_selected_node: 0,
@@ -1470,6 +1472,13 @@ impl ReaderApp {
                     ch,
                     initial_chapter_title,
                 );
+
+                self.library.set_last_opened(
+                    &self.data_dir,
+                    &entry.path,
+                    reader_core::now_millis(),
+                );
+                self.cloud_record_recent();
 
                 let font_names: Vec<String> =
                     book.fonts.iter().map(|(name, _)| name.clone()).collect();
@@ -2197,7 +2206,7 @@ impl eframe::App for ReaderApp {
                                     .and_then(|b| b.chapters.get(self.current_chapter))
                                     .map(|c| c.title.clone())
                             });
-                            self.library.update_position(
+                            self.library.apply_position(
                                 &self.data_dir,
                                 p,
                                 self.current_chapter,
@@ -2225,7 +2234,7 @@ impl eframe::App for ReaderApp {
                     }
                 }
                 for p in matched_paths {
-                    self.library.update_position(
+                    self.library.apply_position(
                         &self.data_dir,
                         &p,
                         update.chapter,
@@ -2331,6 +2340,8 @@ impl eframe::App for ReaderApp {
 
         self.defer_custom_font_for_frame = false;
 
+        self.appearance_transition
+            .begin(ctx, (self.dark_mode, self.appearance_current_dark));
         crate::ui::design::apply(ctx, self.dark_mode);
         if self.show_github_login {
             self.show_github_login = false;
@@ -2752,6 +2763,8 @@ impl eframe::App for ReaderApp {
                 self.reader_performance = Some(probe);
             }
         }
+        self.appearance_transition
+            .finish(ctx, self.reader_bg_texture.clone());
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
             settings.save(&self.data_dir);

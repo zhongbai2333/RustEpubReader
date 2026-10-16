@@ -24,6 +24,8 @@ pub struct DeviceSnapshot {
     pub large_books: BTreeMap<String, CloudBook>,
     pub progress: BTreeMap<String, ProgressEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recent_reading: BTreeMap<String, crate::cloud_recent::ReadingEvent>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub progress_versions: BTreeMap<String, crate::cloud_progress::ProgressVersion>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lifecycle: BTreeMap<String, crate::library::archive::BookLifecycle>,
@@ -54,6 +56,7 @@ impl DeviceSnapshot {
             books: BTreeMap::new(),
             large_books: BTreeMap::new(),
             progress: BTreeMap::new(),
+            recent_reading: BTreeMap::new(),
             progress_versions: BTreeMap::new(),
             lifecycle: BTreeMap::new(),
             activity: BTreeMap::new(),
@@ -64,6 +67,7 @@ impl DeviceSnapshot {
         if self.schema_version != SCHEMA_VERSION
             || !valid_device_id(&self.device_id)
             || self.books.len().saturating_add(self.large_books.len()) > 5000
+            || self.recent_reading.len() > 5000
             || self.progress.len() > 5000
             || self.progress_versions.len() > 5000
             || self.activity.len() > 5000
@@ -89,6 +93,11 @@ impl DeviceSnapshot {
                 || self.books.contains_key(hash)
             {
                 return Err("Invalid chunked book metadata".into());
+            }
+        }
+        for (hash, event) in &self.recent_reading {
+            if !valid_hash(hash) || !valid_device_id(&event.device) || event.opened_ms == 0 {
+                return Err("Invalid recent reading event".into());
             }
         }
         for (hash, p) in &self.progress {
@@ -154,6 +163,7 @@ impl DeviceSnapshot {
                 }
             }
         }
+        crate::cloud_recent::merge(&mut self.recent_reading, &other.recent_reading);
         for (hash, activity) in &other.activity {
             self.activity
                 .entry(hash.clone())
@@ -331,6 +341,7 @@ impl SyncJournal {
                 }
             }
         }
+        journal.capture_recent(data_dir);
         if let Ok(archive) = crate::library::archive::ArchiveStore::load(data_dir) {
             crate::library::archive::merge_states(&mut journal.own.lifecycle, &archive.states());
         }

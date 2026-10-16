@@ -100,12 +100,23 @@ impl ReaderApp {
         self.cloud_sync.journal = Some(journal);
     }
     fn cloud_save_journal(&mut self) {
-        if let Some(journal) = &self.cloud_sync.journal {
+        if let Some(journal) = &mut self.cloud_sync.journal {
+            journal.capture_recent(&self.data_dir);
             let result = journal.save(&self.data_dir);
             if result.is_err() {
                 self.cloud_sync.status = self.i18n.t("cloud.save_failed").into();
             }
         }
+    }
+    pub(crate) fn cloud_record_recent(&mut self) {
+        self.cloud_journal_init();
+        self.cloud_sync
+            .journal
+            .as_mut()
+            .unwrap()
+            .capture_recent(&self.data_dir);
+        self.cloud_sync.dirty_at = Some(Instant::now());
+        self.cloud_save_journal();
     }
     pub fn cloud_record_progress(&mut self, p: ProgressEntry) {
         self.cloud_journal_init();
@@ -138,6 +149,7 @@ impl ReaderApp {
         };
         self.cloud_journal_init();
         let journal = self.cloud_sync.journal.as_mut().unwrap();
+        journal.capture_recent(&self.data_dir);
         if let Ok(activity) =
             reader_core::reading_activity::export(&self.data_dir, &journal.own.device_id)
         {
@@ -352,6 +364,7 @@ impl ReaderApp {
                     self.cloud_sync.throttled = false;
                     self.cloud_sync.needs_auth = false;
                     let journal = self.cloud_sync.journal.as_mut().unwrap();
+                    journal.capture_recent(&self.data_dir);
                     // Reading may have continued while network work was in flight.
                     let _ = journal.own.merge_own(&result.own);
                     if let Err(error) = reader_core::reading_activity::import(
@@ -527,7 +540,7 @@ impl ReaderApp {
                                     .push(p.clone());
                             }
                             if changed {
-                                self.library.update_position(
+                                self.library.apply_position(
                                     &self.data_dir,
                                     path,
                                     p.chapter,
@@ -542,6 +555,7 @@ impl ReaderApp {
                             journal.applied.insert(hash, p.timestamp);
                         }
                     }
+                    journal.apply_recent(&self.data_dir, &mut self.library, &result.snapshots);
                     if !progress_phase {
                         self.cloud_sync.completed_at = Some(reader_core::now_secs());
                     }

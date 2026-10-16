@@ -2,6 +2,7 @@
 pub mod appearance;
 pub mod book_share;
 pub mod cloud_progress;
+pub mod cloud_recent;
 pub mod cloud_sync;
 pub mod csc;
 pub mod epub;
@@ -15,6 +16,14 @@ pub mod sharing;
 pub mod txt;
 
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Current time as milliseconds since UNIX epoch.
+pub fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// Current time as seconds since UNIX epoch.
 pub fn now_secs() -> u64 {

@@ -2,6 +2,7 @@
 pub mod about;
 pub mod annotations;
 pub(crate) mod appearance_linkage;
+pub(crate) mod appearance_transition;
 pub mod book_share;
 pub mod csc_contribute;
 pub mod csc_settings;

@@ -93,6 +93,7 @@ pub struct BookEntry {
     pub last_char_offset: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_chapter_title: Option<String>,
+    #[serde(deserialize_with = "deserialize_last_opened")]
     pub last_opened: u64,
 }
 
@@ -118,6 +119,7 @@ pub struct BookConfig {
     pub last_char_offset: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_chapter_title: Option<String>,
+    #[serde(deserialize_with = "deserialize_last_opened")]
     pub last_opened: u64,
     pub created_at: u64,
     pub updated_at: u64,
@@ -151,4 +153,9 @@ impl BookConfig {
             let _ = std::fs::write(path, data);
         }
     }
+}
+
+// Old catalogs stored Unix seconds; the reading clock now has millisecond precision.
+fn deserialize_last_opened<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    u64::deserialize(d).map(crate::cloud_recent::timestamp_millis)
 }
