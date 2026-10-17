@@ -930,6 +930,17 @@ pub enum UpdateState {
     Failed(String),
     Restarting,
     DownloadPageOpened,
+    CheckFailed(String),
+}
+
+impl UpdateState {
+    pub(crate) fn from_update_check(result: anyhow::Result<Option<(String, String)>>) -> Self {
+        match result {
+            Ok(Some((tag, _))) => Self::Available(tag),
+            Ok(None) => Self::UpToDate,
+            Err(error) => Self::CheckFailed(format!("{error:#}")),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1312,10 +1323,8 @@ impl ReaderApp {
             let slot: Arc<Mutex<Option<UpdateState>>> = Arc::new(Mutex::new(None));
             let slot_clone = slot.clone();
             std::thread::spawn(move || {
-                let result = match crate::self_update::check_latest_version() {
-                    Some((tag, _name)) => UpdateState::Available(tag),
-                    None => UpdateState::UpToDate,
-                };
+                let result =
+                    UpdateState::from_update_check(crate::self_update::check_latest_version());
                 if let Ok(mut s) = slot_clone.lock() {
                     *s = Some(result);
                 }
@@ -2171,6 +2180,9 @@ impl eframe::App for ReaderApp {
 
         // --- Poll startup update check result ---
         if matches!(self.update_state, UpdateState::Checking) {
+            // Startup checks have no GUI context in their worker. Keep polling even
+            // when the system-language heartbeat is disabled by an explicit locale.
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
             if let Some(ref slot) = self._update_check_slot {
                 if let Ok(s) = slot.lock() {
                     if let Some(ref state) = *s {
@@ -2183,6 +2195,10 @@ impl eframe::App for ReaderApp {
                                 self.update_latest_tag = Some(tag.clone());
                                 self.show_update_dialog = true;
                                 self.update_state = UpdateState::Available(tag.clone());
+                            }
+                            UpdateState::CheckFailed(message) => {
+                                self.push_feedback_log(format!("[Update] check failed: {message}"));
+                                self.update_state = state.clone();
                             }
                             _ => {
                                 self.push_feedback_log("[Update] app is up to date");

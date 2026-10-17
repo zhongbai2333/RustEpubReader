@@ -8,6 +8,21 @@ const GITHUB_URL: &str = "https://github.com/zhongbai2333/RustEpubReader";
 const ICON_BYTES: &[u8] = include_bytes!("../../../icon/ReaderIcon2.png");
 
 impl ReaderApp {
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        self.update_state = UpdateState::Checking;
+        let ctx = ctx.clone();
+        let slot: Arc<Mutex<Option<UpdateState>>> = Arc::new(Mutex::new(None));
+        let writer = slot.clone();
+        std::thread::spawn(move || {
+            let result = UpdateState::from_update_check(self_update::check_latest_version());
+            if let Ok(mut state) = writer.lock() {
+                *state = Some(result);
+            }
+            ctx.request_repaint();
+        });
+        self._update_check_slot = Some(slot);
+    }
+
     pub fn render_about(&mut self, ctx: &egui::Context) {
         // 惰性加载 logo 纹理
         if self.about_icon_texture.is_none() {
@@ -86,22 +101,7 @@ impl ReaderApp {
                             .button(egui::RichText::new(self.i18n.t("update.check")).size(13.0))
                             .clicked()
                         {
-                            self.update_state = UpdateState::Checking;
-                            let ctx = ui.ctx().clone();
-                            let state_slot: Arc<Mutex<Option<UpdateState>>> =
-                                Arc::new(Mutex::new(None));
-                            let slot = state_slot.clone();
-                            std::thread::spawn(move || {
-                                let result = match self_update::check_latest_version() {
-                                    Some((tag, _name)) => UpdateState::Available(tag),
-                                    None => UpdateState::UpToDate,
-                                };
-                                if let Ok(mut s) = slot.lock() {
-                                    *s = Some(result);
-                                }
-                                ctx.request_repaint();
-                            });
-                            self._update_check_slot = Some(state_slot);
+                            self.start_update_check(ui.ctx());
                         }
                     }
                     UpdateState::Checking => {
@@ -207,6 +207,15 @@ impl ReaderApp {
                                 .size(12.0)
                                 .color(egui::Color32::GRAY),
                         );
+                        if ui.button(self.i18n.t("update.check")).clicked() {
+                            self.start_update_check(ui.ctx());
+                        }
+                    }
+                    UpdateState::CheckFailed(_) => {
+                        ui.label(self.i18n.t("common.error_check_update_failed"));
+                        if ui.button(self.i18n.t("update.check")).clicked() {
+                            self.start_update_check(ui.ctx());
+                        }
                     }
                     UpdateState::Failed(msg) => {
                         let msg = msg.clone();
@@ -222,7 +231,7 @@ impl ReaderApp {
                             )
                             .clicked()
                         {
-                            self.update_state = UpdateState::Idle;
+                            self.start_update_check(ui.ctx());
                         }
                     }
                     UpdateState::Restarting => {
@@ -346,4 +355,59 @@ fn open_url(url: &str) -> Result<(), std::io::Error> {
         std::process::Command::new("xdg-open").arg(url).spawn()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn up_to_date_and_check_failure_keep_a_visible_retry_control() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = ReaderApp::from_data_dir(directory.path().to_string_lossy().into_owned());
+        fn collect(shape: &egui::Shape, text: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, text)),
+                egui::Shape::Text(s) => text.push(s.galley.job.text.clone()),
+                _ => {}
+            }
+        }
+        for language in [
+            reader_core::i18n::Language::ZhCN,
+            reader_core::i18n::Language::En,
+        ] {
+            app.i18n = reader_core::i18n::I18n::with_system(language, "en");
+            for state in [
+                UpdateState::UpToDate,
+                UpdateState::CheckFailed("fixture internal error".into()),
+            ] {
+                app.update_state = state;
+                app.show_about = true;
+                let ctx = egui::Context::default();
+                ctx.style_mut(|s| s.animation_time = 0.);
+                let mut painted = Vec::new();
+                for _ in 0..3 {
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1000., 900.),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| app.render_about(ctx),
+                    );
+                    for shape in output.shapes {
+                        collect(&shape.shape, &mut painted);
+                    }
+                }
+                assert!(
+                    painted.iter().any(|s| s == app.i18n.t("update.check")),
+                    "{painted:?}"
+                );
+                assert!(!painted.iter().any(|s| s.contains("fixture internal error")));
+            }
+        }
+    }
 }

@@ -76,15 +76,20 @@ struct MatchedAsset {
 // ─── 公开 API ──────────────────────────────────────────────────────
 
 /// 检查最新版本信息（不下载）。
-/// 返回 `Some((tag_name, release_name))` 如果有更新，`None` 如果已是最新或检查失败。
-pub fn check_latest_version() -> Option<(String, String)> {
-    let latest = fetch_latest_release(&build_http_client().ok()?).ok()?;
+/// A successful check is independent of installation assets; failures stay errors.
+pub fn check_latest_version() -> Result<Option<(String, String)>> {
+    let latest = fetch_latest_release(&build_http_client()?)?;
+    available_update(latest, CURRENT_VERSION)
+}
+
+fn available_update(latest: ReleaseInfo, current: &str) -> Result<Option<(String, String)>> {
     if latest.draft || latest.prerelease {
-        return None;
+        return Ok(None);
     }
-    let tag = latest.tag_name?;
-    (release_version(&tag)? > release_version(CURRENT_VERSION)?)
-        .then(|| (tag, latest.name.unwrap_or_default()))
+    let tag = latest.tag_name.context("latest release missing tag_name")?;
+    let remote = release_version(&tag).context("invalid latest release version")?;
+    let local = release_version(current).context("invalid current app version")?;
+    Ok((remote > local).then(|| (tag, latest.name.unwrap_or_default())))
 }
 
 /// 执行完整的更新检查与下载流程（阻塞）。
@@ -212,7 +217,10 @@ fn github_latest_release_url() -> String {
 }
 
 fn fetch_latest_release(client: &Client) -> Result<ReleaseInfo> {
-    let url = github_latest_release_url();
+    fetch_release_at(client, &github_latest_release_url())
+}
+
+fn fetch_release_at(client: &Client, url: &str) -> Result<ReleaseInfo> {
     let resp = client
         .get(url)
         .header(ACCEPT, "application/vnd.github+json")
@@ -619,9 +627,74 @@ fn windows_apply_and_restart(tmp_file: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_download_urls, get_accelerated_url, platform_keywords, release_version,
-        select_release_asset,
+        available_update, build_download_urls, fetch_release_at, get_accelerated_url,
+        platform_keywords, release_version, select_release_asset,
     };
+
+    fn local_response(status: u16, body: &str) -> anyhow::Result<super::ReleaseInfo> {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/latest", listener.local_addr().unwrap());
+        let body = body.to_owned();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let result = fetch_release_at(&client, &url);
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn release_detection_does_not_require_matching_installation_assets() {
+        let latest =
+            local_response(200, r#"{"tag_name":"v2.0.0","name":"2.0.0","assets":[]}"#).unwrap();
+        let update = available_update(latest, "1.0.8").unwrap();
+        assert_eq!(update.unwrap().0, "v2.0.0");
+    }
+
+    #[test]
+    fn failed_checks_are_not_reported_as_up_to_date() {
+        for status in [403, 429, 500] {
+            let result = local_response(status, r#"{"message":"rate limited or unavailable"}"#)
+                .and_then(|release| available_update(release, "1.0.8"));
+            match crate::app::UpdateState::from_update_check(result) {
+                crate::app::UpdateState::CheckFailed(reason) => {
+                    assert!(reason.contains(&status.to_string()), "{reason}")
+                }
+                state => panic!("failed HTTP response became {state:?}"),
+            }
+        }
+        assert!(local_response(200, "not JSON").is_err());
+        let missing_tag = local_response(200, r#"{"assets":[]}"#).unwrap();
+        assert!(available_update(missing_tag, "1.0.8").is_err());
+        let malformed_tag = local_response(200, r#"{"tag_name":"vbad","assets":[]}"#).unwrap();
+        assert!(available_update(malformed_tag, "1.0.8").is_err());
+    }
+
+    #[test]
+    fn successful_checks_distinguish_newer_equal_and_older_releases() {
+        for (tag, newer) in [("v2.0.1", true), ("v2.0.0", false), ("v1.0.8", false)] {
+            let latest =
+                serde_json::from_value(serde_json::json!({"tag_name":tag,"assets":[]})).unwrap();
+            let state =
+                crate::app::UpdateState::from_update_check(available_update(latest, "2.0.0"));
+            assert!(matches!(state, crate::app::UpdateState::Available(_)) == newer);
+            if !newer {
+                assert!(matches!(state, crate::app::UpdateState::UpToDate));
+            }
+        }
+    }
 
     #[test]
     fn stable_release_versions_never_offer_a_downgrade() {
