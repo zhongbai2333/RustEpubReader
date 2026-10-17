@@ -8,7 +8,7 @@ epaint = { path = "vendor/epaint" }
 
 # App version: use python3 scripts/bump-version.py to update all platforms.
 [workspace.package]
-version = "2.0.0"
+version = "2.0.1"
 authors = ["zhongbai233"]
 license = "Apache-2.0"
 
