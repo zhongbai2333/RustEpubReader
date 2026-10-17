@@ -27,7 +27,7 @@ import UIKit
         frozen.accessibilityElementsHidden = true
         fadingAppearance = frozen
         window.addSubview(frozen)
-        DispatchQueue.main.async { [weak window] in
+        DispatchQueue.main.async { [weak self, weak window] in
             window?.layoutIfNeeded()
             UIView.animate(withDuration: 0.6, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) {
                 frozen.alpha = 0

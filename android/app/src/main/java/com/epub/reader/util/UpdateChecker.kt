@@ -1,6 +1,7 @@
 package com.zhongbai233.epub.reader.util
 
 import android.util.Log
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -32,7 +33,6 @@ object UpdateChecker {
      */
     suspend fun checkForUpdate(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val currentTag = "v$currentVersion"
             val conn = URL(API_URL).openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/vnd.github+json")
@@ -52,7 +52,7 @@ object UpdateChecker {
             val tagName = json.optString("tag_name", "")
             val releaseName = json.optString("name", "")
 
-            if (tagName.isEmpty() || tagName == currentTag) {
+            if (json.optBoolean("draft") || json.optBoolean("prerelease") || !isNewerRelease(tagName, currentVersion)) {
                 return@withContext null
             }
 
@@ -60,15 +60,11 @@ object UpdateChecker {
 
             // 查找 Android APK 资产
             val assets = json.optJSONArray("assets") ?: return@withContext null
-            var githubDownloadUrl: String? = null
-            for (i in 0 until assets.length()) {
+            val candidates = (0 until assets.length()).map { i ->
                 val asset = assets.getJSONObject(i)
-                val name = asset.optString("name", "")
-                if (name.contains("Android") && name.endsWith(".apk")) {
-                    githubDownloadUrl = asset.optString("browser_download_url", "")
-                    break
-                }
+                asset.optString("name", "") to asset.optString("browser_download_url", "")
             }
+            val githubDownloadUrl = matchingApk(candidates, Build.SUPPORTED_ABIS.toList())
 
             val resolvedGithubUrl = githubDownloadUrl?.takeIf { it.isNotBlank() } ?: releasePageUrl
             val resolvedCdnUrl = getAcceleratedUrl(resolvedGithubUrl)

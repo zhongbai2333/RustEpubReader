@@ -6,9 +6,9 @@ resolver = "2"
 # Keep egui 0.31's public API while fixing Unicode line breaking in its renderer.
 epaint = { path = "vendor/epaint" }
 
-# ── Unified app version (edit here to update globally) ──
+# App version: use python3 scripts/bump-version.py to update all platforms.
 [workspace.package]
-version = "1.0.8"
+version = "2.0.0"
 authors = ["zhongbai233"]
 license = "Apache-2.0"
 

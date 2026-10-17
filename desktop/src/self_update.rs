@@ -35,6 +35,8 @@ pub enum UpdateOutcome {
     Skipped,
     /// 已启动更新流程（即将重启）
     UpdateLaunched,
+    /// The packaged release requires installation by the user.
+    DownloadPageOpened,
 }
 
 /// 更新进度回调，签名: (已下载字节, 总字节)
@@ -47,6 +49,10 @@ struct ReleaseInfo {
     name: Option<String>,
     tag_name: Option<String>,
     assets: Vec<ReleaseAsset>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,11 +66,11 @@ struct ReleaseAsset {
 
 #[derive(Debug, Clone)]
 struct MatchedAsset {
-    release_name: String,
     tag_name: String,
     download_urls: Vec<String>,
     size: u64,
     sha256: Option<String>,
+    packaged: bool,
 }
 
 // ─── 公开 API ──────────────────────────────────────────────────────
@@ -72,14 +78,13 @@ struct MatchedAsset {
 /// 检查最新版本信息（不下载）。
 /// 返回 `Some((tag_name, release_name))` 如果有更新，`None` 如果已是最新或检查失败。
 pub fn check_latest_version() -> Option<(String, String)> {
-    let current_tag = format!("v{CURRENT_VERSION}");
-    let matched = get_latest_release_asset().ok()?;
-
-    if matched.tag_name != current_tag {
-        Some((matched.tag_name, matched.release_name))
-    } else {
-        None
+    let latest = fetch_latest_release(&build_http_client().ok()?).ok()?;
+    if latest.draft || latest.prerelease {
+        return None;
     }
+    let tag = latest.tag_name?;
+    (release_version(&tag)? > release_version(CURRENT_VERSION)?)
+        .then(|| (tag, latest.name.unwrap_or_default()))
 }
 
 /// 执行完整的更新检查与下载流程（阻塞）。
@@ -89,12 +94,18 @@ pub fn perform_update(on_progress: Option<ProgressCallback>) -> Result<UpdateOut
         return Ok(UpdateOutcome::Skipped);
     }
 
-    let current_tag = format!("v{CURRENT_VERSION}");
     let matched = get_latest_release_asset()?;
-
-    let is_new = matched.tag_name != current_tag;
-
-    if !is_new {
+    let remote =
+        release_version(&matched.tag_name).ok_or_else(|| anyhow!("invalid release version"))?;
+    let local = release_version(CURRENT_VERSION).ok_or_else(|| anyhow!("invalid app version"))?;
+    if remote < local {
+        return Ok(UpdateOutcome::UpToDate);
+    }
+    if remote == local {
+        // A package hash cannot be compared to the installed executable's hash.
+        if matched.packaged || cfg!(target_os = "macos") {
+            return Ok(UpdateOutcome::UpToDate);
+        }
         // 版本号相同 → 检查热补丁
         if let Some(expected) = matched.sha256.as_deref() {
             let self_hash = compute_file_sha256(&current_executable_path()?)?;
@@ -104,6 +115,15 @@ pub fn perform_update(on_progress: Option<ProgressCallback>) -> Result<UpdateOut
             }
         }
         return Ok(UpdateOutcome::UpToDate);
+    }
+
+    if matched.packaged || cfg!(target_os = "macos") {
+        open::that(format!(
+            "https://github.com/{OWNER}/{REPO}/releases/tag/{}",
+            matched.tag_name
+        ))
+        .context("open official release download page")?;
+        return Ok(UpdateOutcome::DownloadPageOpened);
     }
 
     // 有新版本 → 下载并应用
@@ -118,10 +138,12 @@ pub fn check_hotfix_and_apply() -> Result<UpdateOutcome> {
         return Ok(UpdateOutcome::UpToDate);
     }
 
-    let current_tag = format!("v{CURRENT_VERSION}");
     let matched = get_latest_release_asset()?;
 
-    if matched.tag_name != current_tag {
+    if release_version(&matched.tag_name) != release_version(CURRENT_VERSION)
+        || matched.packaged
+        || cfg!(target_os = "macos")
+    {
         return Ok(UpdateOutcome::UpToDate);
     }
 
@@ -140,6 +162,28 @@ pub fn check_hotfix_and_apply() -> Result<UpdateOutcome> {
 
 fn eq_hash(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+fn release_version(tag: &str) -> Option<[u64; 3]> {
+    let parts = tag
+        .strip_prefix('v')
+        .unwrap_or(tag)
+        .split('.')
+        .collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return None;
+    }
+    let mut version = [0; 3];
+    for (index, part) in parts.into_iter().enumerate() {
+        if part.is_empty()
+            || !part.bytes().all(|c| c.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return None;
+        }
+        version[index] = part.parse().ok()?;
+    }
+    Some(version)
 }
 
 fn is_dev_build() -> bool {
@@ -187,9 +231,13 @@ fn fetch_latest_release(client: &Client) -> Result<ReleaseInfo> {
 /// - Windows: `Win64` / `WinArm64`
 /// - macOS:   `macOS-Intel` / `macOS-AppleSilicon` (also matches legacy `macOS_amd64` / `macOS_arm64`)
 fn detect_platform_keywords() -> Result<Vec<String>> {
-    let system = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
+    Ok(platform_keywords(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    ))
+}
 
+fn platform_keywords(system: &str, arch: &str) -> Vec<String> {
     let arch_key = match arch {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
@@ -197,20 +245,31 @@ fn detect_platform_keywords() -> Result<Vec<String>> {
     };
 
     match system {
-        "linux" => Ok(vec![format!("Linux_{arch_key}")]),
+        "linux" => vec![
+            format!(
+                "Linux-{}",
+                if arch_key == "amd64" { "x64" } else { arch_key }
+            ),
+            format!("Linux_{arch_key}"),
+        ],
         "windows" => match arch_key {
-            "arm64" => Ok(vec!["WinArm64".to_string()]),
-            _ => Ok(vec!["Win64".to_string()]),
+            "arm64" => vec!["Windows-arm64".to_string(), "WinArm64".to_string()],
+            _ => vec!["Windows-x64".to_string(), "Win64".to_string()],
         },
         "macos" => match arch_key {
-            "arm64" => Ok(vec![
+            "arm64" => vec![
+                "macOS-arm64".to_string(),
                 "macOS-AppleSilicon".to_string(),
                 "macOS_arm64".to_string(),
-            ]),
-            "amd64" => Ok(vec!["macOS-Intel".to_string(), "macOS_amd64".to_string()]),
-            _ => Ok(vec![format!("macOS_{arch_key}")]),
+            ],
+            "amd64" => vec![
+                "macOS-x64".to_string(),
+                "macOS-Intel".to_string(),
+                "macOS_amd64".to_string(),
+            ],
+            _ => vec![format!("macOS_{arch_key}")],
         },
-        other => Ok(vec![other.to_string()]),
+        other => vec![other.to_string()],
     }
 }
 
@@ -219,19 +278,28 @@ fn get_latest_release_asset() -> Result<MatchedAsset> {
     let latest = fetch_latest_release(&client)?;
 
     let platform_keys = detect_platform_keywords()?;
-    let release_name = latest.name.unwrap_or_default();
+    select_release_asset(latest, &platform_keys)
+}
+
+fn select_release_asset(latest: ReleaseInfo, platform_keys: &[String]) -> Result<MatchedAsset> {
+    if latest.draft || latest.prerelease {
+        return Err(anyhow!("release is not stable/public"));
+    }
     let tag_name = latest.tag_name.unwrap_or_default();
 
-    if tag_name.is_empty() {
-        return Err(anyhow!("latest release missing tag_name"));
+    if release_version(&tag_name).is_none() {
+        return Err(anyhow!("latest release has an invalid version tag"));
     }
 
     for asset in latest.assets {
         // 跳过 Android APK（桌面端不需要）
-        if asset.name.ends_with(".apk") {
+        if asset.name.ends_with(".apk") || asset.name.ends_with(".sha256") {
             continue;
         }
         if platform_keys.iter().any(|key| asset.name.contains(key)) {
+            let packaged = asset.name.ends_with(".zip")
+                || asset.name.ends_with(".dmg")
+                || asset.name.ends_with(".tar.gz");
             let original_url = asset.browser_download_url;
             let download_urls = build_download_urls(&original_url);
 
@@ -243,11 +311,11 @@ fn get_latest_release_asset() -> Result<MatchedAsset> {
                 .filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()));
 
             return Ok(MatchedAsset {
-                release_name,
                 tag_name,
                 download_urls,
                 size: asset.size.unwrap_or(0),
                 sha256,
+                packaged,
             });
         }
     }
@@ -550,7 +618,67 @@ fn windows_apply_and_restart(tmp_file: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_download_urls, get_accelerated_url};
+    use super::{
+        build_download_urls, get_accelerated_url, platform_keywords, release_version,
+        select_release_asset,
+    };
+
+    #[test]
+    fn stable_release_versions_never_offer_a_downgrade() {
+        assert!(release_version("v1.0.8") < release_version("2.0.0"));
+        assert_eq!(release_version("v2.0.0"), release_version("2.0.0"));
+        assert!(release_version("v2.10.0") > release_version("2.9.0"));
+        assert!(release_version("v2.0.0") > release_version("1.99.99"));
+        for tag in [
+            "",
+            "v2.0",
+            "v2.0.1-beta.1",
+            "v02.0.1",
+            "v2.0.1/other",
+            "v999999999999999999999.0.0",
+        ] {
+            assert!(release_version(tag).is_none(), "{tag}");
+        }
+    }
+
+    #[test]
+    fn all_current_desktop_release_packages_are_detected_as_packages() {
+        for (os, arch, label, extension) in [
+            ("windows", "x86_64", "Windows-x64", "zip"),
+            ("windows", "aarch64", "Windows-arm64", "zip"),
+            ("linux", "x86_64", "Linux-x64", "zip"),
+            ("linux", "aarch64", "Linux-arm64", "zip"),
+            ("macos", "x86_64", "macOS-x64", "dmg"),
+            ("macos", "aarch64", "macOS-arm64", "dmg"),
+        ] {
+            let name = format!("RustEpubReader-{label}-v2.0.0.{extension}");
+            let release = serde_json::from_value(serde_json::json!({
+                "tag_name":"v2.0.0", "name":"2.0.0", "assets":[
+                    {"name":format!("{name}.sha256"),"browser_download_url":"https://example.invalid/checksum"},
+                    {"name":name,"browser_download_url":"https://example.invalid/package"}
+                ]
+            })).unwrap();
+            let matched = select_release_asset(release, &platform_keywords(os, arch)).unwrap();
+            assert!(matched.packaged, "{label}");
+            assert_eq!(
+                matched.download_urls.last().unwrap(),
+                "https://example.invalid/package"
+            );
+        }
+    }
+
+    #[test]
+    fn draft_and_prerelease_update_payloads_are_rejected() {
+        for (draft, prerelease) in [(true, false), (false, true)] {
+            let release = serde_json::from_value(serde_json::json!({
+                "tag_name":"v2.0.1", "draft":draft,"prerelease":prerelease,"assets":[]
+            }))
+            .unwrap();
+            assert!(
+                select_release_asset(release, &platform_keywords("windows", "x86_64")).is_err()
+            );
+        }
+    }
 
     #[test]
     fn accelerated_url_maps_github_release_path() {

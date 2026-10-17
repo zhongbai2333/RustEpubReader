@@ -31,7 +31,7 @@ EPUB styles, media, and scripts have documented limits. Shared text coordinates 
 
 ## Sync and sharing
 
-**Multi-platform sync** is for your own devices: local-network pairing and GitHub private repositories can synchronize EPUB files, reading progress, and daily per-device reading/listening time. GitHub sync requires authorization and separate enablement. A remote position never silently moves the currently open book.
+**Multi-platform sync** is for your own devices: local-network pairing and GitHub private repositories can synchronize EPUB files, reading progress, and daily per-device reading/listening time. GitHub sync requires authorization and separate enablement. A newer accepted remote position automatically moves the open reader; the bottom-left return button goes back to the previous position.
 
 **Book sharing** sends selected books to other people using local-network transfers or encrypted GitHub share links/QR codes. It uses a separate flow and storage from private-library synchronization. Received books are validated before the recipient confirms import.
 

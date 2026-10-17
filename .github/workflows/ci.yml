@@ -54,6 +54,11 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
 
+            - name: Check app versions and version tooling
+              run: |
+                  python3 scripts/bump-version.py --check
+                  python3 scripts/test-bump-version.py
+
             - name: Install Linux dependencies
               run: |
                   sudo apt-get update

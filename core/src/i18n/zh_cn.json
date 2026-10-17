@@ -152,7 +152,7 @@
   "update.downloading": "正在下载更新…",
   "update.up_to_date": "已是最新版本",
   "update.new_version": "发现新版本: {}",
-  "update.download_update": "下载并更新",
+  "update.download_update": "下载新版本",
   "update.download_cdn": "CDN 下载",
   "update.download_github": "GitHub 下载",
   "update.failed": "更新失败: {}",
@@ -1009,5 +1009,6 @@
   "reader.sync_progress": "同步阅读进度",
   "reader.syncing_progress": "正在同步进度…",
   "reader.synced_position": "已跳转到同步位置",
-  "reader.return_position_detail": "返回 {0} · {1}"
+  "reader.return_position_detail": "返回 {0} · {1}",
+  "update.download_page_opened": "已打开下载页面，安装新版本后重新启动应用。"
 }

@@ -150,7 +150,7 @@ struct ReleaseInfo: Decodable { let tag_name: String; let draft: Bool; let prere
     @Published var newest: String?
     @Published var checking = false
     @Published var message: String?
-    var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.8" }
+    var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0" }
     static func components(_ version: String) -> [Int]? {
         let raw = version.hasPrefix("v") ? String(version.dropFirst()) : version
         let parts = raw.split(separator: ".", omittingEmptySubsequences: false)

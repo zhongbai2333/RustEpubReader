@@ -1,147 +1,104 @@
-# Pre-commit review — 2026-10-15
+# Pre-commit review — 2.0.0 preparation, 2026-10-17
 
-Base: `main` at `514f3e093b209f5df0bc646273b11f765d09b71f`.
-This review covers modified tracked files and all nonignored new source/assets.
-Nothing was staged, committed, pushed or published. Existing working changes were
-preserved. Applications and emulators were not started for this review.
+Base: `main` at `07d2efca9443e78412426b6db3fe8a6b2afa6926`.
+This review preserves the pre-existing version-tooling work and checks the full
+workspace before the 2.0.0 release. Nothing was staged, committed, tagged, pushed,
+or published. No application data, books, credentials, or build caches were removed.
 
-**Conclusion:** the local checks support committing this work for Windows and
-hosted-CI testing. They do not establish Windows/Linux runtime acceptance, user
-self-signing/physical iOS installation, or App Store readiness. The existing iOS
-private ambient-light API is a store-distribution finding; see below.
+## Version and fixes
 
-## Current change scope
+- Public desktop, Android and iOS/iPadOS version: **2.0.0**.
+- Android `versionCode`: **10**; iOS Debug/Release build: **1017.4**, above the
+  recently installed development build 1017.3. Internal Rust library versions
+  remain independent at 0.1.0. Cargo.lock matches the desktop package version.
+- The cross-platform bump script updates all version fields, supports previews
+  and build-only updates, validates starting consistency, and rolls back ordinary
+  write failures. CI tests it; Release checks the tag before starting builds.
+- Fixed a real update-notice bug: desktop and Android previously treated any
+  different tag as newer. Numeric stable-version comparisons now reject older,
+  identical, malformed and prerelease versions. iOS already compared versions.
+- Desktop recognizes all six current ZIP/DMG package labels. Packaged updates
+  open the official release page for user installation, with visible feedback;
+  they never enter raw-executable replacement or executable-hash hotfix checks.
+  Legacy raw replacement is retained for Windows/Linux. This review does not
+  claim automatic ZIP extraction or DMG installation.
+- Android chooses release APKs by the device's supported ABI order, rather than
+  taking the first Android asset. With no compatible asset it opens the release
+  page. Added regression cases for version ordering and ABI selection.
+- Removed the hardcoded iOS release-version fallback and fixed the compiler's
+  nested weak-capture warning in the appearance transition.
+- Updated both root READMEs and the iOS notes to describe automatic accepted
+  remote-position jumps and the return control accurately.
 
-| Group | Included changes |
+## Checks on this working tree
+
+Evidence: `target/release-health-20261017/` (local, ignored).
+
+| Check | Result / evidence |
 | --- | --- |
-| Shared font library | 20 downloadable OFL fonts (10 Chinese, 10 English), pinned URLs/checksums, full license notices, 20 offline specimen images, and two official-only personal-use entries |
-| Native clients | Font import/download/selection on desktop and Android; iOS app-local import, system font picker and restored font registration; desktop/iOS optional English override with persistent Follow Chinese Font selection |
-| Regressions | Desktop named font families reference only loaded fonts, including headless fallback; punctuation checks cover bundled fallback; shelf-animation tests use an explicit time sample |
-| iOS appearance | Deeper-dark threshold and asymmetric dwell times, with initial middle-band behavior and regression checks; existing appearance linkage retained |
-| Unsigned IPA | Device-archive packaging and verification, eight portable regressions, Actions artifacts, tag Release attachments/checksums, and self-signing instructions |
-| Documentation/CI | Font behavior and licensing, build/distribution instructions, updated checks, and Windows acceptance checklist |
+| Version/tag consistency | Passed for `v2.0.0`, `versions-final.log` |
+| Version updater | 8 passed; dry run, all increments, explicit versions, build-only updates, invalid inputs, CRLF, write rollback and concurrent edit preservation, `version-tests-final.log` |
+| Rust formatting / locked metadata | Passed, `fmt-final.log` / `metadata.json` |
+| Full workspace, all features | **243 passed, 0 failed, 4 ignored**, `rust-tests-final.log` |
+| Strict workspace Clippy, all targets/features | Passed, `clippy-final.log` |
+| Android JVM tests / Release lint | **44 passed, 0 failed/errors/skips**, lint passed, `android-checks-final.log` / `android-test-counts.json` |
+| iOS host checks | Layout, OAuth, appearance, reading modes, speech, contents and localization passed, `swift-*.log` |
+| Shared localization | **1012 keys, 1721 references, 0 errors**; seven invalid-input regressions rejected, `i18n-final.log` / `i18n-tests-final.log` |
+| Font catalog | 20 direct-download entries/previews and two official-only entries passed, `fonts-final.log` |
+| Unsigned IPA packager | 8 regressions passed, `ipa-tests.log` |
+| Workflow validation | All workflows passed actionlint, `actionlint-final.log` |
+| Local documentation links | 54 checked, no missing targets, `doc-links-final.json` |
+| Bounded credential/source scan | No known token/private-key patterns or local credential/data candidates found; not a security certification, `candidate-scan-final.json` |
+| macOS Release build | Passed, `desktop-release-final.log` |
+| Android three-ABI Release APKs | Passed for armeabi-v7a / arm64-v8a / x86_64, `android-release-final.log` / `artifact-checks.json` |
+| iOS simulator and unsigned device archive/IPA | Passed, `ios-simulator-final.log`, `ios-archive-final.log`, `ios-package-final.log`, `ios-package-verify.log` |
 
-Font binaries, books, models, credentials, SDKs, local settings and build outputs
-are not source candidates. The 20 PNG masks total **726,232 bytes**; real fonts
-remain optional downloads. Android retains one reading-font selection for both
-scripts; desktop and iOS have separate Chinese/English slots.
+The final catalog wording was also checked by a targeted Rust i18n run
+(`rust-i18n-final.log`) after the full workspace run.
 
-## Corrections made in this review
+The four opt-in Rust checks are cold-open profiling, a caller-supplied real-book
+coordinate audit, a Release pagination benchmark, and a downloaded Chinese
+corpus audit. They were not run in this review. Normal tests still cover native
+pagination, long paragraphs/tables, illustrations, lazy chapters, sync conflicts,
+archive lifecycle, chunked transfers, retry isolation, cancellation and restart
+navigation. No new whole-book performance benchmark is claimed.
 
-- Formatted the new font-picker actions in `desktop/src/ui/settings_new.rs`.
-  The initial formatting gate failed on those lines; the final gate passed.
-- Added `resources/**` to both push and pull-request path filters in CI.
-  Font-catalog, license or specimen-only changes now trigger validation/builds.
-- Replaced the accumulated report's stale counts and broad snapshot claims with
-  the current results below. The prior report is retained with local evidence.
-- Extended the Windows checklist for the new font flow and English override.
+Initial local Android attempts used a missing SDK path and a PATH without
+cargo-ndk. Both were environment setup failures; their logs are retained as
+`*-attempt.log`. Final checks use the existing project-local SDK/toolchain.
+Gradle reported that libandroid_bridge.so could not be stripped again; ELF
+inspection confirmed the library already has no debug/symbol-table sections.
+The iOS source warning was fixed; the remaining AppIntents extraction message
+says the project has no AppIntents dependency.
 
-## Checks run against the current source
+## Hosted CI and acceptance boundary
 
-All logs below are under `target/precommit-current-20261015/` (ignored locally).
+The latest existing hosted [CI run](https://github.com/zhongbai2333/RustEpubReader/actions/runs/38994413513)
+passed at the base commit above. It does **not** cover these uncommitted version,
+updater, workflow, translation or documentation changes. Run hosted CI after
+committing; Windows/Linux builds and runtime checks remain separate from this
+macOS review. Local checks used Rust 1.98, JDK 21, Android NDK 29 and Xcode 27.2;
+hosted CI selects NDK 26.1 and Xcode 26.3.
 
-| Check | Current result / log |
-| --- | --- |
-| Rust formatting | Passed, `fmt-final.log` |
-| Locked offline Cargo metadata | Passed, `metadata.json` / `metadata.log` |
-| Strict Clippy, workspace/all targets/all features | Passed, `clippy.log` |
-| Workspace tests, all features | **184 passed, 0 failed, 1 ignored**, `rust-tests.log`; the existing opt-in real-book corpus check remains ignored in this run |
-| Font catalog and actual downloaded files | 20 pinned binaries, all sizes/hashes/licenses verified; 20 specimen masks and two official-only entries passed, `catalog.log` |
-| Shared localization | **955 keys**, 1,584 references, zero errors; seven invalid-input regressions rejected, `i18n.log` / `i18n-tests.log` |
-| Android JVM tests | **37 passed, zero failures/errors/skips** across 11 suites, `android-checks.log` / `test-counts.json` |
-| Android Release lint | Passed in the Gradle check; native bridge build excluded from this check, `android-checks.log` |
-| iOS host checks | All seven groups passed: layout, OAuth, appearance, reading mode, speech, contents and localization, `swift-*.log` |
-| Unsigned IPA packaging regressions | **8 passed**, `ipa-tests.log` |
-| Workflow syntax/expressions | Passed with actionlint, `actionlint.log` |
-| Local documentation links and whitespace | Passed, `doc-links.json` / `diff-check.log` |
-| Candidate scan | No known token/private-key pattern matches or local credential/data candidates; bounded scan only, `candidate-scan.json` |
+Prior native navigation runtime evidence is retained in
+`target/reader-navigation-20261017/`, with an explicit source comparison in
+`navigation-evidence-binding.json`. It is not a new 2.0.0 runtime run. The recent
+physical iPhone/iPad installation evidence is for **1.0.8 (1017.3)**; this review
+does not install 2.0.0 or claim physical acceptance. No live GitHub account sync,
+real-device conflict session, new performance measurement, or user acceptance
+was performed in this review.
 
-Rust tests include the three new desktop font-library tests with all 20 actual
-font files supplied through `READER_FONT_FIXTURES`. No live GitHub account or
-three-device sync acceptance is inferred from unit/protocol checks.
+Android APKs in this local review use the existing development-signing fallback;
+the hosted release workflow can use its configured release signing secrets. The
+generated iOS IPA is unsigned and requires the user's signing identity,
+matching provisioning profile and re-signing of embedded frameworks. The existing
+private ambient-light implementation is retained; this review does not establish
+App Store readiness. Publisher signing, TestFlight, App Store upload and macOS
+notarization are not part of this run.
 
-The review used macOS, Rust 1.98, JDK 21 and the installed local Android SDK;
-Swift checks used Xcode 27.2. Hosted CI selects Xcode 26.3 and a different Android
-NDK. Passing locally does not claim a run on those hosted versions.
-
-## Earlier build/runtime evidence and source binding
-
-The immediately preceding font-library verification includes real macOS Release,
-three Android ABI Release APKs, iOS device Release archive and simulator builds,
-as well as native font-import/rendering checks and font-setting persistence.
-Those records remain in `target/font-preview-20-20261015/`; they were not rerun
-as application builds or UI sessions for this review.
-
-Comparison with its 76-file final source manifest found changes only in CI, this
-report, and the desktop settings formatting fixed above. All other recorded
-native source/assets still match. Current compilation/Clippy/tests cover the
-formatted desktop source. This is an explicit evidence comparison, not a claim
-that an older artifact was rebuilt from the final review manifest.
-
-The IPA follow-up records in `target/ios-unsigned-ipa-ci-20261015/` verify the
-actual workflow packaging/supporting-artifact commands using the existing real
-arm64 Release archive, all 57 application/framework/resource files, checksum
-verification and Release asset patterns. Its 13-file source manifest differs
-only in the CI resource-trigger addition. The resulting IPA is about 13.10 MB.
-No GitHub upload, hosted Actions run, signing or physical installation occurred.
-
-Other retained evidence:
-
-- `target/ci-font-fallback-20261015/`: reproduced missing-font panic, fix, actual
-  egui renders across eight font-availability combinations and deterministic
-  shelf-animation regression.
-- `target/ios-ambient-sensitivity-20261015/`: policy checks, shared linkage and
-  native simulator checks with injected readings. Physical sensor calibration
-  and subjective room-light acceptance remain pending.
-- `target/precommit-20261015-final-review/` and
-  `target/precommit-expert-review-20261015/`: older broad gates and independent
-  copy/source-evidence review. Their old test counts are not current results.
-
-## Open finding: private iOS ambient-light APIs
-
-[IOHIDAmbientLightReader.swift](../ios/Reader/IOHIDAmbientLightReader.swift)
-loads IOKit and private IOHID functions on physical devices in Debug and Release;
-simulator builds return unavailable. Policy input uses native readings rather
-than calibrated lux. This review preserves the existing product behavior.
-
-[Apple App Review Guideline 2.5.1](https://developer.apple.com/app-store/review/guidelines/#software-requirements)
-requires public APIs (rechecked on 2026-10-15). A public-API-only distribution
-variant or a product decision is needed before treating this implementation as
-App Store ready. An unsigned build or paid developer membership does not settle
-this finding.
-
-## Submission and acceptance boundary
-
-Suggested commit groups, without staging any files:
-
-1. Shared font catalog/assets, all three native client integrations, localization,
-   font-specific tests and [font documentation](FONTS.md). Include all new files;
-   a tracked-modifications-only commit will omit required modules/resources.
-2. Desktop headless font fallback, punctuation regression and deterministic shelf
-   animation tests.
-3. iOS ambient policy and its checks/documentation.
-4. Unsigned IPA packager/tests, CI/Release integration and signing/build docs.
-
-Shared documentation and CI hunks overlap these groups; keep the final font
-resource-trigger fix and synchronized review/checklist with the completed set.
-Avoid committing a partially split state that references absent new modules.
-
-Before release acceptance:
-
-- Run the updated hosted CI, including Linux tests and Windows x64/arm64 packages.
-  Follow [Windows testing](WINDOWS_TESTING.md) for DPI, fonts, reading, credentials,
-  sync/share and normal exit behavior. No Linux/Windows host success is claimed.
-- Test user self-signing and physical installation, including embedded frameworks,
-  matching bundle ID/keychain access groups and the Fonts app-usage entitlement.
-  See [unsigned IPA instructions](../ios/UNSIGNED_IPA.md). Automatic signing,
-  TestFlight/App Store publishing and macOS notarization remain separate work.
-- Exercise physical iOS sensor behavior, supported/minimum OS versions, real
-  authorization and cross-device transfers. Prior successful local font checks
-  are narrower evidence; a prior Android menu ANR recovered after preview restart
-  has no established cause or independently verified fix.
-
-The two previously owned keepalive preview jobs were removed before this review;
-their registrations and processes were checked absent. Do not recreate them for
-manual previews. Source fingerprints and machine-readable results for this review
-are saved as `source-final.json` and `verification.json` in the current evidence
-directory. No cleanup of user data or build caches was performed.
+Include the new `scripts/bump-version.py`, `scripts/test-bump-version.py`, Android
+`ReleaseVersion.kt` and `ReleaseVersionTest.kt` when committing; updating only
+tracked files would omit them. Exclude local build/evidence files and runtime
+data. After committing the reviewed tree, wait for its CI result before creating
+and publishing the `v2.0.0` release tag. Final source and artifact fingerprints are
+recorded in `source-final.json` and `verification.json` under the evidence path.

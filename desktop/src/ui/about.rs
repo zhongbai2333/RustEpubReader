@@ -162,6 +162,9 @@ impl ReaderApp {
                                     Ok(self_update::UpdateOutcome::UpdateLaunched) => {
                                         UpdateState::Restarting
                                     }
+                                    Ok(self_update::UpdateOutcome::DownloadPageOpened) => {
+                                        UpdateState::DownloadPageOpened
+                                    }
                                     Ok(_) => UpdateState::UpToDate,
                                     Err(e) => UpdateState::Failed(e.to_string()),
                                 };
@@ -228,6 +231,9 @@ impl ReaderApp {
                                 .size(13.0)
                                 .color(egui::Color32::from_rgb(80, 200, 120)),
                         );
+                    }
+                    UpdateState::DownloadPageOpened => {
+                        ui.label(self.i18n.t("update.download_page_opened"));
                     }
                 });
 

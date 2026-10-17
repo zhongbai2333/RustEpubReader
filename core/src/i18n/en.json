@@ -152,7 +152,7 @@
   "update.downloading": "Downloading update…",
   "update.up_to_date": "You are up to date",
   "update.new_version": "New version available: {}",
-  "update.download_update": "Download & Update",
+  "update.download_update": "Download new version",
   "update.download_cdn": "CDN Download",
   "update.download_github": "GitHub Download",
   "update.failed": "Update failed: {}",
@@ -1009,5 +1009,6 @@
   "reader.sync_progress": "Sync reading progress",
   "reader.syncing_progress": "Syncing progress…",
   "reader.synced_position": "Moved to synced position",
-  "reader.return_position_detail": "Return to {0} · {1}"
+  "reader.return_position_detail": "Return to {0} · {1}",
+  "update.download_page_opened": "Download page opened. Install the new version, then restart the app."
 }

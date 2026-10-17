@@ -128,7 +128,9 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
 - Blocking Rust network work runs on a worker. Downloads are staged and parsed
   before publishing; apply merges against the latest local journal under serialized
   storage access. Invalid remote text coordinates cannot overwrite local positions.
-  Open-book progress is offered as an explicit jump; reading is not moved silently.
+  Accepted newer progress automatically moves the open reader with a native
+  transition and a bottom-left return button. Long-press the button for the
+  previous chapter/page. A newer local turn cancels an obsolete pending jump.
 - Foreground sync runs on enable, foreground entry, manual request and every five
   minutes while active. Background, disable, cancellation and account changes
   invalidate Swift intent and native epoch. Stale prepared results cannot apply.
@@ -140,7 +142,8 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
   broadcast or discover peers automatically. Listener startup, active sockets and
   staged apply are invalidated on cancellation/background. Peer keys use Keychain;
   decrypted EPUBs are bounded, hashed and parsed before managed-library insertion.
-  Incoming progress for the open book is offered, never applied silently.
+  Accepted newer progress for the open book uses the same automatic jump and
+  return history as GitHub sync.
 
 ## Private sensor API and distribution
 

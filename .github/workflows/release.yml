@@ -18,8 +18,21 @@ permissions:
     contents: write
 
 jobs:
+    verify-version:
+        name: Verify release tag matches all app versions
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ env.RELEASE_TAG }}
+
+            - name: Check release version
+              run: python3 scripts/bump-version.py --check --tag "$RELEASE_TAG"
+
     build-desktop:
         name: Build desktop release packages
+        needs: verify-version
         uses: ./.github/workflows/desktop-build.yml
         with:
             ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -28,6 +41,7 @@ jobs:
 
     build-android:
         name: Build Android release APKs
+        needs: verify-version
         uses: ./.github/workflows/android-build.yml
         with:
             ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -37,6 +51,7 @@ jobs:
 
     build-ios:
         name: Build iOS unsigned release IPA
+        needs: verify-version
         uses: ./.github/workflows/ios-build.yml
         with:
             ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}

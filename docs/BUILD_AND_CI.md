@@ -14,6 +14,54 @@
 Both `ios/**` and `ios-bridge/**` trigger CI. Shared Swift scheme and
 `Package.resolved` belong in Git; local Xcode user state and runtime data do not.
 
+## App versions
+
+Use Python 3.9 or newer from any platform; no extra packages are needed:
+
+```sh
+python3 scripts/bump-version.py --check
+python3 scripts/bump-version.py patch --dry-run
+python3 scripts/bump-version.py patch       # 1.0.8 -> 1.0.9
+python3 scripts/bump-version.py minor       # increment minor, reset patch
+python3 scripts/bump-version.py major       # increment major, reset minor/patch
+python3 scripts/bump-version.py 1.2.0       # choose a greater stable X.Y.Z
+python3 scripts/bump-version.py --build-only
+```
+
+Each update changes the workspace app version, the desktop's entry in
+`Cargo.lock`, Android `APP_VERSION_NAME` / `APP_VERSION_CODE`, and all iOS
+`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` settings. Build numbers increment
+automatically; internal Rust library versions and locked dependencies stay as
+they are. `--build-only` keeps the displayed app version. `--dry-run` shows the
+diff without writing. The script rejects inconsistent starting versions,
+downgrades, and missing fields before writing; ordinary write failures roll back
+completed writes. Review the resulting diff before committing.
+
+If a local test installation used build-number overrides, pass greater numbers
+explicitly, for example:
+
+```sh
+python3 scripts/bump-version.py --build-only --ios-build 1017.4 --android-code 10
+```
+
+The defaults come from committed project files, not connected devices or previous
+build outputs. Xcode/Gradle command-line overrides still take precedence when
+building. This script does not build, sign, install, commit, tag, or publish.
+
+CI checks version consistency and tests the updater. Release builds first require
+the tag to equal the source version, using
+`python3 scripts/bump-version.py --check --tag v1.0.8`. Create/push that tag only
+after committing the intended version changes. Historical examples, test fixtures
+and third-party versions are not updated by the script.
+
+Desktop and Android update notices compare numeric stable versions, so an older
+published release is not offered to a newer test build. Android chooses an APK
+matching the device's supported ABIs; if no match exists, it opens the release
+page. Desktop ZIP/DMG updates open the official release page for installation by
+the user, with an inline confirmation. Packaged archives are never used as raw
+executable replacements or compared against the installed executable for hotfixes.
+Legacy raw executable replacement remains available on Windows/Linux.
+
 ## iOS environment and artifacts
 
 The iOS workflow uses `macos-15` (arm64) and explicitly selects Xcode 26.3.
@@ -66,6 +114,8 @@ currently launch them in a simulator/emulator.
 Run from the repository root:
 
 ```sh
+python3 scripts/bump-version.py --check
+python3 scripts/test-bump-version.py
 cargo fmt --all -- --check
 cargo metadata --locked --format-version 1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
