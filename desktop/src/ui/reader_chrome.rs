@@ -14,6 +14,11 @@ pub(crate) struct ReaderChromeState {
 }
 
 impl ReaderChromeState {
+    pub(crate) fn reveal(&mut self, now: f64) {
+        self.active = true;
+        self.visible = true;
+        self.last_engaged = now;
+    }
     pub(crate) fn toggle(&mut self, now: f64) {
         if self.last_toggle == Some(now) {
             return;
@@ -94,6 +99,15 @@ impl ReaderApp {
             .is_some_and(|t| now - t >= 0.12);
         let over_bar =
             focused && self.reader_chrome.visible && pointer.is_some_and(|p| slot.contains(p));
+        let over_return = self.reader_chrome.visible
+            && !self.reader_navigation.history.is_empty()
+            && pointer.is_some_and(|p| {
+                egui::Rect::from_min_size(
+                    egui::pos2(paper.left() + 16., paper.bottom() - 60.),
+                    egui::vec2(320., 44.),
+                )
+                .contains(p)
+            });
         let tools_busy = self.show_reader_introduction
             || ctx.memory(|m| m.any_popup_open())
             || ctx.wants_keyboard_input()
@@ -114,7 +128,7 @@ impl ReaderApp {
             hover_reveal
                 || reveal_key
                 || ctx.memory(|m| m.is_popup_open(egui::Id::new("reader_quick_menu"))),
-            over_bar || tools_busy || (focused && pointer_down),
+            over_bar || over_return || tools_busy || (focused && pointer_down),
         );
         if !tools_busy && (self.page_curl.busy() || self.page_anim_progress < 1.) {
             self.reader_chrome.visible = false;
@@ -171,6 +185,20 @@ impl ReaderApp {
                     }
                     self.render_reader_menu_button(ui);
                 });
+            if !self.reader_navigation.history.is_empty() {
+                egui::Area::new(egui::Id::new("reader_return_anchor"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(paper.left() + 16., paper.bottom() - 60.))
+                    .constrain(false)
+                    .fade_in(false)
+                    .show(ctx, |ui| {
+                        ui.set_opacity(progress);
+                        if !self.reader_chrome.visible {
+                            ui.disable();
+                        }
+                        self.render_reader_return(ui);
+                    });
+            }
         }
     }
 }

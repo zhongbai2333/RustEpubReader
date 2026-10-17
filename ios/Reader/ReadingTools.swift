@@ -14,6 +14,8 @@ struct ReadingToolsMenu: UIViewRepresentable {
     var night: Bool
     var dayNight: () -> Void
     var visibility: (Bool) -> Void
+    var synchronize: () -> Void = {}
+    var syncing = false
     typealias Coordinator = ReaderQuickMenuCoordinator
     func makeCoordinator() -> ReaderQuickMenuCoordinator { ReaderQuickMenuCoordinator(self) }
     func makeUIView(context: Context) -> ReaderMenuButton {
@@ -592,5 +594,28 @@ struct ReadingIntroductionView: View {
                 Text(L(body)).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.accessibilityElement(children: .combine)
+    }
+}
+
+struct ReadingReturnButton: View {
+    let point: ReadingReturnPoint
+    let expanded: Bool
+    let action: () -> Void
+    private var detail: String { L("reader.return_position_detail", point.chapterTitle, point.pageLabel) }
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 0) {
+                Image(systemName: "arrow.uturn.backward").font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44)
+                if expanded {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(point.chapterTitle).font(.caption.weight(.medium)).lineLimit(1)
+                        Text(point.pageLabel).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }.padding(.trailing,12)
+                }
+            }.contentShape(Capsule())
+        }.buttonStyle(.plain).readerGlass(in: Capsule(), interactive: true)
+            .accessibilityLabel(L("reader.return_position")).accessibilityHint(detail)
+            .contextMenu { Button(action: action) { Label(detail, systemImage: "arrow.uturn.backward") } }
+            .transition(.opacity)
     }
 }

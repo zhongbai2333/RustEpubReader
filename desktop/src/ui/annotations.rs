@@ -31,7 +31,7 @@ impl ReaderApp {
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // ── Bookmarks list ──
-                    ui.collapsing(self.i18n.t("annotations.bookmarks"), |ui| {
+                    ui.collapsing(self.i18n.t("annotations.bookmarks").to_owned(), |ui| {
                         let bookmarks = self
                             .book_config
                             .as_ref()
@@ -50,9 +50,14 @@ impl ReaderApp {
                                     .map(|c| c.title.clone())
                                     .unwrap_or_else(|| format!("Ch.{}", bm.chapter));
                                 if ui.link(&title).clicked() {
-                                    self.current_chapter = bm.chapter;
-                                    self.pages_dirty = true;
-                                    self.current_page = 0;
+                                    self.navigate_reader(
+                                        super::reader_navigation::ReaderLocation {
+                                            chapter: bm.chapter,
+                                            block: bm.block,
+                                            char_offset: 0,
+                                        },
+                                        super::reader_navigation::NavigationKind::Local,
+                                    );
                                 }
                                 if ui.small_button("x").clicked() {
                                     to_remove = Some(idx);
@@ -70,7 +75,7 @@ impl ReaderApp {
                     ui.add_space(4.0);
 
                     // ── Highlights grouped by chapter ──
-                    ui.collapsing(self.i18n.t("annotations.highlights"), |ui| {
+                    ui.collapsing(self.i18n.t("annotations.highlights").to_owned(), |ui| {
                         let highlights = self
                             .book_config
                             .as_ref()
@@ -151,9 +156,14 @@ impl ReaderApp {
                                             display
                                         };
                                         if ui.link(&label_text).clicked() {
-                                            self.current_chapter = hl.chapter;
-                                            self.pages_dirty = true;
-                                            self.current_page = 0;
+                                            self.navigate_reader(
+                                                super::reader_navigation::ReaderLocation {
+                                                    chapter: hl.chapter,
+                                                    block: hl.start_block,
+                                                    char_offset: hl.start_offset,
+                                                },
+                                                super::reader_navigation::NavigationKind::Local,
+                                            );
                                         }
                                         if ui.small_button("x").clicked() {
                                             to_remove = Some(*global_idx);

@@ -43,6 +43,10 @@ struct Index {
 }
 
 impl ChapterStore {
+    /// Warm one chapter without cloning the publication or changing its visible window.
+    pub fn prefetch(&self, index: usize) -> Result<(), String> {
+        self.load(index).map(|_| ())
+    }
     pub(super) fn relocate(&self, path: &Path) -> Result<(), String> {
         let epub = Arc::new(RbookEpub::open(path).map_err(|_| "Cannot relocate EPUB archive")?);
         self.resources.relocate(path)?;

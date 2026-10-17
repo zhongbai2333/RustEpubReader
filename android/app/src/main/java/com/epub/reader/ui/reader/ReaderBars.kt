@@ -6,6 +6,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.rememberTransition
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.semantics.Role
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -13,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
@@ -57,7 +61,7 @@ internal fun ReaderTopBar(
     Row(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ReaderCircleButton(Icons.Default.Close, I18n.t("nav.back_to_library"), action = onNavigateBack)
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            Surface(Modifier.widthIn(max = 420.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)) {
+            Surface(Modifier.widthIn(max = 420.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if(chapterTitle != null) Text("${currentChapter + 1}/$totalChapters · $chapterTitle", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -95,6 +99,8 @@ internal fun ReaderBottomBar(
     onToggleSearch: () -> Unit,
     onShowStatistics: () -> Unit,
     onOpenSettings: () -> Unit,
+    onSyncProgress: () -> Unit = {},
+    syncingProgress: Boolean = false,
 ) {
     var more by rememberSaveable { mutableStateOf(false) }
     val screen = LocalConfiguration.current
@@ -112,6 +118,7 @@ internal fun ReaderBottomBar(
                 if(more) {
                     ReaderMenuRow(Icons.AutoMirrored.Filled.ArrowBack,I18n.t("settings.back")) {more=false}
                     HorizontalDivider(Modifier.padding(horizontal=16.dp,vertical=4.dp))
+                    ReaderMenuRow(Icons.Default.Sync, I18n.t(if(syncingProgress) "reader.syncing_progress" else "reader.sync_progress")) { if (!syncingProgress) choose(onSyncProgress) }
                     ReaderMenuRow(Icons.Default.Search, I18n.t("reader.search_book")) {choose(onToggleSearch)}
                     ReaderMenuRow(Icons.Default.BarChart, I18n.t("toolbar.stats")) {choose(onShowStatistics)}
                     ReaderMenuRow(Icons.Default.Spellcheck, I18n.t("reader.correction")) {choose(onOpenCorrection)}
@@ -219,4 +226,31 @@ private fun ReaderMenuTile(modifier: Modifier, icon: ImageVector, label: String,
 private fun ReaderMenuRow(icon: ImageVector, label: String, action: () -> Unit) {
     DropdownMenuItem(text = { Text(label, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         leadingIcon = { Icon(icon, null, Modifier.size(22.dp)) }, onClick = action, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp))
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+internal fun ReaderReturnButton(point: com.zhongbai233.epub.reader.model.ReaderReturnPoint, expanded: Boolean, action: () -> Unit) {
+    val detail = I18n.tf2("reader.return_position_detail", point.chapterTitle, point.pageLabel)
+    val tooltip = rememberTooltipState()
+    val scope = rememberCoroutineScope()
+    TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(detail) } }, state = tooltip, enableUserInput = false) {
+        Surface(shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f), shadowElevation = 2.dp,
+            modifier = Modifier.widthIn(max = 280.dp)
+                .combinedClickable(role = Role.Button, onClick = action, onLongClickLabel = detail,
+                    onLongClick = { scope.launch { tooltip.show() } })
+                .semantics { paneTitle = I18n.t("reader.return_position") }) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, I18n.t("reader.return_position"), Modifier.size(22.dp))
+                }
+                if (expanded) Column(Modifier.padding(end = 12.dp)) {
+                    Text(point.chapterTitle, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(point.pageLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
 }

@@ -1004,5 +1004,10 @@
   "sync.auth_code_label": "Verification code",
   "sync.auth_purpose": "Sync books and progress through a private repository. Signing in does not upload books.",
   "sync.auth_copy_failed": "Copy failed. Select and copy the code manually.",
-  "sync.auth_browser_failed": "Could not open a browser. Visit github.com/login/device manually."
+  "sync.auth_browser_failed": "Could not open a browser. Visit github.com/login/device manually.",
+  "reader.return_position": "Return to previous position",
+  "reader.sync_progress": "Sync reading progress",
+  "reader.syncing_progress": "Syncing progress…",
+  "reader.synced_position": "Moved to synced position",
+  "reader.return_position_detail": "Return to {0} · {1}"
 }

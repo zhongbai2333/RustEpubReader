@@ -145,6 +145,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, vm) {
         val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) vm.persistReadingSession()
             if (event == Lifecycle.Event.ON_RESUME) {I18n.refreshSystemLanguage();vm.activityTracker.foreground=true;vm.activityTracker.touch()}
             if (event == Lifecycle.Event.ON_PAUSE) {vm.activityTracker.foreground=false;vm.activityTracker.pause()}
             if (event == Lifecycle.Event.ON_START) vm.setGithubSyncForeground(true)
@@ -431,9 +432,13 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             systemFonts = vm.systemFonts,
                             showToc = drawerState.isOpen,
                             onNavigateBack = { closeReader() },
-                            onChapterChange = { vm.goToChapter(it) },
+                            onChapterChange = { vm.goToChapter(it, remember = false) },
+                            onJumpToChapter = { vm.goToChapter(it) },
+                            returnPoint = vm.returnHistory.lastOrNull(), navigationPulse = vm.navigationPulse,
+                            onPageLabel = vm::updatePageLabel,
+                            onSyncProgress = { if(vm.githubSyncEnabled) vm.syncGithubNow() else showMultiPlatformSyncDialog = true },
+                            syncingProgress = vm.githubSyncRunning,
                             onPositionChange = { block, offset -> vm.updateReadingPosition(block,offset) },
-                            previousChapter = vm.previousChapter,
                             onGoBackChapter = { vm.goBackChapter() },
                             onFontSizeChange = { vm.updateFontSize(it) },
                             onToggleDarkMode = { vm.updateDarkMode(!vm.isDarkMode) },
@@ -553,8 +558,8 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                                 notes = vm.bookConfig?.notes ?: emptyList(),
                                 corrections = vm.bookConfig?.corrections ?: emptyList(),
                                 chapters = book.chapterTitles,
-                                onNavigateToChapter = { ch ->
-                                    vm.goToChapter(ch)
+                                onNavigateToChapter = { ch, block, offset ->
+                                    vm.goToPosition(ch, block, offset, scalarOffset = true)
                                     vm.showAnnotationsPanel = false
                                 },
                                 onRemoveBookmark = { chapter ->
@@ -572,8 +577,8 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             results = vm.searchResults,
                             onQueryChange = { vm.searchQuery = it },
                             onSearch = { vm.performSearch(it) },
-                            onResultClick = { chapterIdx ->
-                                vm.goToChapter(chapterIdx)
+                            onResultClick = { result ->
+                                vm.goToPosition(result.chapterIndex, result.blockIndex)
                                 vm.showSearch = false
                             },
                             onDismiss = { vm.showSearch = false },

@@ -27,6 +27,8 @@ struct NativeReader: UIViewControllerRepresentable {
     var viewportChanged: (ReaderWindowViewport) -> Void = { _ in }
     var contentVisible = true
     var immersiveStatus: ReadingStatusInfo? = nil
+    var navigated: (ReadingAnchor, Int) -> Void = { _, _ in }
+    var navigationAllowed: (Int) -> Bool = { _ in true }
     func makeUIViewController(context: Context) -> NativeReadingController {
         let controller=NativeReadingController(book: book, anchor: initial, options: options)
         controller.contentVisible=contentVisible
@@ -37,6 +39,8 @@ struct NativeReader: UIViewControllerRepresentable {
         controller.viewportChanged = viewportChanged
         controller.toggleTools = toggleTools; controller.turning = turning
         controller.visible = visible; controller.committed = committed
+        controller.navigated = navigated
+        controller.navigationAllowed = navigationAllowed
         controller.selected = selected
         controller.failed = failed
         controller.book = book; controller.publicationNote = publicationNote; controller.publicationEvent = publicationEvent; controller.publicationLink = publicationLink; controller.nativeStyles = nativeStyles
@@ -120,6 +124,9 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
     var turning: (() -> Void)?
     var visible: ((ReadingAnchor, String) -> Void)?
     var committed: ((ReadingAnchor) -> Void)?
+    var navigated: ((ReadingAnchor, Int) -> Void)?
+    var navigationAllowed: (Int) -> Bool = { _ in true }
+    private var queuedNavigation: (ReadingAnchor, Int)?
     private var speechHighlight: SpeechHighlight?
     private var transitioning = false
     init(book: PreviewBook, anchor: ReadingAnchor, options: ReaderOptions) {
@@ -149,6 +156,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         rebuildIfNeeded()
         pager?.view.frame = readerFrame
         continuous?.frame = scrollFrame
+        applyQueuedNavigation()
     }
     func update(options: ReaderOptions, jump: ReadingAnchor?, jumpID: Int, annotations: ReaderAnnotations, revision: Int) {
         if revision != annotationRevision { self.annotations = annotations; annotationRevision = revision; layoutOptions = nil; scrollCache.clear(); pagingCache.clear() }
@@ -157,14 +165,68 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         self.options = options
         if isViewLoaded { updatePaperAppearance() }
         if jumpID != lastJumpID, let jump {
-            pendingScrollSave?.cancel(); pendingScrollSave = nil
             lastJumpID = jumpID
-            scrollReset = true
-            anchor = jump
-            lastSavedScrollAnchor = jump
-            layoutOptions = nil
+            queuedNavigation = (jump, jumpID)
+            applyQueuedNavigation()
         }
         if isViewLoaded { rebuildIfNeeded(); if languageChanged {reportVisible()} }
+    }
+    private func applyQueuedNavigation() {
+        guard !transitioning, isViewLoaded, view.window != nil,
+              let (target, token) = queuedNavigation else { return }
+        queuedNavigation = nil
+        guard navigationAllowed(token), book.chapters.indices.contains(target.chapter) else { return }
+        let previous = anchor
+        if previous == target { navigated?(target, token); return }
+        pendingScrollSave?.cancel(); pendingScrollSave = nil; pendingWarmup?.cancel()
+        chapterLoadFailed = false
+        _ = chapterSource(target.chapter)
+        guard !chapterLoadFailed else { return }
+        let animated = options.readingMode != .none && !UIAccessibility.isReduceMotionEnabled
+        let forward = (target.chapter, target.block, target.charOffset) > (previous.chapter, previous.block, previous.charOffset)
+        let finish: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.transitioning = false
+            self.anchor = target; self.lastSavedScrollAnchor = target
+            self.reportVisible(); self.navigated?(target, token)
+            self.applyQueuedNavigation()
+        }
+        if options.readingMode != .scroll, let pager, !pagingTextRect.isEmpty {
+            let oldPages = pages, oldRange = pagingLoadedRange, oldParity = pagingSpreadParity, oldIndex = currentIndex
+            anchor = target
+            let prepared = pagedChapters(in: pagingTextRect)
+            guard !chapterLoadFailed, !prepared.isEmpty else { anchor = previous; pages = oldPages; pagingLoadedRange = oldRange; pagingSpreadParity = oldParity; currentIndex = oldIndex; return }
+            pages = prepared; layoutOptions = options.textLayoutOptions
+            currentIndex = ReadingLayout.pageIndex(for: target, in: pages)
+            if dual { currentIndex = spreadStart(for: currentIndex) }
+            let next = controllers(at: currentIndex)
+            transitioning = true
+            if options.readingMode == .cover, animated,
+               let source = pager.view.snapshotView(afterScreenUpdates: false) {
+                source.frame = pager.view.frame; source.isUserInteractionEnabled = false
+                view.addSubview(source)
+                pager.setViewControllers(next, direction: forward ? .forward : .reverse, animated: false)
+                if forward { view.insertSubview(source, belowSubview: pager.view); pager.view.transform = CGAffineTransform(translationX: pager.view.bounds.width, y: 0) }
+                UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut]) {
+                    if forward { pager.view.transform = .identity }
+                    else { source.transform = CGAffineTransform(translationX: source.bounds.width, y: 0) }
+                } completion: { _ in source.removeFromSuperview(); pager.view.transform = .identity; finish() }
+            } else if options.readingMode.customTransition || !animated {
+                pager.setViewControllers(next, direction: forward ? .forward : .reverse, animated: false)
+                finish()
+            } else {
+                pager.setViewControllers(next, direction: forward ? .forward : .reverse, animated: true) { _ in finish() }
+            }
+        } else {
+            let source = animated ? view.snapshotView(afterScreenUpdates: false) : nil
+            anchor = target; lastSavedScrollAnchor = target; scrollReset = true; layoutOptions = nil
+            rebuildIfNeeded()
+            guard !chapterLoadFailed else { anchor = previous; layoutOptions = nil; rebuildIfNeeded(); return }
+            guard let source else { finish(); return }
+            source.frame = view.bounds; source.isUserInteractionEnabled = false; view.addSubview(source)
+            transitioning = true
+            UIView.animate(withDuration: 0.22, animations: { source.alpha = 0 }) { _ in source.removeFromSuperview(); finish() }
+        }
     }
     func updateSpeech(_ highlight: SpeechHighlight?, following: Bool) {
         speechHighlight = highlight
@@ -318,7 +380,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
            size == lastSize, layoutOptions?.nativeRevision != options.nativeRevision { return }
         chapterLoadFailed=false
         let sizeChanged = size != lastSize
-        lastSize = size; layoutOptions = options.textLayoutOptions; transitioning = false
+        lastSize = size; layoutOptions = options.textLayoutOptions
         view.backgroundColor = options.paper
         // Freeze safe-area and header budgets for this size. Hiding system or app
         // chrome must never repaginate; only actual size/options changes do so.
@@ -444,10 +506,11 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
         guard pageViewController === pager else { return }
         transitioning = false
+        defer { applyQueuedNavigation() }
         let indices = pageViewController.viewControllers?.compactMap { ($0 as? PaperController)?.index ?? ($0 as? SpreadController)?.index } ?? []
         guard let next = ReadingLayout.completedAnchor(completed: completed, visible: indices, pages: pages) else { return }
         anchor = next; currentIndex = indices.filter { pages.indices.contains($0) }.min() ?? currentIndex
-        committed?(next); reportVisible(); trimPagingWindow(); rebuildIfNeeded()
+        committed?(next); reportVisible(); trimPagingWindow(); rebuildIfNeeded(); applyQueuedNavigation()
     }
     private func trimPagingWindow() {
         guard options.readingMode != .scroll, pagingLoadedRange.count>7 else {return}
@@ -472,7 +535,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         firstContentReported=true
         for index in max(0,currentIndex-1)..<min(pages.count,currentIndex+4) { _ = BookTypesetter.prefetch(pages[index]) }
         let current = anchor
-        let label = options.readingMode == .scroll ? L("reader.chapter_indicator", current.chapter+1, book.chapters.count) : pageInfo(for: currentIndex)
+        let label = pageInfo(for: currentIndex)
         let callback = visible
         DispatchQueue.main.async { callback?(current, label) }
     }
@@ -662,7 +725,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             let indices = pager?.viewControllers?.compactMap { ($0 as? PaperController)?.index ?? ($0 as? SpreadController)?.index } ?? []
             guard let shown = indices.filter({ self.pages.indices.contains($0) }).min() else { return }
             self.currentIndex = shown; self.anchor = self.pages[shown].anchor
-            self.committed?(self.anchor); self.reportVisible(); self.trimPagingWindow(); self.rebuildIfNeeded()
+            self.committed?(self.anchor); self.reportVisible(); self.trimPagingWindow(); self.rebuildIfNeeded(); self.applyQueuedNavigation()
         }
         if options.readingMode == .cover && !UIAccessibility.isReduceMotionEnabled,
            let previous = pager.view.snapshotView(afterScreenUpdates: false) {

@@ -123,6 +123,14 @@ class Library(private val context: Context, loadImmediately: Boolean = true) {
         }
     }
 
+    /** Accept a position already chosen by peer sync without recording a new local edit. */
+    fun applyRemotePosition(uri: String, chapter: Int, chapterTitle: String?, block: Int, charOffset: Int) {
+        RustBridge.applyRemotePosition(dataDir, uri, chapter, chapterTitle ?: "", block, charOffset)
+        val index = books.indexOfFirst { it.uri == uri }
+        if (index >= 0) books[index] = books[index].copy(lastChapter = chapter, lastBlock = block,
+            lastCharOffset = charOffset, lastChapterTitle = chapterTitle ?: books[index].lastChapterTitle)
+    }
+
     fun updatePosition(
         uri: String,
         chapter: Int,

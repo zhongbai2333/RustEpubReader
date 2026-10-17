@@ -102,24 +102,14 @@ impl ReaderApp {
                                 label.scroll_to_me(Some(egui::Align::Center));
                             }
                             if label.clicked() && entry.chapter_index != self.current_chapter {
-                                self.previous_chapter = Some(self.current_chapter);
-                                self.current_chapter = entry.chapter_index;
-                                self.scroll_to_top = true;
-                                self.pages_dirty = true;
-                                self.current_page = 0;
-                                if let Some(p) = &self.book_path {
-                                    let chap_title = self
-                                        .book
-                                        .as_ref()
-                                        .and_then(|b| b.chapters.get(self.current_chapter))
-                                        .map(|c| c.title.clone());
-                                    self.library.update_chapter(
-                                        &self.data_dir,
-                                        p,
-                                        self.current_chapter,
-                                        chap_title,
-                                    );
-                                }
+                                self.navigate_reader(
+                                    super::reader_navigation::ReaderLocation {
+                                        chapter: entry.chapter_index,
+                                        block: 0,
+                                        char_offset: 0,
+                                    },
+                                    super::reader_navigation::NavigationKind::Local,
+                                );
                             }
 
                             // Bookmark toggle at right edge

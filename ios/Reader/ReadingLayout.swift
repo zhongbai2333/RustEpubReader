@@ -13,6 +13,23 @@ struct ReadingAnchor: Codable, Equatable {
     var charOffset: Int = 0
     enum CodingKeys: String, CodingKey { case chapter, block; case charOffset = "char_offset" }
 }
+
+struct ReadingReturnPoint: Codable, Equatable {
+    let anchor: ReadingAnchor
+    let chapterTitle: String
+    let pageLabel: String
+}
+
+struct ReadingJumpHistory: Codable, Equatable {
+    private(set) var points: [ReadingReturnPoint] = []
+    var previous: ReadingReturnPoint? { points.last }
+    mutating func record(_ origin: ReadingReturnPoint, target: ReadingAnchor) {
+        guard origin.anchor != target, points.last?.anchor != origin.anchor else { return }
+        points.append(origin)
+        if points.count > 16 { points.removeFirst(points.count - 16) }
+    }
+    mutating func pop() -> ReadingReturnPoint? { points.popLast() }
+}
 struct BlockCoordinate {
     let block: Int
     let start: Int

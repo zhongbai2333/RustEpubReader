@@ -58,6 +58,9 @@ fn ease(t: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 impl BookPresentation {
+    pub(crate) fn is_closing(&self) -> bool {
+        matches!(self.phase, Some(Phase::Closing { .. }))
+    }
     pub(crate) fn is_active(&self) -> bool {
         self.phase.is_some()
     }
@@ -126,6 +129,7 @@ impl ReaderApp {
         });
     }
     pub(crate) fn close_book_presentation(&mut self) {
+        self.clear_reader_navigation();
         if matches!(self.book_presentation.phase, Some(Phase::Closing { .. })) {
             return;
         }

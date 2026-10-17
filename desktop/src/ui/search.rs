@@ -110,12 +110,14 @@ impl ReaderApp {
                                 );
                                 if resp.clicked() {
                                     self.search_selected = Some(idx);
-                                    // Jump to the chapter
-                                    if self.current_chapter != result.chapter_index {
-                                        self.current_chapter = result.chapter_index;
-                                        self.pages_dirty = true;
-                                        self.current_page = 0;
-                                    }
+                                    self.navigate_reader(
+                                        super::reader_navigation::ReaderLocation {
+                                            chapter: result.chapter_index,
+                                            block: result.block_index,
+                                            char_offset: 0,
+                                        },
+                                        super::reader_navigation::NavigationKind::Local,
+                                    );
                                 }
                             }
                         });

@@ -125,6 +125,13 @@ fn menu_action(
 impl ReaderApp {
     fn reader_menu_action(&mut self, ctx: &egui::Context, action: &str) {
         match action {
+            "sync" => {
+                if self.github_sync_enabled {
+                    self.cloud_start_sync();
+                } else {
+                    self.view = AppView::Sync;
+                }
+            }
             "toc" => {
                 self.show_toc = !self.show_toc;
                 if self.show_toc {
@@ -342,6 +349,27 @@ impl ReaderApp {
                                 ui.ctx().data_mut(|d| d.insert_temp(more_id, false));
                             }
                             ui.separator();
+                            let syncing = self.cloud_sync.is_syncing();
+                            if ui
+                                .add_enabled_ui(!syncing, |ui| {
+                                    menu_action(
+                                        ui,
+                                        Icon::Sync,
+                                        self.i18n.t(if syncing {
+                                            "reader.syncing_progress"
+                                        } else {
+                                            "reader.sync_progress"
+                                        }),
+                                        false,
+                                        p,
+                                    )
+                                })
+                                .inner
+                                .clicked()
+                            {
+                                self.reader_menu_action(ui.ctx(), "sync");
+                                ui.memory_mut(|m| m.close_popup());
+                            }
                             for (icon, key, action) in [
                                 (Icon::Search, "reader.search_book", "search"),
                                 (Icon::Notes, "toolbar.stats", "stats"),
@@ -444,5 +472,69 @@ impl ReaderApp {
         {
             ui.memory_mut(|m| m.close_popup());
         }
+    }
+}
+
+impl ReaderApp {
+    pub(crate) fn render_reader_return(&mut self, ui: &mut egui::Ui) {
+        let Some(point) = self.reader_navigation.history.last().cloned() else {
+            return;
+        };
+        let palette = Palette::new(self.dark_mode);
+        let expanded = ui.input(|i| i.time) < self.reader_navigation.expanded_until;
+        egui::Frame::NONE
+            .fill(if expanded {
+                translucent(palette.surface, 228)
+            } else {
+                Color32::TRANSPARENT
+            })
+            .corner_radius(22)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let response = circle_button(
+                        ui,
+                        Icon::Return,
+                        &self
+                            .i18n
+                            .tf2("reader.return_position_detail", &point.title, &point.page),
+                        false,
+                        palette,
+                    );
+                    if response.clicked() {
+                        self.navigate_reader(
+                            point.location,
+                            super::reader_navigation::NavigationKind::Return,
+                        );
+                    }
+                    if expanded {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(
+                                (ui.ctx().screen_rect().width() - 160.).clamp(44., 240.),
+                                40.,
+                            ),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.;
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&point.title)
+                                            .size(12.)
+                                            .color(palette.text),
+                                    )
+                                    .truncate(),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&point.page)
+                                            .size(11.)
+                                            .color(palette.muted),
+                                    )
+                                    .truncate(),
+                                );
+                            },
+                        );
+                    }
+                });
+            });
     }
 }

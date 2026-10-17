@@ -1318,10 +1318,14 @@ impl ReaderApp {
                         self.review_panel_anchor = url.split('#').nth(1).map(|s| s.to_string());
                         self.review_panel_just_opened = true;
                     } else {
-                        self.current_chapter = idx;
-                        self.current_page = 0;
-                        self.scroll_to_top = true;
-                        self.pages_dirty = true;
+                        self.navigate_reader(
+                            super::reader_navigation::ReaderLocation {
+                                chapter: idx,
+                                block: 0,
+                                char_offset: 0,
+                            },
+                            super::reader_navigation::NavigationKind::Local,
+                        );
                     }
                 } else {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -1364,7 +1368,8 @@ impl ReaderApp {
                     })
                     .map(|(page, _)| page)
                     .next_back();
-                let preserve = self.last_synced_chapter == Some(self.current_chapter)
+                let preserve = (self.last_synced_chapter == Some(self.current_chapter)
+                    || self.reader_navigation.restored_locator == Some(self.reader_location()))
                     && locator_page.is_some_and(|page| {
                         page >= self.current_page
                             && page < self.current_page + if self.is_dual_column { 2 } else { 1 }

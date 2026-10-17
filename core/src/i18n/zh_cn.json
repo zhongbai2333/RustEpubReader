@@ -1004,5 +1004,10 @@
   "sync.auth_code_label": "验证码",
   "sync.auth_purpose": "通过私密仓库同步书籍和进度，登录不会自动上传。",
   "sync.auth_copy_failed": "复制失败，请手动复制验证码。",
-  "sync.auth_browser_failed": "无法打开浏览器，请手动访问 github.com/login/device。"
+  "sync.auth_browser_failed": "无法打开浏览器，请手动访问 github.com/login/device。",
+  "reader.return_position": "返回跳转前的位置",
+  "reader.sync_progress": "同步阅读进度",
+  "reader.syncing_progress": "正在同步进度…",
+  "reader.synced_position": "已跳转到同步位置",
+  "reader.return_position_detail": "返回 {0} · {1}"
 }

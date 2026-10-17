@@ -259,5 +259,15 @@ struct SyncMeter: Decodable {
     }
     func flush() async { await saveTask?.value }
     func closed() { openPath = ""; offer = nil; Task { try? await store.closed() } }
+    func jumpHistory(for id: String) -> ReadingJumpHistory {
+        guard let data = UserDefaults.standard.data(forKey: "reader.jumpHistory.\(id)"),
+              let value = try? JSONDecoder().decode(ReadingJumpHistory.self, from: data),
+              value.points.count <= 16 else { return ReadingJumpHistory() }
+        return value
+    }
+    func clearJumpHistory(for id: String) { UserDefaults.standard.removeObject(forKey: "reader.jumpHistory.\(id)") }
+    func saveJumpHistory(_ value: ReadingJumpHistory, for id: String) {
+        if let data = try? JSONEncoder().encode(value) { UserDefaults.standard.set(data, forKey: "reader.jumpHistory.\(id)") }
+    }
     func fail(_ failure: Error, title: String) { errorTitle = title; error = (failure as? CoreFailure).map {ReaderErrors.display($0.message)} ?? L("common.error_operation_incomplete") }
 }

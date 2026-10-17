@@ -22,6 +22,9 @@ final class ReaderQuickMenuCoordinator: NSObject {
         ])
         primary.preferredElementSize = .medium
         let more = UIMenu(title: L("reader.more_actions"), image: UIImage(systemName: "ellipsis"), children: [
+            UIAction(title: L(parent.syncing ? "reader.syncing_progress" : "reader.sync_progress"), image: UIImage(systemName: "arrow.triangle.2.circlepath"), attributes: parent.syncing ? [.disabled] : []) { [weak self, weak button] _ in
+                button?.contextMenuInteraction?.dismissMenu(); self?.parent.synchronize()
+            },
             action(L("reader.search_book"), "magnifyingglass") { $0.search() },
             action(L("toolbar.stats"), "chart.bar") { $0.statistics() },
             action(L("reader.correction"), "text.badge.checkmark") { $0.correction() }

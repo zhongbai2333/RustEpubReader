@@ -32,6 +32,7 @@ pub mod design;
 pub mod github_account;
 pub(crate) mod page_curl;
 pub(crate) mod reader_chrome;
+pub(crate) mod reader_navigation;
 pub mod shell;
 
 pub(crate) mod book_presentation;

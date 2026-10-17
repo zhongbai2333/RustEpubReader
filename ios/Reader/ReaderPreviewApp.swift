@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
         if CommandLine.arguments.contains("--verify-native") { NativePresentationRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-keychain") { KeychainRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-illustrations") { IllustrationRuntimeCheck.run() }
-        if CommandLine.arguments.contains("--verify-chapter-loading") || CommandLine.arguments.contains("--verify-reading-modes") || CommandLine.arguments.contains("--verify-page-footers") { ReadingModesRuntimeCheck.run() }
+        if CommandLine.arguments.contains("--verify-navigation") || CommandLine.arguments.contains("--verify-chapter-loading") || CommandLine.arguments.contains("--verify-reading-modes") || CommandLine.arguments.contains("--verify-page-footers") { ReadingModesRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-model") { ModelRuntimeCheck.run() }
         #endif
     }
@@ -53,6 +53,8 @@ struct AppHome: View {
     @AppStorage("library.list") private var shelfListMode = false
     @State private var sharedShelfOrder = StableShelfOrder()
     @State private var selectedBook: PreviewBook?
+    @AppStorage("reader.activeBookID") private var activeBookID = ""
+    @State private var attemptedReadingRestore = false
     @State private var openingBook: LibraryEntry?
     @State private var coverFrames: [String: CGRect] = [:]
     @State private var sourceCover: CGRect?
@@ -112,7 +114,7 @@ struct AppHome: View {
         .allowsHitTesting(openingBook == nil && selectedBook == nil && !closing)
         .accessibilityHidden(selectedBook != nil || openingBook != nil || closing)
         if let book = selectedBook, readerMounted {
-            ReadingWorkspace(book: book, library: library,
+            ReadingWorkspace(book: book, library: library, account: account,
                 openSync: { closeBook(after: { destination = 1 }) },
                 close: { closeBook() }, ready: { [token=transitionToken] in
                     if transitionToken == token && !closing {readerDidPrepare()}
@@ -157,6 +159,13 @@ struct AppHome: View {
         .sheet(isPresented: $library.receivingSharedBooks, onDismiss: { library.bookSharing.cancel() }) { ReceiveBooksView(sharing: library.bookSharing, account: account) }
         .task {
             readerI18n.refresh(); account.setForeground(scenePhase == .active)
+            if !attemptedReadingRestore && !CommandLine.arguments.contains(where: { $0.hasPrefix("--verify-") }) {
+                attemptedReadingRestore = true
+                await library.reload()
+                if let entry = library.books.first(where: { $0.id == activeBookID }) {
+                    openBook(entry, "shelf:" + entry.id)
+                } else { activeBookID = "" }
+            }
             #if DEBUG
             if CommandLine.arguments.contains(where: { $0.hasPrefix("--verify-") }) {
                 UserDefaults.standard.set(true, forKey: ReadingIntroduction.storageKey)
@@ -343,7 +352,7 @@ struct AppHome: View {
         Task {
             let book = await library.open(entry)
             guard transitionToken == token else { if selectedBook == nil { library.closed() }; return }
-            if let book { selectedBook = book } else { closeBook() }
+            if let book { activeBookID = book.id; selectedBook = book } else { closeBook() }
         }
     }
     private func readerDidPrepare() { readerReady = true; revealReader() }
@@ -365,6 +374,8 @@ struct AppHome: View {
 
     private func closeBook(after: @escaping () -> Void = {}) {
         guard !closing else { return }
+        if let book = selectedBook { library.clearJumpHistory(for: book.id) }
+        activeBookID = ""
         closing = true; transitionToken = UUID()
         withAnimation(.easeOut(duration: 0.14)) { paperOpacity = 1 }
         Task {

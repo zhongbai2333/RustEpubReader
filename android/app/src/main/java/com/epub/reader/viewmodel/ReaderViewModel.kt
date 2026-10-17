@@ -103,8 +103,54 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var positionRevision by mutableIntStateOf(0)
         private set
-    var previousChapter by mutableStateOf<Int?>(null)
+    var returnHistory by mutableStateOf<List<ReaderReturnPoint>>(emptyList())
         private set
+    var navigationPulse by mutableIntStateOf(0)
+        private set
+    var currentPageLabel by mutableStateOf("")
+        private set
+    private var navigationGeneration = 0
+    private var remoteNavigation: Int? = null
+    fun updatePageLabel(label: String) { currentPageLabel = label }
+    private fun historyKey(uri: String) = "reading_return_history." + (library.books.firstOrNull { it.uri == uri }?.id ?: uri)
+    private fun persistNavigation() {
+        val uri = currentBookUri ?: return
+        prefs.edit().putString(historyKey(uri), jsonParser.encodeToString(kotlinx.serialization.builtins.ListSerializer(ReaderReturnPoint.serializer()), returnHistory)).apply()
+    }
+    fun persistReadingSession() { if (currentBookUri != null) { if (remoteNavigation == null) saveProgress(); persistNavigation() } }
+    fun goToPosition(chapter: Int, block: Int = 0, charOffset: Int = 0, remember: Boolean = true, remote: Boolean = false, returning: Boolean = false, scalarOffset: Boolean = false) {
+        val book = currentBook ?: return
+        if (chapter !in book.chapters.indices) return
+        val generation = ++navigationGeneration
+        remoteNavigation = if (remote) generation else null
+        val revisionAtRequest = localProgressRevision
+        val returnTarget = if (returning) returnHistory.lastOrNull()?.location else null
+        viewModelScope.launch {
+            try {
+                val source = withContext(Dispatchers.IO) { book.chapters[chapter] }
+                if (generation != navigationGeneration || currentBook !== book || (remote && localProgressRevision != revisionAtRequest)) return@launch
+                val at = block.coerceIn(0, source.blocks.lastIndex.coerceAtLeast(0))
+                val content = source.blocks.getOrNull(at)
+                val text = when (content) { is ContentBlock.Paragraph -> content.spans.joinToString("") { it.text }; is ContentBlock.Heading -> content.spans.joinToString("") { it.text }; else -> "" }
+                val offset = if (scalarOffset) text.offsetByCodePoints(0, charOffset.coerceIn(0, text.codePointCount(0, text.length))) else charOffset.coerceIn(0, text.length)
+                val target = ReaderLocation(chapter, at, offset)
+                val origin = ReaderReturnPoint(ReaderLocation(currentChapter, currentBlock, currentCharOffset),
+                    book.chapterTitles.getOrNull(currentChapter) ?: "", currentPageLabel)
+                if (target == origin.location) return@launch
+                if (returning && returnHistory.lastOrNull()?.location != returnTarget) return@launch
+                if (returning) returnHistory = returnHistory.dropLast(1)
+                else if (remember) returnHistory = recordReaderJump(returnHistory, origin, target)
+                currentChapter = chapter; currentBlock = at; currentCharOffset = offset; currentPage = 0
+                if (remember || returning || remote) { positionRevision++; navigationPulse++ }
+                showReviewPanel = false; reviewPanelChapter = null
+                if (!remote) saveProgress()
+                else prefs.edit().putInt(PrefKeys.LAST_BOOK_CHAPTER, chapter).apply()
+                persistNavigation(); updateBookmarkState()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { addLog("Navigation failed: ${error.message}"); errorMessage = error.message ?: I18n.t("common.error_unknown") }
+            finally { if (remoteNavigation == generation) remoteNavigation = null }
+        }
+    }
 
     // ---- ���� ----
     var fontSize by mutableFloatStateOf(18f)
@@ -563,7 +609,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** Read synced progress from PeerStore and apply chapter numbers to library entries */
-    private fun applySyncedProgress() {
+    private suspend fun applySyncedProgress() {
         val progressJson = RustBridge.getSyncedProgress(dataDir) ?: return
         try {
             val arr = org.json.JSONArray(progressJson)
@@ -595,7 +641,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             for (book in library.books.toList()) {
                 // There cannot be a newer matching position; avoid reading every
                 // EPUB just to hash it again on an ordinary pull-to-refresh.
-                if (book.uri == currentBookUri || book.lastOpened / 1000L >= newestRemote) continue
+                if (book.lastOpened / 1000L >= newestRemote) continue
                 val hash = RustBridge.fileHash(book.uri) ?: continue
                 val remote = progressMap[hash] ?: continue
                 val shouldUpdate =
@@ -606,14 +652,17 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             remote.chapterTitle != null &&
                             remote.chapterTitle != book.lastChapterTitle)
 
-                if (shouldUpdate && remote.timestamp > book.lastOpened / 1000L && book.uri != currentBookUri) {
-                    library.updatePosition(
+                if (shouldUpdate && remote.timestamp > book.lastOpened / 1000L) {
+                    library.applyRemotePosition(
                         book.uri,
                         remote.chapter,
                         remote.chapterTitle,
                         remote.block,
                         remote.charOffset
                     )
+                    if (book.uri == currentBookUri) withContext(Dispatchers.Main) {
+                        if (currentBookUri == book.uri) goToPosition(remote.chapter, remote.block, remote.charOffset, remote = true, scalarOffset = true)
+                    }
                     updated++
                 }
             }
@@ -1016,6 +1065,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
         currentBookUri = persistedEntry.uri
         githubSyncOffer = null
+        returnHistory = if (prefs.getString(PrefKeys.LAST_BOOK_URI, null) == persistedEntry.uri) {
+            runCatching { jsonParser.decodeFromString(kotlinx.serialization.builtins.ListSerializer(ReaderReturnPoint.serializer()), prefs.getString(historyKey(persistedEntry.uri), "[]") ?: "[]").takeLast(16) }.getOrDefault(emptyList())
+        } else emptyList()
+        currentPageLabel = ""
         prefs.edit()
             .putString(PrefKeys.LAST_BOOK_URI, persistedEntry.uri)
             .putInt(PrefKeys.LAST_BOOK_CHAPTER, currentChapter)
@@ -1060,38 +1113,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         return library.addOrUpdate(title, file.absolutePath, 0)
     }
 
-    fun goToChapter(index: Int) {
-        val book = currentBook ?: return
-        if (reviewChapterIndices.contains(index)) {
-            openReviewPanel(index)
-            return
-        }
-        val target = index.coerceIn(0, book.chapters.size - 1)
-        if (target != currentChapter) {
-            previousChapter = currentChapter
-        }
-        currentChapter = target
-        currentPage = 0
-        currentBlock = 0
-        currentCharOffset = 0
-        // Close review panel if open so a stale panel doesn't linger after TOC navigation
-        showReviewPanel = false
-        reviewPanelChapter = null
-        saveProgress()
-        updateBookmarkState()
-        checkContributionPrompt()
+    fun goToChapter(index: Int, remember: Boolean = true) {
+        if (reviewChapterIndices.contains(index)) { openReviewPanel(index); return }
+        goToPosition(index, remember = remember)
     }
 
     fun goBackChapter() {
-        val prev = previousChapter ?: return
-        val book = currentBook ?: return
-        val target = prev.coerceIn(0, book.chapters.size - 1)
-        previousChapter = null
-        currentChapter = target
-        currentPage = 0
-        currentBlock = 0
-        currentCharOffset = 0
-        saveProgress()
+        val previous = returnHistory.lastOrNull() ?: return
+        goToPosition(previous.location.chapter, previous.location.block, previous.location.charOffset, remember = false, returning = true)
     }
 
     fun nextChapter() {
@@ -1103,9 +1132,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 next++
             }
             if (next < book.chapters.size) {
-                if (currentChapter != next) {
-                    previousChapter = currentChapter
-                }
                 currentChapter = next
                 currentPage = 0
                 currentBlock = 0
@@ -1128,9 +1154,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 prev--
             }
             if (prev >= 0) {
-                if (currentChapter != prev) {
-                    previousChapter = currentChapter
-                }
                 currentChapter = prev
                 currentPage = 0
                 currentBlock = 0
@@ -1502,6 +1525,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun closeBook() {
+        navigationGeneration++
+        remoteNavigation = null
+        currentBookUri?.let { prefs.edit().remove(historyKey(it)).apply() }
+        returnHistory = emptyList()
         val closingUri = currentBookUri
         android.util.Log.d("READER-RESUME", "closeBook uri=$closingUri currentChapter=$currentChapter")
         saveProgress()
@@ -2132,15 +2159,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         if (offer.optString("book_hash") != hash) return
         val chapter = offer.getInt("chapter")
         if (chapter !in book.chapters.indices) return
-        val block = offer.optInt("block", 0).coerceIn(0, (book.chapters[chapter].blocks.lastIndex).coerceAtLeast(0))
-        previousChapter = currentChapter
-        currentChapter = chapter
-        currentBlock = block
-        val content=book.chapters[chapter].blocks.getOrNull(block)
-        val text=when(content) {is ContentBlock.Paragraph->content.spans.joinToString(""){it.text};is ContentBlock.Heading->content.spans.joinToString(""){it.text};else->""}
-        currentCharOffset=text.offsetByCodePoints(0,offer.optInt("char_offset",0).coerceIn(0,text.codePointCount(0,text.length)))
-        positionRevision++
-        currentPage = 0
+        goToPosition(chapter, offer.optInt("block", 0), offer.optInt("char_offset", 0), remote = true, scalarOffset = true)
         githubSyncOffer = null
     }
 

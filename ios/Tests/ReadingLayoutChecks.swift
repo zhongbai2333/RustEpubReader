@@ -3,6 +3,18 @@ import CoreText
 
 @main struct ReadingLayoutChecks {
     static func main() {
+        var navigation = ReadingJumpHistory()
+        let origin = ReadingReturnPoint(anchor: .init(chapter: 2, block: 9, charOffset: 37), chapterTitle: "第一章 初遇", pageLabel: "第 8 / 40 页")
+        navigation.record(origin, target: origin.anchor)
+        precondition(navigation.previous == nil)
+        navigation.record(origin, target: .init(chapter: 2, block: 12, charOffset: 1))
+        navigation.record(origin, target: .init(chapter: 8))
+        precondition(navigation.points.count == 1)
+        let restored = try! JSONDecoder().decode(ReadingJumpHistory.self, from: JSONEncoder().encode(navigation))
+        precondition(restored == navigation && restored.previous?.anchor.charOffset == 37)
+        precondition(navigation.pop() == origin && navigation.previous == nil)
+        for chapter in 0..<40 { navigation.record(.init(anchor: .init(chapter: chapter), chapterTitle: "章", pageLabel: "页"), target: .init(chapter: 99)) }
+        precondition(navigation.points.count == 16 && navigation.points.first?.anchor.chapter == 24)
         let sample = "Reading 😀 e\u{301} 中文。A paragraph with stable positions.\n"
         let attrs: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("PingFangSC-Regular" as CFString, 18, nil)]
         let chapters = (0..<3).map { index -> LaidOutChapter in

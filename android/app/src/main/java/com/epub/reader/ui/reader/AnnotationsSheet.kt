@@ -32,7 +32,7 @@ fun AnnotationsSheet(
     notes: List<NoteDto>,
     corrections: List<CorrectionDto>,
     chapters: List<String>,
-    onNavigateToChapter: (Int) -> Unit,
+    onNavigateToChapter: (Int, Int, Int) -> Unit,
     onRemoveBookmark: (Int) -> Unit,
     onRemoveHighlight: (String) -> Unit,
     onEditNote: (String, String) -> Unit,
@@ -106,7 +106,7 @@ fun AnnotationsSheet(
 private fun BookmarksTab(
     bookmarks: List<BookmarkDto>,
     chapters: List<String>,
-    onNavigate: (Int) -> Unit,
+    onNavigate: (Int, Int, Int) -> Unit,
     onRemove: (Int) -> Unit,
 ) {
     if (bookmarks.isEmpty()) {
@@ -120,7 +120,7 @@ private fun BookmarksTab(
             Row(
                 modifier =
                     Modifier.fillMaxWidth()
-                        .clickable { onNavigate(bm.chapter) }
+                        .clickable { onNavigate(bm.chapter, bm.block, 0) }
                         .padding(vertical = 10.dp, horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -163,7 +163,7 @@ private fun HighlightsTab(
     highlights: List<HighlightDto>,
     notes: List<NoteDto>,
     chapters: List<String>,
-    onNavigate: (Int) -> Unit,
+    onNavigate: (Int, Int, Int) -> Unit,
     onRemove: (String) -> Unit,
     onEditNote: (String, String) -> Unit,
 ) {
@@ -184,7 +184,7 @@ private fun HighlightsTab(
             Column(
                 modifier =
                     Modifier.fillMaxWidth()
-                        .clickable { onNavigate(hl.chapter) }
+                        .clickable { onNavigate(hl.chapter, hl.startBlock, hl.startOffset) }
                         .padding(vertical = 8.dp, horizontal = 4.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -281,7 +281,7 @@ private fun HighlightsTab(
 private fun CorrectionsTab(
     corrections: List<CorrectionDto>,
     chapters: List<String>,
-    onNavigate: (Int) -> Unit,
+    onNavigate: (Int, Int, Int) -> Unit,
 ) {
     if (corrections.isEmpty()) {
         EmptyHint(I18n.t("annotations.no_corrections"))
@@ -294,7 +294,7 @@ private fun CorrectionsTab(
             Row(
                 modifier =
                     Modifier.fillMaxWidth()
-                        .clickable { onNavigate(cor.chapter) }
+                        .clickable { onNavigate(cor.chapter, cor.blockIdx, cor.charOffset) }
                         .padding(vertical = 10.dp, horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

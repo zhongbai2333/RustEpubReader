@@ -2,6 +2,7 @@
 import Foundation
 import UIKit
 import CoreText
+import SwiftUI
 
 // Exercises the same UIKit controllers used by the reading screen, with a
 // caller-supplied EPUB in this diagnostic installation's Documents folder.
@@ -23,6 +24,13 @@ enum ReadingModesRuntimeCheck {
                 let client = CoreClient(root: root.path, device: "reading-modes-check")
                 let entry: LibraryEntry = try client.call("import", ["path": documents.appendingPathComponent("reading-modes.epub").path])
                 let book: PreviewBook = try client.call("open", ["id": entry.id])
+                if CommandLine.arguments.contains("--verify-navigation") {
+                    report = try await verifyNavigation(scene: scene, book: book)
+                    report["passed"] = true
+                    let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    try data.write(to: caches.appendingPathComponent("navigation-verification.json"), options: .atomic)
+                    return
+                }
                 if CommandLine.arguments.contains("--verify-chapter-loading") {
                     report=try await verifyChapterLoading(scene:scene,book:book)
                     report["passed"]=true
@@ -158,10 +166,85 @@ enum ReadingModesRuntimeCheck {
                     "large_font_single_page": true, "portrait_anchor": true, "cancelled_turn": true, "speech_follow": true]
             } catch { report = ["passed": false, "error": String(describing: error)] }
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: caches.appendingPathComponent(CommandLine.arguments.contains("--verify-chapter-loading") ? "chapter-loading-verification.json" : CommandLine.arguments.contains("--verify-page-footers") ? "page-footers-verification.json" : "reading-modes-verification.json"), options: .atomic) }
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: caches.appendingPathComponent(CommandLine.arguments.contains("--verify-navigation") ? "navigation-verification.json" : CommandLine.arguments.contains("--verify-chapter-loading") ? "chapter-loading-verification.json" : CommandLine.arguments.contains("--verify-page-footers") ? "page-footers-verification.json" : "reading-modes-verification.json"), options: .atomic) }
             window?.isHidden = true
         }
     }
+    @MainActor private static func verifyNavigation(scene: UIWindowScene, book: PreviewBook) async throws -> [String: Any] {
+        func require(_ value: Bool, _ message: String) throws { if !value { throw CoreFailure(message: message) } }
+        let host = UIViewController(), window = UIWindow(windowScene: scene)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let origin = ReadingAnchor(chapter: 19, block: 3, charOffset: 37)
+        let remote = ReadingAnchor(chapter: 21, block: 3, charOffset: 3)
+        let sameChapter = ReadingAnchor(chapter: 21, block: 3, charOffset: 80)
+        var cases = [[String: Any]]()
+        for mode in [ReadingMode.curl, .slide, .cover, .none, .scroll] {
+            var options = ReaderOptions(fontSize: 18, lineHeight: 1.65, fontName: "Helvetica", theme: "light", sliding: mode != .curl, cjkFontName: "PingFangSC-Regular", readingMode: mode)
+            let reader = NativeReadingController(book: book, anchor: origin, options: options)
+            host.addChild(reader); host.view.addSubview(reader.view); reader.didMove(toParent: host)
+            reader.view.frame = CGRect(x: 0, y: 0, width: 402, height: 874); reader.view.layoutIfNeeded()
+            var completed = 0
+            reader.navigated = { _, token in completed = token }
+            var history = ReadingJumpHistory()
+            history.record(.init(anchor: origin, chapterTitle: book.chapters[origin.chapter].title, pageLabel: reader.pageInfo(for: reader.currentIndex)), target: remote)
+            for (index, target) in [remote, sameChapter, origin].enumerated() {
+                reader.update(options: options, jump: target, jumpID: index + 1, annotations: .empty, revision: 0)
+                for _ in 0..<100 {
+                    if completed == index + 1 { break }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                try require(completed == index + 1 && reader.anchor == target, "Navigation completion lost exact anchor in \(mode.rawValue)")
+                try require(reader.pages[reader.currentIndex].chapter == target.chapter, "Rendered page and saved chapter differ")
+            }
+            try require(history.pop()?.anchor == origin && history.previous == nil, "Return did not consume history")
+            options.fontSize = 26; options.pageMargin = 40
+            reader.update(options: options, jump: nil, jumpID: 3, annotations: .empty, revision: 0)
+            try require(reader.anchor == origin, "Reflow changed stored origin")
+            cases.append(["mode": mode.rawValue, "cross_chapter": true, "same_chapter_offset": true, "precise_return": true, "reflow": true])
+            reader.willMove(toParent: nil); reader.view.removeFromSuperview(); reader.removeFromParent()
+        }
+        // Render the actual production reading workspace with a persisted return point.
+        let library = PreviewLibrary()
+        let entry: LibraryEntry = try library.client.call("import", ["path": book.entry.path])
+        await library.reload()
+        guard let preview = await library.open(entry) else { throw CoreFailure(message: "Cannot open preview") }
+        library.save(remote, for: preview); await library.flush()
+        var history = ReadingJumpHistory()
+        history.record(.init(anchor: origin, chapterTitle: book.chapters[origin.chapter].title, pageLabel: L("reader.page_info", 3, 9)), target: remote)
+        library.saveJumpHistory(history, for: preview.id)
+        try require(library.jumpHistory(for: preview.id) == history, "Persisted history lost scalar position")
+        UserDefaults.standard.set(preview.id, forKey: "reader.activeBookID")
+        let account = GitHubAccount(library: library)
+        let screen = UIHostingController(rootView: ReadingWorkspace(book: preview, library: library, account: account).environmentObject(AppearanceCoordinator()))
+        window.rootViewController = screen
+        try await Task.sleep(for: .milliseconds(700))
+        let revision = library.progressRevision
+        let synced = ReadingAnchor(chapter: 25, block: 3, charOffset: 8)
+        // Seed the position that the sync layer has accepted before delivering its UI offer.
+        let _: LibraryEntry = try library.client.call("save", ["id": preview.id, "chapter": synced.chapter, "block": synced.block, "char_offset": synced.charOffset])
+        library.offer = CloudProgress(book_hash: String(repeating: "a", count: 64), chapter: synced.chapter, block: synced.block, char_offset: synced.charOffset, chapter_title: book.chapters[synced.chapter].title, timestamp: UInt64(Date().timeIntervalSince1970))
+        for _ in 0..<150 {
+            if library.anchors[preview.id] == synced { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try require(library.anchors[preview.id] == synced, "Workspace did not automatically apply remote offer")
+        try require(library.progressRevision == revision, "Accepting a remote offer created a local revision")
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        @MainActor func snapshot(_ name: String) throws {
+            screen.view.layoutIfNeeded()
+            let renderer = UIGraphicsImageRenderer(size: screen.view.bounds.size)
+            let image = renderer.image { _ in screen.view.drawHierarchy(in: screen.view.bounds, afterScreenUpdates: true) }
+            try image.pngData()?.write(to: caches.appendingPathComponent(name))
+        }
+        try await Task.sleep(for: .milliseconds(400))
+        try snapshot("navigation-expanded.png")
+        // Wait for both the disclosure and the system glass transition to settle.
+        try await Task.sleep(for: .milliseconds(4000))
+        try snapshot("navigation-reader.png")
+        return ["cases": cases, "persistent_history": true, "automatic_remote_offer": true, "no_local_echo": true, "preview_id": preview.id, "preview_anchor": [25, 3, 8]]
+    }
+
     @MainActor private static func verifyChapterLoading(scene:UIWindowScene,book:PreviewBook) async throws -> [String:Any] {
         func require(_ value:Bool,_ message:String)throws {if !value {throw CoreFailure(message:message)}}
         try require(book.loadsChapters,"Open returned an eager publication")

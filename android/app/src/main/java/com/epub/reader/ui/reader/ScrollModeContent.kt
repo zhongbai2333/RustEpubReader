@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import com.zhongbai233.epub.reader.i18n.I18n
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInRoot
@@ -61,12 +62,15 @@ internal fun ScrollModeContent(
     initialCharOffset: Int = 0,
     positionRevision: Int = 0,
     onPositionChange: (Int,Int) -> Unit = { _,_ -> },
+    onPageLabel: (String) -> Unit = {},
     onContentPrepared: () -> Unit = {},
 ) {
+    var initialRestore by remember { mutableStateOf(true) }
+    var restoredSource by remember { mutableStateOf<Chapter?>(null) }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
     val visibleImages=remember(publicationKey(allChapters)) { VisibleReaderImages() }
     val preparedCallback by rememberUpdatedState(onContentPrepared)
-    LaunchedEffect(publicationKey(allChapters),initialChapter) {
+    LaunchedEffect(publicationKey(allChapters),initialChapter,positionRevision,chapter) {
         withFrameNanos { }; withFrameNanos { }
         snapshotFlow { visibleImages.ready }.first { it }
         withFrameNanos { }; preparedCallback()
@@ -98,8 +102,10 @@ internal fun ScrollModeContent(
         suppressChapterCallback = false
     }
 
-    LaunchedEffect(initialChapter,positionRevision) {
-        if (initialChapter == lastVisibleChapter && positionRevision == lastRestoreRevision) return@LaunchedEffect
+    LaunchedEffect(initialChapter,positionRevision,chapter) {
+        if (!initialRestore && initialChapter == lastVisibleChapter && positionRevision == lastRestoreRevision && restoredSource == chapter) return@LaunchedEffect
+        restoredSource = chapter
+        initialRestore = false
         lastRestoreRevision=positionRevision
         suppressChapterCallback = true
         listState.scrollToItem(initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
@@ -131,6 +137,20 @@ internal fun ScrollModeContent(
     }
 
     val positionCallback by rememberUpdatedState(onPositionChange)
+    val labelCallback by rememberUpdatedState(onPageLabel)
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val item = layout.visibleItemsInfo.firstOrNull()
+            listOf(item?.offset ?: 0, item?.size ?: 0, layout.viewportEndOffset-layout.viewportStartOffset)
+        }.distinctUntilChanged().collect { (offset, size, height) ->
+            if (size > 0 && height > 0) {
+                val total = kotlin.math.ceil(size.toDouble()/height).toInt().coerceAtLeast(1)
+                val page = ((-offset).coerceAtLeast(0)/height+1).coerceAtMost(total)
+                labelCallback(I18n.tf2("reader.page_info", "$page", "$total"))
+            }
+        }
+    }
     LaunchedEffect(publicationKey(allChapters), initialChapter, positionRevision) {
         var reportedScroll = userScrollRevision
         snapshotFlow { Triple(listState.firstVisibleItemIndex,listState.firstVisibleItemScrollOffset,userScrollRevision) }

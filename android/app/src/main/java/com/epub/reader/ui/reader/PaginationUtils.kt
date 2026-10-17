@@ -423,8 +423,8 @@ internal fun estimateImageBlockHeight(
 
 internal fun shouldRenderChapterTitle(chapter: Chapter): Boolean {
     val first = chapter.blocks.firstOrNull() as? ContentBlock.Heading ?: return true
-    val headingText = first.spans.joinToString("") { it.text }.trim().replace(" ", "")
-    val chapterText = chapter.title.trim().replace(" ", "")
+    val headingText = first.spans.joinToString("") { it.text }.filterNot { it.isWhitespace() }
+    val chapterText = chapter.title.filterNot { it.isWhitespace() }
     if (headingText.isBlank() || chapterText.isBlank()) return true
     // A parser fallback is navigation metadata; the EPUB's own heading is the visible title.
     // Keep every content block and its index intact for bookmarks and synchronized positions.

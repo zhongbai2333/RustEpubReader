@@ -559,6 +559,38 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updateChapter(
 }
 
 /// Update the stable content locator for a book.
+/// Accept already-merged peer progress without generating a local progress revision.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_applyRemotePosition(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    path: JString,
+    chapter: jni::sys::jint,
+    chapter_title: JString,
+    block: jni::sys::jint,
+    char_offset: jni::sys::jint,
+) {
+    let Ok(data_dir) = env.get_string(&data_dir).map(String::from) else {
+        return;
+    };
+    let Ok(path) = env.get_string(&path).map(String::from) else {
+        return;
+    };
+    let title = env
+        .get_string(&chapter_title)
+        .map(String::from)
+        .unwrap_or_default();
+    Library::load_from(&data_dir).apply_position(
+        &data_dir,
+        &path,
+        chapter.max(0) as usize,
+        (!title.is_empty()).then_some(title),
+        block.max(0) as usize,
+        char_offset.max(0) as usize,
+    );
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updatePosition(
     mut env: JNIEnv,

@@ -76,7 +76,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** 阅读器界面 — 对应PC版 render_reader() */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ReaderScreen(
     book: EpubBook,
@@ -111,7 +111,6 @@ fun ReaderScreen(
     onNavigateBack: () -> Unit,
     onChapterChange: (Int) -> Unit,
     onPositionChange: (Int,Int) -> Unit = { _,_ -> },
-    previousChapter: Int?,
     onGoBackChapter: () -> Unit,
     onFontSizeChange: (Float) -> Unit,
     onToggleDarkMode: () -> Unit,
@@ -198,7 +197,17 @@ fun ReaderScreen(
     onInitialLayout: () -> Unit = {},
     introductionRequested: Boolean = false,
     onIntroductionShown: () -> Unit = {},
+    returnPoint: com.zhongbai233.epub.reader.model.ReaderReturnPoint? = null,
+    navigationPulse: Int = 0,
+    onPageLabel: (String) -> Unit = {},
+    onJumpToChapter: (Int) -> Unit = onChapterChange,
+    onSyncProgress: () -> Unit = {},
+    syncingProgress: Boolean = false,
 ) {
+    var returnExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(navigationPulse) {
+        if (navigationPulse > 0) { returnExpanded = true; kotlinx.coroutines.delay(3000); returnExpanded = false }
+    }
     var textSelection by remember { mutableStateOf<TextSelectionState?>(null) }
     var selectionAnchorRange by remember { mutableStateOf<TextSelectionState?>(null) }
     var draggingHandle by remember { mutableStateOf<Int?>(null) }
@@ -229,7 +238,7 @@ fun ReaderScreen(
     val displayBook=remember(book,presentations){book.copy(chapters=NativeChapterList(book.chapters,presentations))}
     var firstContentVisible by remember(bookPath) { mutableStateOf(false) }
     var initialLayout by remember(bookPath) { mutableStateOf(false) }
-    var contentPrepared by remember(bookPath,currentChapter,scrollMode,presentations[currentChapter]) { mutableStateOf(false) }
+    var contentPrepared by remember(bookPath,currentChapter,scrollMode,presentations[currentChapter],navigationPulse) { mutableStateOf(false) }
     val initialReadyCallback by rememberUpdatedState(onInitialLayout)
     LaunchedEffect(initialLayout, contentPrepared, presentations.containsKey(currentChapter)) {
         if(initialLayout && (book.chapters.isEmpty() || presentations.containsKey(currentChapter)) && (contentPrepared || book.chapters.isEmpty())) {
@@ -298,7 +307,7 @@ fun ReaderScreen(
                             if (reviewChapterIndices.contains(target)) {
                                 onOpenReviewPanel(target, anchorId)
                             } else {
-                                onChapterChange(target)
+                                onJumpToChapter(target)
                             }
                         } else {
                             runCatching { uriHandler.openUri(link) }
@@ -851,6 +860,8 @@ fun ReaderScreen(
                         }
                     }
         ) {
+            // Keep the previous native paper until the target layout and images are ready.
+            ReaderJumpSurface(navigationPulse, contentPrepared && presentations.containsKey(currentChapter), pageAnimation != "None", bgColor) {
             Crossfade(targetState = activeBgImageUri,
                 animationSpec = tween(com.zhongbai233.epub.reader.ui.theme.APPEARANCE_TRANSITION_MILLIS),
                 modifier = Modifier.fillMaxSize(), label = "reader background image") { uri ->
@@ -911,6 +922,7 @@ fun ReaderScreen(
                             }
                 ) {
                     ScrollModeContent(
+                        onPageLabel = onPageLabel,
                         onContentPrepared = { contentPrepared=true },
                         chapter = chapter,
                         allChapters = displayBook.chapters,
@@ -1068,7 +1080,10 @@ fun ReaderScreen(
                         initialCharOffset = currentCharOffset,
                         positionRevision = positionRevision,
                     onPositionChange = onPositionChange,
+                    onPageLabel = onPageLabel,
                 )
+            }
+
             }
 
             // CSC 纠错弹出菜单
@@ -1215,7 +1230,7 @@ fun ReaderScreen(
                     bottomInset = if(showTtsBar) ttsBarHeight + 104.dp else 0.dp,
                     onMenuOpenChange = { quickMenuOpen = it; if(it) showControls = true },
                     progressLabel = "${currentChapter + 1} / ${book.chapters.size} · ${(chapterProgress.coerceIn(0f, 1f) * 100).toInt()}%",
-                    showProgress = !showImmersiveStatus,
+                    showProgress = !showImmersiveStatus && returnPoint == null,
                     readerNight = appearanceDark,
                     onToggleDayNight = {onToggleDayNight(bgColor.luminance()<0.45f)},
                     onToggleToc = onToggleToc,
@@ -1229,7 +1244,16 @@ fun ReaderScreen(
                         showControls = true
                         showSettingsSheet = true
                     },
+                    onSyncProgress = onSyncProgress, syncingProgress = syncingProgress,
                 )
+            }
+            AnimatedVisibility(visible = returnPoint != null && (showControls || returnExpanded),
+                enter = fadeIn(tween(180)), exit = fadeOut(tween(140)),
+                modifier = Modifier.align(Alignment.BottomStart).windowInsetsPadding(WindowInsets.navigationBarsIgnoringVisibility)
+                    .padding(start = 16.dp, bottom = if(showTtsBar) ttsBarHeight + 120.dp else 16.dp)) {
+                returnPoint?.let { point ->
+                    ReaderReturnButton(point, returnExpanded, onGoBackChapter)
+                }
             }
 
             if (showSettingsSheet) {
@@ -1556,7 +1580,7 @@ fun SearchDialog(
     results: List<com.zhongbai233.epub.reader.model.SearchResult>,
     onQueryChange: (String) -> Unit,
     onSearch: (String) -> Unit,
-    onResultClick: (Int) -> Unit,
+    onResultClick: (com.zhongbai233.epub.reader.model.SearchResult) -> Unit,
     onDismiss: () -> Unit,
 ) {
     if (!visible) return
@@ -1590,7 +1614,7 @@ fun SearchDialog(
                     items(results.size) { idx ->
                         val r = results[idx]
                         Surface(
-                            onClick = { onResultClick(r.chapterIndex) },
+                            onClick = { onResultClick(r) },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Column(modifier = Modifier.padding(vertical = 6.dp)) {

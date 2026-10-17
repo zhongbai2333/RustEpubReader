@@ -58,6 +58,7 @@ struct ReadingWorkspace: View {
     var ready: () -> Void = {}
     var paperChanged: (UIColor) -> Void = { _ in }
     @ObservedObject var library: PreviewLibrary
+    @ObservedObject var account: GitHubAccount
     @StateObject private var annotations: ReadingAnnotations
     @StateObject private var model: ChineseCorrection
     @StateObject private var speech: ReadingSpeech
@@ -79,13 +80,15 @@ struct ReadingWorkspace: View {
     @State private var nativeRevision = 0
     @State private var publicationNote: NativeNote?
     @State private var publicationLinkTask: Task<Void,Never>?
-    init(book: PreviewBook, library: PreviewLibrary, openSync: @escaping () -> Void = {}, close: @escaping () -> Void = {}, ready: @escaping () -> Void = {}, paperChanged: @escaping (UIColor) -> Void = { _ in }, contentVisible: Bool = true) {
+    init(book: PreviewBook, library: PreviewLibrary, account: GitHubAccount, openSync: @escaping () -> Void = {}, close: @escaping () -> Void = {}, ready: @escaping () -> Void = {}, paperChanged: @escaping (UIColor) -> Void = { _ in }, contentVisible: Bool = true) {
         ReadingIntroduction.prepare()
         ReaderFontPicker.migrateLegacySettings()
         ReadingMode.migrate()
         ReadingAppearance.migrate()
         _current = State(initialValue: library.anchors[book.id] ?? book.entry.anchor)
         self.contentVisible = contentVisible
+        self.account = account
+        _jumpHistory = State(initialValue: library.jumpHistory(for: book.id))
         self.book = book; self.library = library; self.openSync = openSync; self.close = close; self.ready = ready; self.paperChanged = paperChanged
         _annotations = StateObject(wrappedValue: ReadingAnnotations(library: library, book: book))
         _model = StateObject(wrappedValue: ChineseCorrection(root: library.client.root))
@@ -115,6 +118,69 @@ struct ReadingWorkspace: View {
     @State private var position = ""
     @State private var jump: ReadingAnchor?
     @State private var jumpingID = 0
+    @State private var jumpHistory = ReadingJumpHistory()
+    @State private var jumpOrigins: [Int: ReadingReturnPoint] = [:]
+    @State private var remoteJumps = Set<Int>()
+    @State private var returningJumps = Set<Int>()
+    @State private var returnExpanded = false
+    @State private var navigationPreparation: Task<Void,Never>?
+    @State private var preparingNavigationToken: Int?
+    @State private var navigationClosed = false
+    private func navigate(to target: ReadingAnchor, remote: Bool = false, returning: Bool = false) {
+        guard book.chapters.indices.contains(target.chapter), target != current, remote || jumpOrigins.isEmpty else { return }
+        activity.touch(); speech.detach(); jump = nil
+        if let obsolete = preparingNavigationToken {
+            jumpOrigins.removeValue(forKey: obsolete); remoteJumps.remove(obsolete); returningJumps.remove(obsolete)
+        }
+        preparingNavigationToken = nil
+        jumpingID += 1
+        if jumpOrigins.count > 16 { jumpOrigins.removeAll(); remoteJumps.removeAll(); returningJumps.removeAll() }
+        jumpOrigins[jumpingID] = ReadingReturnPoint(anchor: current,
+            chapterTitle: book.chapters.indices.contains(current.chapter) ? book.chapters[current.chapter].title : "",
+            pageLabel: position)
+        if remote { remoteJumps.insert(jumpingID) }
+        if returning { returningJumps.insert(jumpingID) }
+        panel = nil
+        navigationPreparation?.cancel()
+        let token = jumpingID
+        if nativeStyles[target.chapter] != nil { jump = target; return }
+        let client = library.client, id = book.id, policy = cssPolicy, enabled = scriptsEnabled, events = nativeEvents[target.chapter] ?? []
+        preparingNavigationToken = token
+        navigationPreparation = Task {
+            do {
+                let prepared = try await Task.detached {
+                    _ = try book.chapter(at: target.chapter)
+                    return try client.call("native_presentation", ["id": id, "chapter": target.chapter, "policy": policy, "scripts": enabled, "events": events.map {["node": $0]}], as: NativePresentation.self)
+                }.value
+                guard !Task.isCancelled, jumpOrigins[token] != nil else { return }
+                preparingNavigationToken = nil
+                nativeStyles[target.chapter] = prepared.styles; nativeRevision += 1
+                jump = target
+            } catch {
+                guard !Task.isCancelled else { return }
+                preparingNavigationToken = nil
+                jumpOrigins.removeValue(forKey: token); remoteJumps.remove(token); returningJumps.remove(token)
+                library.fail(error, title: L("reader.error_open_failed"))
+            }
+        }
+    }
+    private func completedNavigation(_ anchor: ReadingAnchor, _ token: Int) {
+        guard !navigationClosed, let origin = jumpOrigins.removeValue(forKey: token) else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+            if returningJumps.remove(token) != nil { _ = jumpHistory.pop() }
+            else { jumpHistory.record(origin, target: anchor) }
+        }
+        library.saveJumpHistory(jumpHistory, for: book.id)
+        let remote = remoteJumps.remove(token) != nil
+        current = anchor
+        if remote { library.anchors[book.id] = anchor }
+        else { library.save(anchor, for: book) }
+        withAnimation(.easeInOut(duration: 0.2)) { returnExpanded = true }
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            if jumpingID == token { withAnimation(.easeInOut(duration: 0.2)) { returnExpanded = false } }
+        }
+    }
     @AppStorage("preview.backgroundHex") private var backgroundHex = "F7F2E8"
     @AppStorage("preview.textHex") private var textHex = "252525"
     @AppStorage("preview.paragraphSpacing") private var paragraphSpacing = 0.65
@@ -140,7 +206,12 @@ struct ReadingWorkspace: View {
                          toggleTools: { activity.touch(); withAnimation(.easeInOut(duration: reduceMotion ? 0 : 0.35)) { tools.toggle() } },
                          turning: { activity.touch(); speech.detach(); withAnimation(.easeInOut(duration: reduceMotion ? 0 : 0.25)) { tools = false } },
                          visible: { anchor, label in current = anchor; position = label; if !prepared { prepared = true; ready() } },
-                         committed: { library.save($0, for: book) },
+                         committed: { anchor in
+                             // A page turn completed after the remote offer: this local edit is newer.
+                             navigationPreparation?.cancel()
+                             jumpOrigins.removeAll(); remoteJumps.removeAll(); returningJumps.removeAll(); jump = nil
+                             library.save(anchor, for: book)
+                         },
                          publicationNote: { chapter,href in
                              let client=library.client;let id=book.id
                              Task {publicationNote=try? await Task.detached {try client.call("native_note",["id":id,"chapter":chapter,"href":href],as:NativeNote.self)}.value}
@@ -157,9 +228,9 @@ struct ReadingWorkspace: View {
                              publicationLinkTask=Task {
                                  let target=await Task.detached {try? client.call("native_link",["id":id,"chapter":chapter,"href":href],as:ReadingAnchor?.self)}.value
                                  guard !Task.isCancelled,let target else{return}
-                                 activity.touch();speech.detach();jump=target;jumpingID += 1;library.save(target,for:book)
+                                 navigate(to: target)
                              }
-                         }, nativeStyles: nativeStyles, failed: {library.fail($0,title:L("reader.error_open_failed"))}, viewportChanged: { viewport = $0 }, contentVisible: contentVisible, immersiveStatus: showImmersiveStatus ? statusInfo : nil)
+                         }, nativeStyles: nativeStyles, failed: {jumpOrigins.removeAll();remoteJumps.removeAll();returningJumps.removeAll();library.fail($0,title:L("reader.error_open_failed"))}, viewportChanged: { viewport = $0 }, contentVisible: contentVisible, immersiveStatus: showImmersiveStatus ? statusInfo : nil, navigated: completedNavigation, navigationAllowed: { !navigationClosed && jumpOrigins[$0] != nil })
                 .ignoresSafeArea()
             }
             GeometryReader { geometry in
@@ -182,6 +253,7 @@ struct ReadingWorkspace: View {
                                     Text("\(current.chapter+1)/\(book.chapters.count) · \(book.chapters.indices.contains(current.chapter) ? book.chapters[current.chapter].title : "")")
                                         .font(.system(size: 11)).foregroundStyle(Color(uiColor: chromeInk).opacity(0.65)).lineLimit(1)
                                 }.padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(Color(uiColor: options.paper).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
                                 .readerChromeTitleGlass(namespace: chromeGlass)
                                 .accessibilityElement(children: .combine)
                                 Spacer(minLength: 0)
@@ -201,6 +273,7 @@ struct ReadingWorkspace: View {
                     ZStack(alignment: .trailing) {
                         if speech.hasSession && panel == nil && passage == nil {
                             ReadingSpeechCapsule(speech: speech, current: current, open: { panel = "speech" })
+                                .padding(.leading, jumpHistory.previous == nil ? 0 : 56)
                                 .padding(.trailing, showTools ? 56 : 0)
                         } else if options.readingMode == .scroll {
                             Text(position).font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -218,11 +291,19 @@ struct ReadingWorkspace: View {
                                 night: appearanceDark,
                                 dayNight: {
                                     appearanceLink.toggleReading()
-                                }, visibility: {quickMenuOpen=$0;activity.touch()})
+                                }, visibility: {quickMenuOpen=$0;activity.touch()},
+                                synchronize: { if account.enabled { account.syncNow() } else { openSync() } }, syncing: account.syncing)
                                 .frame(width: 44, height: 44)
                                 .readerChromeGlass(in: Circle(), id: "menu", namespace: chromeGlass)
                         }
                     }.frame(maxWidth: .infinity, alignment: .trailing).frame(height: 44).padding(.leading,left+16).padding(.trailing,right+16)
+                        .overlay(alignment: .leading) {
+                            if showTools || returnExpanded, let point = jumpHistory.previous {
+                                ReadingReturnButton(point: point, expanded: returnExpanded && !speech.hasSession) { navigate(to: point.anchor, returning: true) }
+                                    .frame(maxWidth: max(44, min(320, geometry.size.width-left-right-104)), alignment: .leading)
+                                    .padding(.leading,left+16)
+                            }
+                        }
                         .padding(.bottom, options.readingMode.paginated ? 24 : 0)
                         .overlay(alignment: .bottomLeading) {
                             if options.readingMode == .scroll, showImmersiveStatus, let statusInfo {
@@ -253,14 +334,14 @@ struct ReadingWorkspace: View {
                 Group {
                 if selected.id == "toc" {
                     ReaderContentsView(book: book, current: current) { anchor in
-                        speech.detach(); jump = anchor; jumpingID += 1; library.save(anchor, for: book); panel = nil
+                        navigate(to: anchor)
                     }
                 } else if selected.id == "search" {
                     ReaderSearchView(book: book) { anchor in
-                        speech.detach(); jump = anchor; jumpingID += 1; library.save(anchor, for: book); panel = nil
+                        navigate(to: anchor)
                     }
                 } else if selected.id == "annotations" {
-                    AnnotationsView(annotations: annotations, current: current, jump: { speech.detach(); jump = $0; jumpingID += 1; library.save($0, for: book); panel = nil })
+                    AnnotationsView(annotations: annotations, current: current, jump: { navigate(to: $0) })
                 } else if selected.id == "correction" {
                     CorrectionView(model: model, annotations: annotations, chapter: current.chapter)
                 } else if selected.id == "stats" {
@@ -332,7 +413,7 @@ struct ReadingWorkspace: View {
         .onChange(of: quickMenuOpen) { _, open in if open {activity.sample(reading:false,listening:speech.audible)} }
         .onChange(of: panel) { _, value in activity.touch(); if value != nil { activity.sample(reading: false, listening: speech.audible) } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { speech.pause(); activity.stop() } else {activity.touch()} }
-        .onDisappear { activity.stop();publicationLinkTask?.cancel() }
+        .onDisappear { navigationClosed = true; activity.stop();publicationLinkTask?.cancel();navigationPreparation?.cancel() }
         .task(id: "\(cssPolicy)/\(scriptsEnabled)/\(current.chapter)/\(nativeEvents)") {
             let client=library.client, id=book.id, mode=cssPolicy, enabled=scriptsEnabled, events=nativeEvents
             let indices=Array(max(0,current.chapter-2)..<min(book.chapters.count,current.chapter+3))
@@ -353,7 +434,7 @@ struct ReadingWorkspace: View {
                 }
             }.value
             guard !Task.isCancelled else {return}
-            var styles = nativeStyles.filter { indices.contains($0.key) }
+            var styles = nativeStyles.filter { indices.contains($0.key) || $0.key == jump?.chapter }
             for (index, value) in result { styles[index] = value.styles }
             if styles != nativeStyles { nativeStyles = styles; nativeRevision += 1 }
         }
@@ -362,7 +443,7 @@ struct ReadingWorkspace: View {
         .onDisappear { speech.stop(); model.cancel() }
         .onChange(of: library.offer?.id) { _, _ in
             guard let offer=library.offer else { return }
-            speech.detach(); jump=offer.anchor; jumpingID += 1; library.offer=nil
+            navigate(to: offer.anchor, remote: true); library.offer=nil
         }
         .alert(LM(library.errorTitle), isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) {
             Button(L("manage.done"), role: .cancel) { library.error = nil }

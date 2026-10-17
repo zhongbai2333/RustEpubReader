@@ -437,12 +437,25 @@ impl AppSettings {
     }
 
     fn from_app(app: &ReaderApp) -> Self {
-        let (last_book_path, last_chapter) = if matches!(app.view, AppView::Reader | AppView::Sync)
-        {
-            (app.book_path.clone(), app.current_chapter)
-        } else {
-            (None, 0)
-        };
+        let (last_book_path, last_chapter) =
+            if let Some((path, chapter, _)) = &app.pending_book_open {
+                (
+                    Some(path.clone()),
+                    app.library
+                        .books
+                        .iter()
+                        .find(|entry| &entry.path == path)
+                        .map(|entry| entry.last_chapter)
+                        .or(*chapter)
+                        .unwrap_or(0),
+                )
+            } else if matches!(app.view, AppView::Reader | AppView::Sync)
+                && !app.book_presentation.is_closing()
+            {
+                (app.book_path.clone(), app.current_chapter)
+            } else {
+                (None, 0)
+            };
 
         let mut appearance_paints = app.appearance_paints.clone();
         if app.appearance_current_dark {
@@ -711,6 +724,7 @@ pub struct ReaderApp {
     pub(crate) panel_reflow_anchor: Option<(usize, usize)>,
     pub(crate) page_curl: crate::ui::curl_reader::PageCurlState,
     pub(crate) reader_chrome: crate::ui::reader_chrome::ReaderChromeState,
+    pub(crate) reader_navigation: crate::ui::reader_navigation::ReaderNavigation,
     pub is_dual_column: bool,
     pub paging_page_rect: Option<egui::Rect>,
     pub embedded_font_names: Vec<String>,
@@ -729,7 +743,6 @@ pub struct ReaderApp {
     pub cjk_font_search: String,
     pub i18n: I18n,
     language_checked: std::time::Instant,
-    pub previous_chapter: Option<usize>,
     pub scroll_toc_to_current: bool,
     // ── Sharing ──
     pub auto_start_sharing: bool,
@@ -1081,6 +1094,7 @@ impl ReaderApp {
             panel_reflow_anchor: None,
             page_curl: Default::default(),
             reader_chrome: Default::default(),
+            reader_navigation: Default::default(),
             is_dual_column: false,
             paging_page_rect: None,
             embedded_font_names: Vec::new(),
@@ -1096,7 +1110,6 @@ impl ReaderApp {
             cjk_font_search: String::new(),
             i18n: I18n::default(),
             language_checked: std::time::Instant::now(),
-            previous_chapter: None,
             scroll_toc_to_current: false,
             // Sharing
             auto_start_sharing: false,
@@ -1457,7 +1470,14 @@ impl ReaderApp {
                     book.chapters.len(),
                     book.fonts.len()
                 ));
-                let mut ch = chapter.unwrap_or(0);
+                let mut ch = self
+                    .library
+                    .books
+                    .iter()
+                    .find(|entry| entry.path == path)
+                    .map(|entry| entry.last_chapter)
+                    .or(chapter)
+                    .unwrap_or(0);
                 if !book.chapters.is_empty() {
                     ch = ch.min(book.chapters.len() - 1);
                 }
@@ -1517,6 +1537,7 @@ impl ReaderApp {
                 // Load annotation config and start reading timer
                 self.book_config =
                     reader_core::library::Library::read_book_config(&self.data_dir, &entry.id);
+                self.load_reader_navigation();
 
                 self.push_feedback_log(format!(
                     "[Book] ready: chapter={}/{}, embedded_fonts={}, path={}",
@@ -2051,11 +2072,36 @@ impl ReaderApp {
 
 impl Drop for ReaderApp {
     fn drop(&mut self) {
+        if !self
+            .reader_navigation
+            .pending_remote_from(self.reader_location())
+            && self.book_path.is_some()
+        {
+            self.position_save_due = Some(std::time::Instant::now());
+            self.flush_reading_position_if_due();
+        }
+        AppSettings::from_app(self).save(&self.data_dir);
         self.flush_reading_stats();
     }
 }
 
 impl eframe::App for ReaderApp {
+    #[cfg(debug_assertions)]
+    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        if std::env::args().any(|arg| arg == "--verify-navigation")
+            && ctx
+                .data(|data| data.get_temp::<(u32, f64)>(egui::Id::new("reader_navigation_check")))
+                .is_some_and(|(step, _)| step == 3)
+        {
+            if let Some(paper) = self.paging_page_rect {
+                input.focused = true;
+                input.events.push(egui::Event::PointerMoved(egui::pos2(
+                    paper.left() + 38.,
+                    paper.bottom() - 38.,
+                )));
+            }
+        }
+    }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(feature = "performance-checks")]
         let performance_frame = std::time::Instant::now();
@@ -2064,6 +2110,9 @@ impl eframe::App for ReaderApp {
         self.tick_book_share(ctx);
         self.advance_book_presentation();
         self.poll_book_open();
+        self.poll_reader_navigation();
+        #[cfg(debug_assertions)]
+        self.check_reader_navigation(ctx);
         // --- Poll TTS audio ---
         if self.i18n.preference() == &Language::Auto {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
@@ -2166,11 +2215,13 @@ impl eframe::App for ReaderApp {
 
         // --- Handle incoming sync updates ---
         {
-            let mut sync_updates = self
+            let updates: Vec<_> = self
                 .pending_sync_updates
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for update in sync_updates.drain(..) {
+                .unwrap_or_else(|e| e.into_inner())
+                .drain(..)
+                .collect();
+            for update in updates {
                 // If the update applies to the currently opened book
                 if let Some(hash) = &self.current_book_hash {
                     if &update.book_hash == hash {
@@ -2185,31 +2236,28 @@ impl eframe::App for ReaderApp {
                             || update.block != self.current_block
                             || update.char_offset != self.current_char_offset
                         {
-                            if update.chapter != self.current_chapter {
-                                self.previous_chapter = Some(self.current_chapter);
-                            }
-                            self.current_chapter = update.chapter;
-                            self.last_synced_chapter = Some(update.chapter); // Don't bounce it back
-                            self.last_synced_block = Some(update.block);
-                            self.current_block = update.block;
-                            self.current_char_offset = update.char_offset;
-                            self.last_synced_char_offset = Some(update.char_offset);
-                            self.pending_restore_block = Some(update.block);
-                            self.pages_dirty = true;
-                            self.current_page = 0;
+                            let target = crate::ui::reader_navigation::ReaderLocation {
+                                chapter: update.chapter,
+                                block: update.block,
+                                char_offset: update.char_offset,
+                            };
+                            self.navigate_reader(
+                                target,
+                                crate::ui::reader_navigation::NavigationKind::Remote,
+                            );
                         }
 
                         if let Some(p) = &self.book_path {
                             let chap_title = update.chapter_title.clone().or_else(|| {
                                 self.book
                                     .as_ref()
-                                    .and_then(|b| b.chapters.get(self.current_chapter))
+                                    .and_then(|b| b.chapters.get(update.chapter))
                                     .map(|c| c.title.clone())
                             });
                             self.library.apply_position(
                                 &self.data_dir,
                                 p,
-                                self.current_chapter,
+                                update.chapter,
                                 chap_title,
                                 update.block,
                                 update.char_offset,
@@ -2248,29 +2296,7 @@ impl eframe::App for ReaderApp {
 
         // --- Reload library from disk if sync completed ---
         if self.pending_library_reload.swap(false, Ordering::SeqCst) {
-            let reloaded = Library::load_from(&self.data_dir);
-            // Preserve current book's chapter if open (avoid overwrite by stale sync data)
-            if let Some(ref book_path) = self.book_path {
-                let current_ch = self.current_chapter;
-                self.library = reloaded;
-                if let Some(entry) = self.library.books.iter().find(|b| b.path == *book_path) {
-                    if entry.last_chapter != current_ch {
-                        let chap_title = self
-                            .book
-                            .as_ref()
-                            .and_then(|b| b.chapters.get(current_ch))
-                            .map(|c| c.title.clone());
-                        self.library.update_chapter(
-                            &self.data_dir,
-                            book_path,
-                            current_ch,
-                            chap_title,
-                        );
-                    }
-                }
-            } else {
-                self.library = reloaded;
-            }
+            self.library = Library::load_from(&self.data_dir);
         }
 
         // --- Keep shared_book_paths in sync with library ---
@@ -2283,9 +2309,12 @@ impl eframe::App for ReaderApp {
         }
 
         // --- Push outgoing local progress to PeerStore ---
-        if Some(self.current_chapter) != self.last_synced_chapter
-            || Some(self.current_block) != self.last_synced_block
-            || Some(self.current_char_offset) != self.last_synced_char_offset
+        if !self
+            .reader_navigation
+            .pending_remote_from(self.reader_location())
+            && (Some(self.current_chapter) != self.last_synced_chapter
+                || Some(self.current_block) != self.last_synced_block
+                || Some(self.current_char_offset) != self.last_synced_char_offset)
         {
             if let Some(hash) = &self.current_book_hash {
                 let mut store = self.peer_store.lock().unwrap_or_else(|e| e.into_inner());
@@ -2765,6 +2794,11 @@ impl eframe::App for ReaderApp {
         }
         self.appearance_transition
             .finish(ctx, self.reader_bg_texture.clone());
+        if self.view == AppView::Reader {
+            let rect = self.paging_page_rect.unwrap_or_else(|| ctx.screen_rect());
+            self.reader_navigation
+                .finish_frame(ctx, rect, self.reader_bg_texture.clone());
+        }
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
             settings.save(&self.data_dir);
@@ -2904,5 +2938,90 @@ mod reading_theme_settings_tests {
             assert_eq!(restored.font_size, 27.);
             assert!(restored.scroll_mode);
         }
+    }
+}
+
+#[cfg(test)]
+mod reading_navigation_tests {
+    use super::*;
+    use crate::ui::reader_navigation::{NavigationKind, ReaderLocation};
+
+    #[test]
+    fn remote_jump_return_and_restart_preserve_exact_coordinates_without_echo() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().to_string_lossy().into_owned();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../ios/Tests/fixtures/native-reading-modes.epub");
+        let path = source.to_str().unwrap();
+        let mut app = ReaderApp::from_data_dir(data.clone());
+        app.finish_book_open(path, Some(19), Ok((EpubBook::open(path).unwrap(), None)));
+        let origin = ReaderLocation {
+            chapter: 19,
+            block: 3,
+            char_offset: 37,
+        };
+        app.current_chapter = origin.chapter;
+        app.current_block = origin.block;
+        app.current_char_offset = origin.char_offset;
+        app.current_page = 2;
+        app.total_pages = 9;
+        let target = ReaderLocation {
+            chapter: 21,
+            block: 3,
+            char_offset: 3,
+        };
+        app.navigate_reader(target, NavigationKind::Remote);
+        // Loading must not mutate the visible position or create a local revision.
+        assert_eq!(app.reader_location(), origin);
+        for _ in 0..500 {
+            app.poll_reader_navigation();
+            if app.reader_location() == target {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(app.reader_location(), target);
+        assert_eq!(app.last_synced_char_offset, Some(3));
+        assert_eq!(app.reader_navigation.history.len(), 1);
+        assert_eq!(app.reader_navigation.history[0].location, origin);
+        assert!(app.reader_navigation.history[0].page.contains('3'));
+        app.load_reader_navigation();
+        assert_eq!(app.reader_navigation.history[0].location, origin);
+        app.navigate_reader(origin, NavigationKind::Return);
+        for _ in 0..500 {
+            app.poll_reader_navigation();
+            if app.reader_location() == origin {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(app.reader_location(), origin);
+        assert!(app.reader_navigation.history.is_empty());
+        app.navigate_reader(target, NavigationKind::Remote);
+        app.schedule_position_save_at(19, 3, 45);
+        app.poll_reader_navigation();
+        assert_eq!(
+            app.current_char_offset, 45,
+            "A pending remote load replaced newer local reading"
+        );
+        assert!(!app
+            .reader_navigation
+            .pending_remote_from(app.reader_location()));
+        assert!(app.reader_navigation.history.is_empty());
+        app.schedule_position_save_at(19, 3, 37);
+        drop(app);
+        let mut restored = ReaderApp::from_data_dir(data.clone());
+        for _ in 0..500 {
+            restored.poll_book_open();
+            if restored.book.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(restored.reader_location(), origin);
+        assert!(restored.book.is_some());
+        restored.close_book_presentation();
+        assert!(AppSettings::from_app(&restored).last_book_path.is_none());
     }
 }

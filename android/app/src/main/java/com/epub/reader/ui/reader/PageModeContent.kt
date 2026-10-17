@@ -116,6 +116,7 @@ internal fun PageModeContent(
     initialCharOffset: Int = 0,
     positionRevision: Int = 0,
     onPositionChange: (Int,Int) -> Unit = { _,_ -> },
+    onPageLabel: (String) -> Unit = {},
     onContentPrepared: () -> Unit = {},
     turnController: PageTurnController? = null,
 ) {
@@ -169,7 +170,7 @@ internal fun PageModeContent(
         return
     }
     val preparedCallback by rememberUpdatedState(onContentPrepared)
-    LaunchedEffect(pages) { withFrameNanos { }; withFrameNanos { }; preparedCallback() }
+    LaunchedEffect(pages, positionRevision) { withFrameNanos { }; withFrameNanos { }; preparedCallback() }
 
     val pairedPages =
         remember(pages, isTwoColumn) {
@@ -240,6 +241,11 @@ internal fun PageModeContent(
     var chapterJumpTriggered by remember { mutableStateOf(true) }
     var prevChapterKey by remember { mutableIntStateOf(currentChapter) }
     val chapterAlpha = remember { Animatable(1f) }
+    LaunchedEffect(currentChapter, pages.size, pagerState.settledPage, pageCurlState.current, bookSpreadPageCurlState.current) {
+        val slot = if(isBookSpread) bookSpreadPageCurlState.current else if(pageAnimation == "Realistic") pageCurlState.current else pagerState.settledPage
+        val page = (slot-leadingVirtual).coerceAtLeast(0) * if(isTwoColumn) 2 else 1
+        onPageLabel(I18n.tf2("reader.page_info", "${(page+1).coerceAtMost(pages.size.coerceAtLeast(1))}", "${pages.size.coerceAtLeast(1)}"))
+    }
     // 跟踪当前翻页动画 Job，跨章时取消残留协程防止快速翻页导致状态错乱
     var flipJob by remember { mutableStateOf<Job?>(null) }
     // 强制限制连续翻页间隔，防止过快卡死

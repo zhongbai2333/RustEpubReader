@@ -536,6 +536,7 @@ pub enum Icon {
     Notes,
     Settings,
     Back,
+    Return,
     Audio,
     Close,
     Bookmark,
@@ -629,6 +630,29 @@ pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color3
                 line(&[(-9., y), (9., y)]);
                 p.circle_filled(pt(x, y), 3., color);
             }
+        }
+        Icon::Return => {
+            line(&[(-1., -8.), (-8., -1.), (-1., 6.)]);
+            let points = [
+                pt(-8., -1.),
+                pt(7., -1.),
+                pt(9., 3.),
+                pt(9., 7.),
+                pt(5., 10.),
+                pt(-1., 10.),
+            ];
+            p.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                [points[0], points[1], points[2], points[3]],
+                false,
+                Color32::TRANSPARENT,
+                s,
+            ));
+            p.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                [points[3], points[4], points[5], pt(-3., 10.)],
+                false,
+                Color32::TRANSPARENT,
+                s,
+            ));
         }
         Icon::Back => {
             line(&[(-1., -7.), (-8., 0.), (-1., 7.)]);
