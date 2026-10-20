@@ -450,6 +450,34 @@ class FailureEvidenceTests(unittest.TestCase):
                     runtime.collect_android_result(device,"navigation","navigation.json",root)
                 self.assertTrue((root/"navigation-screenshot-error.txt").is_file())
 
+    def test_accessibility_failure_preserves_the_screen_before_activity_cleanup(self):
+        for valid in (True, False):
+            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                def device(*args):
+                    if args[-1]=="cache/accessibility-failure.png":
+                        return b"\x89PNG\r\n\x1a\nbefore cleanup" if valid else b"missing image"
+                    if args==("exec-out","screencap","-p"):
+                        return b"\x89PNG\r\n\x1a\nafter cleanup"
+                    return b'{"passed":false,"error":"original accessibility failure"}'
+                with self.assertRaisesRegex(RuntimeError,"original accessibility failure"):
+                    runtime.collect_android_result(device,"accessibility","accessibility.json",root)
+                if valid:
+                    self.assertIn(b"before cleanup",(root/"accessibility-failure.png").read_bytes())
+                else:
+                    self.assertTrue((root/"accessibility-failure-screenshot-error.txt").is_file())
+                self.assertIn(b"after cleanup",(root/"accessibility-screen.png").read_bytes())
+
+    def test_accessibility_success_never_collects_a_stale_failure_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            def device(*args):
+                if args==("exec-out","screencap","-p"):return b"\x89PNG\r\n\x1a\npassed screen"
+                self.assertNotEqual(args[-1],"cache/accessibility-failure.png")
+                return b'{"passed":true}'
+            self.assertTrue(runtime.collect_android_result(device,"accessibility","accessibility.json",root)["passed"])
+            self.assertFalse((root/"accessibility-failure.png").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

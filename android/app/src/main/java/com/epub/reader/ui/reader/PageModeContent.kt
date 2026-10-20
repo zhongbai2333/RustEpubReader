@@ -441,7 +441,7 @@ internal fun PageModeContent(
         }
     }
     fun accessibilityPageTurn(forward: Boolean): Boolean {
-        if (chapterJumpTriggered || flipJob?.isActive == true) return false
+        if (chapterJumpTriggered || flipJob?.isActive == true || pagerState.isScrollInProgress) return false
         val current=if(pageAnimation=="Realistic") (if(isBookSpread)bookSpreadPageCurlState.current else pageCurlState.current) else pagerState.currentPage
         if ((forward && current >= totalSlots-1) || (!forward && current <= 0)) return false
         flipJob=coroutineScope.launch {performPageTurn(forward)}
@@ -601,11 +601,11 @@ internal fun PageModeContent(
                 .semantics(mergeDescendants = false) {
                     // Keep the text/image descendants readable, including in
                     // curl/cover modes that have no native Pager scroll action.
-                    // Announce page actions only when a turn can be accepted.
-                    // The settled locator can arrive one frame before the
-                    // animation job finishes; TalkBack must not offer a turn
-                    // that the handler will immediately reject in that gap.
-                    customActions = if (chapterJumpTriggered || flipJob?.isActive == true || pagerState.isScrollInProgress) emptyList() else listOf(
+                    // Keep action labels/IDs stable while accessibility clients
+                    // cache this node. Removing/recreating actions during each
+                    // animation can invalidate a previously fetched action ID.
+                    // The handler rejects busy turns without moving the page.
+                    customActions = listOf(
                         CustomAccessibilityAction(I18n.t("reader.next_page")) {accessibilityPageTurn(true)},
                         CustomAccessibilityAction(I18n.t("reader.previous_page")) {accessibilityPageTurn(false)},
                     )

@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.app.UiAutomation
 import android.content.Intent
+import android.graphics.Bitmap
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.lifecycle.ViewModelProvider
@@ -23,7 +24,9 @@ internal object ReaderAccessibilityRuntimeChecks {
         val context=test.targetContext
         check(context.packageName in setOf("local.reader.accessibility","local.reader.columns")) {"Use the isolated accessibility package"}
         val report=JSONObject().put("passed",false).put("actual_audio_verified",false)
+        File(context.cacheDir,"accessibility-failure.png").delete()
         val cases=JSONArray()
+        val events=JSONArray()
         var activity:MainActivity?=null
         val automation=test.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
         fun await(message:String,condition:()->Boolean) {
@@ -58,32 +61,59 @@ internal object ReaderAccessibilityRuntimeChecks {
             test.runOnMainSync {vm=ViewModelProvider(host)[ReaderViewModel::class.java];vm.updateForceSingleColumn(true)}
             await("Reader did not open") {vm.currentBook!=null && !vm.isLoading && vm.currentChapter==1}
             fun location()=ReaderLocation(vm.currentChapter,vm.currentBlock,vm.currentCharOffset)
+            fun record(event:String) {
+                events.put(JSONObject().put("event",event).put("mode",vm.readerPageAnimation)
+                    .put("location",location().toString()).put("page_label",vm.currentPageLabel)
+                    .put("active_package",automation.rootInActiveWindow?.packageName?.toString()))
+            }
             fun action(label:String):Pair<AccessibilityNodeInfo,AccessibilityNodeInfo.AccessibilityAction>? = nodes()
                 .asSequence().filter {it.isVisibleToUser && it.packageName?.toString()==context.packageName}.mapNotNull {node->node.actionList.firstOrNull {it.label?.toString()==label}?.let {node to it}}.firstOrNull()
+            fun perform(label:String) {
+                // A settled locator can precede completion of the animation.
+                // Retry only rejected commands; after acceptance never issue a
+                // second turn, and independently assert the resulting location.
+                await("Accessible action not accepted: $label") {
+                    action(label)?.let {(node,command)->node.performAction(command.id)} == true
+                }
+            }
             for(mode in listOf("Realistic","Slide","Cover","None")) {
                 test.runOnMainSync {vm.updateScrollMode(false);vm.updateReaderPageAnimation(mode);vm.goToPosition(1,0,0,remember=false)}
                 await("Reader reflow did not settle for $mode") {location()==ReaderLocation(1,0,0) && action(I18n.t("reader.next_page"))!=null}
                 Thread.sleep(350) // Let the production opening/reflow gate release; not timing data.
                 val origin=location()
+                record("origin")
                 val text=nodes().firstOrNull {it.isVisibleToUser && it.packageName?.toString()==context.packageName && (it.text?.length?:0)>24}
                     ?:error("No readable native text node: $mode")
                 text.performAction(AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS)
                 check(text.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)) {"Native text cannot receive accessibility focus: $mode"}
-                val next=checkNotNull(action(I18n.t("reader.next_page")))
-                check(next.first.performAction(next.second.id)) {"Accessible next rejected: $mode"}
+                perform(I18n.t("reader.next_page"))
                 await("Accessible next did not move: $mode") {location()!=origin}
-                await("Accessible previous not ready after next: $mode") {action(I18n.t("reader.previous_page"))!=null}
-                val previous=checkNotNull(action(I18n.t("reader.previous_page")))
-                check(previous.first.performAction(previous.second.id)) {"Accessible previous rejected: $mode"}
-                await("Accessible previous did not return: $mode, origin=$origin") {location()==origin}
+                record("next settled")
+                perform(I18n.t("reader.previous_page"))
+                record("previous accepted")
+                var last=location()
+                await("Accessible previous did not return: $mode, origin=$origin") {
+                    if(location()!=last) {last=location();record("previous position changed")}
+                    location()==origin
+                }
+                record("returned")
                 cases.put(JSONObject().put("mode",mode).put("native_text_focus",true).put("custom_actions",true).put("exact_return",true))
             }
             report.put("passed",true)
-        } catch(error:Throwable) {report.put("error",error.toString())}
+        } catch(error:Throwable) {
+            report.put("error",error.toString())
+            report.put("failure_active_package",automation.rootInActiveWindow?.packageName?.toString())
+            try {
+                automation.takeScreenshot()?.let { image ->
+                    try {File(context.cacheDir,"accessibility-failure.png").outputStream().use {image.compress(Bitmap.CompressFormat.PNG,100,it)}}
+                    finally {image.recycle()}
+                }
+            } catch(captureError:Throwable) {report.put("failure_screenshot_error",captureError.toString())}
+        }
         finally {
             activity?.let {host->test.runOnMainSync {host.finish()}}
         }
-        report.put("cases",cases)
+        report.put("cases",cases).put("events",events)
         File(context.cacheDir,"accessibility-verification.json").writeText(report.toString(2))
         test.finish(if(report.optBoolean("passed")) Activity.RESULT_OK else Activity.RESULT_CANCELED,
             android.os.Bundle().apply {putString("stream",report.toString(2))})
