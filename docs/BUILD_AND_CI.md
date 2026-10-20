@@ -112,11 +112,15 @@ iterations with parallel execution disabled. This is repetition, not retry on
 failure: any failed iteration rejects the run. Touches require hittable targets;
 selection uses a held slow drag, and Settings uses its nested switch control.
 Failed cases retain explicit screenshots/hierarchies and native gesture traces.
-XCTest owns the target app's first installation and launch on a new simulator;
-command-line diagnostics run afterward. The synthetic selection fixture arrives
-through the generated XCTest environment, so seeding it never requires an
-earlier target installation. The original build manifest remains unchanged.
-XCTest also waits for process exit and the Home workspace before each debug launch.
+The collector installs the admitted app once on a new simulator. A targetless
+XCTest runner controls it through `XCUIApplication(bundleIdentifier:)`, avoiding
+the IDE's separate target-app installation/debug launch path. Command-line
+diagnostics run afterward. Synthetic fixtures pass through the runner environment
+and public `launchEnvironment`; original build inputs stay unchanged. App/data
+container paths, executable checksum and inode must remain unchanged across
+XCTest. The generated test products contain only a byte-identical runner, with
+the reader removed from deployment dependencies and product search paths.
+The runner waits for process exit and Home before each launch.
 Android TalkBack checks include an outgoing paragraph's Show on Screen request
 during a Cover return. Pager accessibility scrolls share the reader's turn gate,
 and noncurrent pages do not expose readable descendants.

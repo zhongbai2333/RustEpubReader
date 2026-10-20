@@ -79,9 +79,17 @@ def ios_selection_inputs(app, manifest):
         if not path.is_relative_to(root) or not path.is_dir():
             raise ValueError("XCTest product is missing or escapes its product root")
         return path
-    target, runner = product("UITargetAppPath"), product("TestHostPath")
-    if artifact_hash(target) != artifact_hash(app):
+    if case.get("UseUITargetAppProvidedByTests") is not True or case.get("UITargetAppPath") or case.get("UITargetAppBundleIdentifier"):
+        raise ValueError("XCTest must control a provided app without an IDE launch target")
+    target = app.resolve()
+    dependency = "__TESTROOT__/" + str(target.relative_to(root)) if target.is_relative_to(root) else None
+    if dependency is None or dependency not in case.get("DependentProductPaths", []) or not target.is_dir():
         raise ValueError("XCTest target differs from the admitted app")
+    with (target / "Info.plist").open("rb") as stream:
+        target_info = plistlib.load(stream)
+    if target_info.get("CFBundleIdentifier") not in ("local.reader.columns", "local.reader.ui-files") or "iPhoneSimulator" not in target_info.get("CFBundleSupportedPlatforms", []):
+        raise ValueError("Expected an isolated simulator target app")
+    runner = product("TestHostPath")
     with (runner / "Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
     if info.get("CFBundleIdentifier") != "local.reader.ui-files.tests.xctrunner" or "iPhoneSimulator" not in info.get("CFBundleSupportedPlatforms", []):
@@ -92,17 +100,37 @@ def ios_selection_inputs(app, manifest):
 
 
 def ios_selection_manifest(args):
-    """Seed the synthetic fixture without installing/launching the target first."""
-    ios_selection_inputs(args.app, args.xctestrun)
+    """Pass admitted fixtures to the runner, which launches the installed app."""
+    runner = ios_selection_inputs(args.app, args.xctestrun)
     with args.xctestrun.open("rb") as stream:
         values = plistlib.load(stream)
-    environment = values["ReaderUITests"].setdefault("UITargetAppEnvironmentVariables", {})
+    case = values["ReaderUITests"]
+    root = args.xctestrun.resolve().parent
+    app_path = "__TESTROOT__/" + str(args.app.resolve().relative_to(root))
+    runner_path = "__TESTROOT__/" + str(runner.relative_to(root))
+    case["DependentProductPaths"] = [path for path in case.get("DependentProductPaths", [])
+                                     if path != app_path and not path.startswith(app_path + "/")]
+    if any(path != runner_path and not path.startswith(runner_path + "/") for path in case["DependentProductPaths"]):
+        raise ValueError("Unsupported external XCTest runner dependency")
+    # Xcode also searches the build-products directory when resolving a bundle
+    # identifier. Give it only the runner, so it cannot select/install the reader
+    # as a local build instead of using the already admitted installation.
+    products = args.output.parent / (args.output.name + "-xctest-products")
+    products.mkdir(exist_ok=False)
+    staged_runner = products / runner.relative_to(root)
+    staged_runner.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(runner, staged_runner, symlinks=True)
+    if artifact_hash(staged_runner) != artifact_hash(runner):
+        raise ValueError("Staged XCTest runner differs from the admitted runner")
+    environment = case.setdefault("EnvironmentVariables", {})
+    with (args.app / "Info.plist").open("rb") as stream:
+        environment["READER_UI_TARGET_BUNDLE"] = plistlib.load(stream)["CFBundleIdentifier"]
     for key, fixture in (("READER_SELECTION_EPUB_BASE64", ROOT / "core/tests/fixtures/native-typography.epub"),
                          ("READER_NAVIGATION_EPUB_BASE64", ROOT / "ios/Tests/fixtures/native-reading-modes.epub")):
         environment[key] = base64.b64encode(fixture.read_bytes()).decode("ascii")
     def absolute_products(value):
         if isinstance(value, str):
-            return value.replace("__TESTROOT__", str(args.xctestrun.resolve().parent))
+            return value.replace("__TESTROOT__", str(products.resolve()))
         if isinstance(value, list):
             return [absolute_products(item) for item in value]
         if isinstance(value, dict):
@@ -113,11 +141,31 @@ def ios_selection_manifest(args):
     return path.resolve()
 
 
+def ios_installed_target(args, identifier, bundle):
+    paths = {kind: ios_simctl(args.output, "get_app_container", identifier, bundle, kind).decode().strip()
+             for kind in ("app", "data")}
+    installed = Path(paths["app"])
+    with (installed / "Info.plist").open("rb") as stream:
+        info = plistlib.load(stream)
+    with (args.app / "Info.plist").open("rb") as stream:
+        admitted = plistlib.load(stream)
+    if info.get("CFBundleIdentifier") != bundle or admitted.get("CFBundleIdentifier") != bundle or info.get("CFBundleExecutable") != admitted.get("CFBundleExecutable"):
+        raise ValueError("Installed app identity differs from the admitted target")
+    binary = (installed / info["CFBundleExecutable"]).resolve()
+    source = (args.app / info["CFBundleExecutable"]).resolve()
+    if not binary.is_relative_to(installed.resolve()) or not source.is_relative_to(args.app.resolve()):
+        raise ValueError("Installed executable escapes its app bundle")
+    checksum = hashlib.sha256(binary.read_bytes()).hexdigest()
+    if checksum != hashlib.sha256(source.read_bytes()).hexdigest():
+        raise ValueError("Installed executable differs from the admitted app")
+    return dict(paths, binary_sha256=checksum, binary_inode=binary.stat().st_ino)
+
+
 def collect_ios_selection(args, identifier, bundle):
-    # XCTest owns the first installation and launch on this fresh simulator.
-    # Do not preinstall the target: its first launch otherwise replaces that
-    # installation while SpringBoard is still registering the update.
+    # The collector installs once. A targetless runner controls that exact app
+    # through XCUIApplication(bundleIdentifier:), without an IDE debug launch.
     manifest = ios_selection_manifest(args)
+    before = ios_installed_target(args, identifier, bundle)
     command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest), "-destination", "id=" + identifier,
                "-parallel-testing-enabled", "NO", "-test-iterations", "3", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
     try:
@@ -129,12 +177,15 @@ def collect_ios_selection(args, identifier, bundle):
         if result.returncode != 0:
             raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
     finally:
-        # XCTest can reinstall the same bundle and move its data container. A
-        # pre-test path is not authoritative after that operation.
-        container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
+        after = ios_installed_target(args, identifier, bundle)
+        (args.output / "xctest-installation.json").write_text(json.dumps(
+            {"before": before, "after": after, "unchanged": before == after}, indent=2) + "\n")
+        container = Path(after["data"])
         for pattern in ("selection-ui-*.json", "selection-gesture-*.json", "reduced-motion-verification.json"):
             for path in (container / "Library/Caches").glob(pattern):
                 shutil.copyfile(path, args.output / path.name)
+    if before != after:
+        raise RuntimeError("XCTest replaced the admitted target app or data container")
     rows = [validate_report((args.output / ("selection-ui-" + mode + ".json")).read_bytes()) for mode in ("none", "curl", "slide", "cover", "scroll")]
     selection = validate_selection({"passed": True, "cases": rows}, "ios")
     selection["reduced_motion"] = validate_reduced_motion(validate_report((args.output / "reduced-motion-verification.json").read_bytes()), "ios")
@@ -622,10 +673,9 @@ def ios(args):
         ios_simctl(args.output, "bootstatus", identifier, "-b", timeout=600)
         prepare_ios_ui(args.output, identifier)
         results = {}
+        ios_simctl(args.output, "install", identifier, str(args.app))
         if getattr(args, "with_selection", False):
             results["selection"] = collect_ios_selection(args, identifier, bundle)
-        else:
-            ios_simctl(args.output, "install", identifier, str(args.app))
         container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
         documents, caches = container / "Documents", container / "Library/Caches"
         documents.mkdir(parents=True, exist_ok=True)

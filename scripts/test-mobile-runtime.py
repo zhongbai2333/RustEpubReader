@@ -434,10 +434,11 @@ class SelectionTests(unittest.TestCase):
     def products(root):
         product=root/"Debug-iphonesimulator";app=product/"ReaderPreview.app";runner=product/"ReaderUITests-Runner.app"
         app.mkdir(parents=True);(runner/"PlugIns/ReaderUITests.xctest").mkdir(parents=True)
-        (app/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"local.reader.columns"}))
+        (app/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"local.reader.columns","CFBundleExecutable":"ReaderPreview","CFBundleSupportedPlatforms":["iPhoneSimulator"]}))
+        (app/'ReaderPreview').write_bytes(b'admitted native executable')
         (runner/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"local.reader.ui-files.tests.xctrunner","CFBundleSupportedPlatforms":["iPhoneSimulator"]}))
         manifest=root/"ReaderUITests.xctestrun"
-        manifest.write_bytes(plistlib.dumps({"ReaderUITests":{"UITargetAppPath":"__TESTROOT__/Debug-iphonesimulator/ReaderPreview.app","TestHostPath":"__TESTROOT__/Debug-iphonesimulator/ReaderUITests-Runner.app","TestBundlePath":"__TESTHOST__/PlugIns/ReaderUITests.xctest"}}))
+        manifest.write_bytes(plistlib.dumps({"ReaderUITests":{"UseUITargetAppProvidedByTests":True,"DependentProductPaths":["__TESTROOT__/Debug-iphonesimulator/ReaderPreview.app","__TESTROOT__/Debug-iphonesimulator/ReaderUITests-Runner.app","__TESTROOT__/Debug-iphonesimulator/ReaderUITests-Runner.app/PlugIns/ReaderUITests.xctest"],"TestHostPath":"__TESTROOT__/Debug-iphonesimulator/ReaderUITests-Runner.app","TestBundlePath":"__TESTHOST__/PlugIns/ReaderUITests.xctest"}}))
         return app,runner,manifest
 
     def test_binds_ui_runner_and_manifest_to_the_actual_app(self):
@@ -455,6 +456,15 @@ class SelectionTests(unittest.TestCase):
             value=plistlib.loads(manifest.read_bytes());value["ReaderUITests"]["TestHostPath"]="__TESTROOT__/../outside.app";manifest.write_bytes(plistlib.dumps(value))
             with self.assertRaisesRegex(ValueError,"escapes"):runtime.ios_selection_inputs(app,manifest)
 
+    def test_rejects_ide_target_binding_and_unowned_app(self):
+        for key,value in (('UseUITargetAppProvidedByTests',False),('UITargetAppPath','__TESTROOT__/Debug-iphonesimulator/ReaderPreview.app')):
+            with tempfile.TemporaryDirectory() as directory:
+                app,runner,manifest=self.products(Path(directory));v=plistlib.loads(manifest.read_bytes());v['ReaderUITests'][key]=value;manifest.write_bytes(plistlib.dumps(v))
+                with self.assertRaisesRegex(ValueError,'IDE launch target'):runtime.ios_selection_inputs(app,manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            app,runner,manifest=self.products(Path(directory));v=plistlib.loads((app/'Info.plist').read_bytes());v['CFBundleIdentifier']='com.user.real.app';(app/'Info.plist').write_bytes(plistlib.dumps(v))
+            with self.assertRaisesRegex(ValueError,'isolated simulator target'):runtime.ios_selection_inputs(app,manifest)
+
     def test_selection_manifest_seeds_fixture_without_mutating_or_installing_build_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);app,runner,manifest=self.products(root)
@@ -465,15 +475,20 @@ class SelectionTests(unittest.TestCase):
             simctl.assert_not_called()
             case=plistlib.loads(path.read_bytes())['ReaderUITests']
             import base64
-            self.assertEqual(base64.b64decode(case['UITargetAppEnvironmentVariables']['READER_SELECTION_EPUB_BASE64']),(runtime.ROOT/'core/tests/fixtures/native-typography.epub').read_bytes())
-            self.assertEqual(base64.b64decode(case['UITargetAppEnvironmentVariables']['READER_NAVIGATION_EPUB_BASE64']),(runtime.ROOT/'ios/Tests/fixtures/native-reading-modes.epub').read_bytes())
-            self.assertEqual(case['UITargetAppPath'],str(app.resolve()))
-            self.assertEqual(case['TestHostPath'],str(runner.resolve()))
+            self.assertEqual(base64.b64decode(case['EnvironmentVariables']['READER_SELECTION_EPUB_BASE64']),(runtime.ROOT/'core/tests/fixtures/native-typography.epub').read_bytes())
+            self.assertEqual(base64.b64decode(case['EnvironmentVariables']['READER_NAVIGATION_EPUB_BASE64']),(runtime.ROOT/'ios/Tests/fixtures/native-reading-modes.epub').read_bytes())
+            self.assertEqual(case['EnvironmentVariables']['READER_UI_TARGET_BUNDLE'],'local.reader.columns')
+            self.assertNotIn('UITargetAppPath',case)
+            staged=root/'reports-xctest-products/Debug-iphonesimulator/ReaderUITests-Runner.app'
+            self.assertEqual(case['TestHostPath'],str(staged.resolve()))
+            self.assertEqual(runtime.artifact_hash(staged),runtime.artifact_hash(runner))
+            self.assertFalse((staged.parent/'ReaderPreview.app').exists())
+            self.assertEqual(case['DependentProductPaths'],[str(staged.resolve()),str(staged.resolve()/'PlugIns/ReaderUITests.xctest')])
             self.assertEqual(case['TestBundlePath'],'__TESTHOST__/PlugIns/ReaderUITests.xctest')
             self.assertEqual(manifest.read_bytes(),original)
             self.assertEqual(before,(runtime.artifact_hash(app),runtime.artifact_hash(runner)))
 
-    def test_selection_results_use_the_container_installed_by_xctest(self):
+    def test_selection_results_require_the_same_admitted_installation(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);output=root/"output";output.mkdir()
             current=root/"new-container";cache=current/"Library/Caches";cache.mkdir(parents=True)
@@ -492,15 +507,35 @@ class SelectionTests(unittest.TestCase):
                 for row in self.report("ios")["cases"]:
                     (cache/("selection-ui-"+row["mode"]+".json")).write_text(json.dumps(dict(row,passed=True)))
                 return SimpleNamespace(returncode=0)
-            def lookup(output, *args):
-                self.assertTrue(ran,"Container path must be resolved after XCTest runs")
-                self.assertEqual(args[:1],("get_app_container",))
-                return str(current).encode()
+            state={'app':'/owned.app','data':str(current),'binary_sha256':'admitted','binary_inode':1}
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
-            with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,"ios_simctl",side_effect=lookup),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
+            with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,'ios_installed_target',return_value=state),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 value=runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue(value["passed"]);self.assertEqual(len(list(output.glob("selection-ui-*.json"))),5)
             self.assertEqual(json.loads((output/"selection-gesture-slide.json").read_text())["events"],[{"state":1},{"state":3}])
+            self.assertTrue(json.loads((output/'xctest-installation.json').read_text())['unchanged'])
+
+    def test_installed_binary_must_match_admitted_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);app,runner,manifest=self.products(root);installed=root/'installed.app'
+            import shutil
+            shutil.copytree(app,installed)
+            args=SimpleNamespace(app=app,output=root)
+            def lookup(output,*args):return str(installed if args[-1]=='app' else root/'data').encode()
+            with patch.object(runtime,'ios_simctl',side_effect=lookup):
+                before=runtime.ios_installed_target(args,'owned-device','local.reader.columns')
+                self.assertEqual(before['binary_sha256'],runtime.hashlib.sha256((app/'ReaderPreview').read_bytes()).hexdigest())
+                (installed/'ReaderPreview').write_bytes(b'wrong executable')
+                with self.assertRaisesRegex(ValueError,'executable differs'):runtime.ios_installed_target(args,'owned-device','local.reader.columns')
+
+    def test_reinstalled_target_cannot_pass_even_with_successful_xctest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);args=SimpleNamespace(output=root,xctestrun=root/'source',timeout=1)
+            before={'app':'/owned.app','data':str(root),'binary_sha256':'same','binary_inode':1}
+            after=dict(before,binary_inode=2)
+            with patch.object(runtime,'ios_installed_target',side_effect=[before,after]),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'),patch.object(runtime.subprocess,'run',return_value=SimpleNamespace(returncode=0)):
+                with self.assertRaisesRegex(RuntimeError,'replaced the admitted target'):runtime.collect_ios_selection(args,'owned-device','local.reader.columns')
+            self.assertFalse(json.loads((root/'xctest-installation.json').read_text())['unchanged'])
 
     def test_invalid_selection_inputs_do_not_start_xctest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -509,7 +544,7 @@ class SelectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'wrong admitted app'):runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             execute.assert_not_called()
 
-    def test_xctest_owns_first_install_and_failure_cannot_fall_through_to_cli(self):
+    def test_target_is_installed_once_before_external_ui_and_failure_stops_cli(self):
         for failed in (False,True):
             with tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);app,runner,manifest=self.products(root)
@@ -522,11 +557,12 @@ class SelectionTests(unittest.TestCase):
                         self.assertTrue(selected);return str(root/'container').encode()
                     if args[0]=='launch':
                         self.assertTrue(selected);self.assertEqual(args[1],'--terminate-running-process')
-                    self.assertNotEqual(args[0],'install','XCTest must own target installation')
+                    if args[0]=='install':self.assertFalse(selected)
                     return b''
                 def selection(*args):
                     nonlocal selected
-                    self.assertFalse(any(c[0] in ('install','launch','get_app_container') for c in commands))
+                    self.assertEqual(len([c for c in commands if c[0]=='install']),1)
+                    self.assertFalse(any(c[0] in ('launch','get_app_container') for c in commands))
                     selected=True
                     if failed:raise RuntimeError('native XCTest failed')
                     return {'passed':True}
@@ -534,7 +570,7 @@ class SelectionTests(unittest.TestCase):
                 with patch.object(runtime,'run',side_effect=[b'{"runtimes":[]}',b'{"devicetypes":[]}']),patch.object(runtime,'select_ios_runtime',return_value={'identifier':'owned.runtime','version':'26.4.1'}),patch.object(runtime,'compatible_tablet',return_value='owned.ipad'),patch.object(runtime,'ios_simctl',side_effect=simctl),patch.object(runtime,'prepare_ios_ui'),patch.object(runtime,'collect_ios_selection',side_effect=selection),patch.object(runtime,'wait_report',return_value={'passed':True}),patch.object(runtime,'capture_ios_failure'),patch.object(runtime,'cleanup_ios_simulator',return_value=[]):
                     if failed:
                         with self.assertRaisesRegex(RuntimeError,'native XCTest failed'):runtime.ios(args)
-                        self.assertFalse(any(c[0] in ('install','launch','get_app_container') for c in commands))
+                        self.assertFalse(any(c[0] in ('launch','get_app_container') for c in commands))
                     else:
                         self.assertTrue(runtime.ios(args)['selection']['passed'])
 
@@ -607,7 +643,7 @@ class FailureEvidenceTests(unittest.TestCase):
             (cache/"reduced-motion-verification.json").write_text('{"passed":true}')
             (cache/"selection-gesture-slide.json").write_text('{"events":[]}')
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
-            with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,"ios_simctl",return_value=str(root/"container").encode()),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
+            with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,'ios_installed_target',return_value={'data':str(root/'container'),'app':'/owned.app'}),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 with self.assertRaisesRegex(RuntimeError,"Native selection XCTest failed"):
                     runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue((output/"reduced-motion-verification.json").is_file())

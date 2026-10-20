@@ -1,10 +1,19 @@
 import XCTest
 
 final class ReaderSelectionUITests:XCTestCase {
+    private var readerBundle:String {ProcessInfo.processInfo.environment["READER_UI_TARGET_BUNDLE"] ?? "local.reader.columns"}
+    private func readerApp() throws -> XCUIApplication {
+        guard ["local.reader.columns","local.reader.ui-files"].contains(readerBundle) else {throw NSError(domain:"ReaderUITests",code:1)}
+        let app=XCUIApplication(bundleIdentifier:readerBundle)
+        for key in ["READER_SELECTION_EPUB_BASE64","READER_NAVIGATION_EPUB_BASE64"] {
+            app.launchEnvironment[key]=try XCTUnwrap(ProcessInfo.processInfo.environment[key],"Missing admitted fixture")
+        }
+        return app
+    }
     override func setUpWithError() throws {continueAfterFailure=false}
     override func tearDownWithError() throws {
         if (testRun?.failureCount ?? 0)>0 {
-            for app in [XCUIApplication(),XCUIApplication(bundleIdentifier:"com.apple.Preferences")] where app.state == .runningForeground {
+            for app in [XCUIApplication(bundleIdentifier:readerBundle),XCUIApplication(bundleIdentifier:"com.apple.Preferences")] where app.state == .runningForeground {
                 let image=XCTAttachment(screenshot:app.screenshot());image.name="failed-input-screen";image.lifetime = .keepAlways;add(image)
                 let hierarchy=XCTAttachment(string:app.debugDescription);hierarchy.name="failed-input-hierarchy";hierarchy.lifetime = .keepAlways;add(hierarchy)
             }
@@ -16,14 +25,14 @@ final class ReaderSelectionUITests:XCTestCase {
     }
     private func launchAfterExit(_ app:XCUIApplication) {
         if app.state != .notRunning {app.terminate()}
-        XCTAssertTrue(app.wait(for:.notRunning,timeout:20),"Previous process must exit before another debug launch")
+        XCTAssertTrue(app.wait(for:.notRunning,timeout:20),"Previous process must exit before another launch")
         XCUIDevice.shared.press(.home)
         let home=XCUIApplication(bundleIdentifier:"com.apple.springboard")
         XCTAssertTrue(home.wait(for:.runningForeground,timeout:20),"Wait for the system workspace before launching")
         app.launch()
     }
     private func select(_ mode:String) throws {
-        let app=XCUIApplication()
+        let app=try readerApp()
         app.launchArguments=["--verify-selection-ui","--selection-mode",mode,"--selection-run",UUID().uuidString,"--book-share-preview","-reader.language","en"]
         launchAfterExit(app)
         let status=app.staticTexts["selection-status"]
@@ -95,7 +104,7 @@ final class ReaderSelectionUITests:XCTestCase {
         waitForExpectations(timeout:10)
         XCTAssertEqual(toggle.value as? String,"1")
         let setting=XCTAttachment(screenshot:settings.screenshot());setting.name="system-reduce-motion-enabled";setting.lifetime = .keepAlways;add(setting)
-        let app=XCUIApplication()
+        let app=try readerApp()
         app.launchArguments=["--verify-reduced-motion-ui","--book-share-preview","-reader.language","en"]
         launchAfterExit(app)
         let status=app.staticTexts["motion-status"]
