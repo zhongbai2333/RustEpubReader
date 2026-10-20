@@ -8,8 +8,9 @@ from pathlib import Path
 import tempfile
 import shlex
 import subprocess
+import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SPEC = importlib.util.spec_from_file_location("runtime", Path(__file__).with_name("check-mobile-runtime.py"))
 runtime = importlib.util.module_from_spec(SPEC)
@@ -249,10 +250,60 @@ class IOSLifecycleTests(unittest.TestCase):
     def test_requested_gui_targets_the_owned_device_in_the_selected_xcode(self):
         with tempfile.TemporaryDirectory() as directory:
             developer=Path(directory);app=developer/"Applications/Simulator.app";app.mkdir(parents=True)
-            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(developer)}),patch.object(runtime,"run",return_value=b"") as command:
-                runtime.attach_ios_simulator("owned-device")
-            self.assertEqual(command.call_args.args,("open","-a",str(app),"--args","-CurrentDeviceUDID","owned-device"))
-            self.assertEqual(command.call_args.kwargs,{"timeout":30})
+            process=MagicMock();process.wait.return_value=0;process.poll.return_value=0
+            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(developer)}),patch.object(runtime.subprocess,"Popen",return_value=process) as command:
+                with runtime.attach_ios_simulator(developer,"owned-device"):
+                    process.wait.assert_not_called()  # Cold boot has not finished.
+            self.assertEqual(command.call_args.args[0],["open","-a",str(app),"--args","-CurrentDeviceUDID","owned-device"])
+            process.wait.assert_called_once_with(timeout=30)
+            self.assertTrue((developer/"simulator-window.log").is_file())
+            process.terminate.assert_not_called()
+
+    def test_real_window_request_can_wait_for_boot_without_blocking_boot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/"Applications/Simulator.app").mkdir(parents=True)
+            ready=root/"boot-ready";actual_popen=subprocess.Popen;children=[]
+            script="import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); deadline=time.monotonic()+3\nwhile not p.exists() and time.monotonic()<deadline: time.sleep(.01)\nsys.exit(0 if p.exists() else 2)"
+            def launch(command,**kwargs):
+                child=actual_popen([sys.executable,"-c",script,str(ready)],**kwargs);children.append(child);return child
+            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(root)}),patch.object(runtime.subprocess,"Popen",side_effect=launch):
+                with runtime.attach_ios_simulator(root,"owned-device"):
+                    self.assertIsNone(children[0].poll())
+                    ready.write_text("system boot completed")
+            self.assertEqual(children[0].returncode,0)
+
+    def test_gui_request_failure_cannot_be_admitted_after_boot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/"Applications/Simulator.app").mkdir(parents=True)
+            process=MagicMock();process.wait.return_value=2;process.poll.return_value=2
+            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(root)}),patch.object(runtime.subprocess,"Popen",return_value=process):
+                with self.assertRaisesRegex(RuntimeError,"window request failed"):
+                    with runtime.attach_ios_simulator(root,"owned-device"):
+                        pass
+
+    def test_gui_acknowledgement_timeout_still_fails_and_reaps_only_its_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/"Applications/Simulator.app").mkdir(parents=True)
+            process=MagicMock();process.poll.return_value=None
+            process.wait.side_effect=[subprocess.TimeoutExpired("open",30),0]
+            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(root)}),patch.object(runtime.subprocess,"Popen",return_value=process):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    with runtime.attach_ios_simulator(root,"owned-device"):
+                        pass
+            process.terminate.assert_called_once_with()
+            self.assertEqual([c.kwargs for c in process.wait.call_args_list],[{"timeout":30},{"timeout":5}])
+
+    def test_boot_failure_reaps_pending_gui_request_without_waiting_for_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/"Applications/Simulator.app").mkdir(parents=True)
+            process=MagicMock();process.poll.return_value=None
+            process.wait.side_effect=[subprocess.TimeoutExpired("open",5),0]
+            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(root)}),patch.object(runtime.subprocess,"Popen",return_value=process):
+                with self.assertRaisesRegex(RuntimeError,"boot failed"):
+                    with runtime.attach_ios_simulator(root,"owned-device"):
+                        raise RuntimeError("boot failed")
+            process.terminate.assert_called_once_with();process.kill.assert_called_once_with()
+            self.assertEqual([c.kwargs for c in process.wait.call_args_list],[{"timeout":5},{"timeout":5}])
 
     def test_gui_attachment_is_opt_in_and_precedes_the_ui_readiness_probe(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -263,11 +314,17 @@ class IOSLifecycleTests(unittest.TestCase):
                 if command[0]=="get_app_container":return str(root/"container").encode()
                 if command==("launch","owned-device","com.apple.Preferences"):return b"com.apple.Preferences: 123\n"
                 return b""
-            with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device),patch.object(runtime,"wait_report",return_value={"passed":True}),patch.object(runtime,"attach_ios_simulator",side_effect=lambda identifier:calls.append(("gui",identifier))):
+            developer=root/"xcode";(developer/"Applications/Simulator.app").mkdir(parents=True)
+            process=MagicMock();process.poll.return_value=0
+            process.wait.side_effect=lambda **kwargs:calls.append(("gui-ready","owned-device")) or 0
+            def start(*args,**kwargs):
+                calls.append(("gui","owned-device"));return process
+            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(developer)}),patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device),patch.object(runtime,"wait_report",return_value={"passed":True}),patch.object(runtime.subprocess,"Popen",side_effect=start):
                 runtime.ios(args)
             self.assertLess(calls.index(("boot","owned-device")),calls.index(("gui","owned-device")))
             self.assertLess(calls.index(("gui","owned-device")),calls.index(("bootstatus","owned-device","-b")))
-            self.assertLess(calls.index(("gui","owned-device")),calls.index(("launch","owned-device","com.apple.Preferences")))
+            self.assertLess(calls.index(("bootstatus","owned-device","-b")),calls.index(("gui-ready","owned-device")))
+            self.assertLess(calls.index(("gui-ready","owned-device")),calls.index(("launch","owned-device","com.apple.Preferences")))
 
 
 class CorpusCoverageTests(unittest.TestCase):

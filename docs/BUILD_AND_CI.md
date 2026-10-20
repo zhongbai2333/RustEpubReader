@@ -107,6 +107,11 @@ data migration. Reader launches retain their 180-second bound; this does not
 retry or admit a timed-out launch. Failed simulator commands retain partial
 standard output as well as standard error, followed by bounded diagnostics
 and owned-device cleanup.
+The Simulator window request starts concurrently with first boot. Launch
+Services may acknowledge the window only after system initialization; its
+30-second acknowledgement check therefore runs after `bootstatus` completes.
+Neither a failed boot nor a failed window request is admitted. Pending window
+requests are terminated and reaped on failure, and their output is retained.
 Native selection and system Reduce Motion XCTest cases run for three complete
 iterations with parallel execution disabled. This is repetition, not retry on
 failure: any failed iteration rejects the run. Touches require hittable targets;

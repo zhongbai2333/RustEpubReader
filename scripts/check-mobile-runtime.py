@@ -2,7 +2,7 @@
 """Run real native smoke checks on disposable mobile installations, without accounts."""
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -297,14 +297,31 @@ def prepare_ios_ui(output, identifier):
         raise RuntimeError("iOS UI readiness probe did not return a process: " + repr(reply))
 
 
-def attach_ios_simulator(identifier):
+@contextmanager
+def attach_ios_simulator(output, identifier):
     developer = os.environ.get("DEVELOPER_DIR") or run("xcode-select", "-p").decode().strip()
     simulator = Path(developer) / "Applications/Simulator.app"
     if not simulator.is_dir():
         raise ValueError("Selected Xcode Simulator application is missing: " + str(simulator))
-    # Select the owned iPad on first opening, rather than booting a second,
-    # default device and competing with the actual test's cold initialization.
-    run("open", "-a", str(simulator), "--args", "-CurrentDeviceUDID", identifier, timeout=30)
+    # Launch Services may wait for the selected iPad's first boot before it
+    # acknowledges opening the window. Start it concurrently with bootstatus;
+    # the existing boot budget, not a 30-second GUI request, owns first boot.
+    command = ["open", "-a", str(simulator), "--args", "-CurrentDeviceUDID", identifier]
+    with (output / "simulator-window.log").open("wb") as log:
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            yield
+            code = process.wait(timeout=30)
+            if code:
+                raise RuntimeError("Simulator window request failed with exit code " + str(code))
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
 
 
 def capture_ios_failure(output, identifier, bundle):
@@ -665,12 +682,12 @@ def ios(args):
     completed = False
     try:
         ios_simctl(args.output, "boot", identifier)
-        if getattr(args, "show_simulator", False):
-            attach_ios_simulator(identifier)
         # A newly created hosted iPad may still be migrating system data at
         # three minutes (with the Apple progress screen visible). Give only
         # first boot a separate bounded budget; app launches keep 180 seconds.
-        ios_simctl(args.output, "bootstatus", identifier, "-b", timeout=600)
+        window = attach_ios_simulator(args.output, identifier) if getattr(args, "show_simulator", False) else nullcontext()
+        with window:
+            ios_simctl(args.output, "bootstatus", identifier, "-b", timeout=600)
         prepare_ios_ui(args.output, identifier)
         results = {}
         ios_simctl(args.output, "install", identifier, str(args.app))
