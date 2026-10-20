@@ -153,13 +153,46 @@ class IOSLifecycleTests(unittest.TestCase):
     def test_timed_out_command_remains_a_failure_with_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            error = subprocess.TimeoutExpired(["xcrun", "simctl", "launch"], 180, stderr=b"simulator unavailable")
+            error = subprocess.TimeoutExpired(["xcrun", "simctl", "launch"], 180,
+                                              output=b"Waiting on system startup", stderr=b"simulator unavailable")
             with patch.object(runtime.subprocess, "run", side_effect=error):
                 with self.assertRaises(subprocess.TimeoutExpired):
                     runtime.ios_simctl(output, "launch", "owned-device", "local.reader.columns")
             rows = [json.loads(line) for line in (output / "simulator-commands.jsonl").read_text().splitlines()]
             self.assertEqual([r["status"] for r in rows], ["started", "failed"])
             self.assertEqual(rows[-1]["stderr"], "simulator unavailable")
+            self.assertEqual(rows[-1]["stdout"], "Waiting on system startup")
+
+    def test_first_boot_budget_does_not_extend_reader_launches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);args,listing=self.fixture(root);calls=[]
+            def device(output,*command,**kwargs):
+                calls.append((command,kwargs))
+                if command[0]=="create":return b"owned-device\n"
+                if command[0]=="get_app_container":return str(root/"container").encode()
+                if command==("launch","owned-device","com.apple.Preferences"):return b"com.apple.Preferences: 123\n"
+                return b""
+            with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device),patch.object(runtime,"wait_report",return_value={"passed":True}):
+                runtime.ios(args)
+            self.assertEqual([kw for cmd,kw in calls if cmd[0]=="bootstatus"],[{"timeout":600}])
+            reader_launches=[kw for cmd,kw in calls if cmd[0]=="launch" and "local.reader.columns" in cmd]
+            self.assertEqual(len(reader_launches),len(runtime.CASES))
+            self.assertTrue(all("timeout" not in kw for kw in reader_launches))
+
+    def test_first_boot_timeout_is_not_retried_or_admitted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,listing=self.fixture(Path(directory));calls=[]
+            def device(output,*command,**kwargs):
+                calls.append(command)
+                if command[0]=="create":return b"owned-device\n"
+                if command[0]=="bootstatus":raise subprocess.TimeoutExpired(command,600,output=b"Data migration")
+                self.assertNotIn(command[0],("install","launch","get_app_container"))
+                return b"boot diagnostics"
+            with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device):
+                with self.assertRaises(subprocess.TimeoutExpired):runtime.ios(args)
+            self.assertEqual(len([cmd for cmd in calls if cmd[0]=="bootstatus"]),1)
+            self.assertEqual(calls[-2:],[("shutdown","owned-device"),("delete","owned-device")])
+            self.assertTrue((args.output/"simulator-processes.txt").is_file())
 
     def test_launch_timeout_retains_native_report_and_diagnostics_without_passing_or_retrying(self):
         with tempfile.TemporaryDirectory() as directory:

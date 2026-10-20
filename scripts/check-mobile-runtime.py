@@ -189,7 +189,9 @@ def ios_simctl(output, *args, timeout=180):
     try:
         result = subprocess.run(command, check=True, capture_output=True, timeout=timeout)
     except (subprocess.SubprocessError, OSError) as error:
-        record(status="failed", error=str(error), stderr=(getattr(error, "stderr", None) or b"").decode(errors="replace")[-4000:])
+        record(status="failed", error=str(error),
+               stdout=(getattr(error, "stdout", None) or b"").decode(errors="replace")[-4000:],
+               stderr=(getattr(error, "stderr", None) or b"").decode(errors="replace")[-4000:])
         raise
     record(status="completed", stdout=result.stdout.decode(errors="replace")[-4000:])
     return result.stdout
@@ -575,7 +577,10 @@ def ios(args):
         ios_simctl(args.output, "boot", identifier)
         if getattr(args, "show_simulator", False):
             attach_ios_simulator(identifier)
-        ios_simctl(args.output, "bootstatus", identifier, "-b")
+        # A newly created hosted iPad may still be migrating system data at
+        # three minutes (with the Apple progress screen visible). Give only
+        # first boot a separate bounded budget; app launches keep 180 seconds.
+        ios_simctl(args.output, "bootstatus", identifier, "-b", timeout=600)
         prepare_ios_ui(args.output, identifier)
         ios_simctl(args.output, "install", identifier, str(args.app))
         container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())

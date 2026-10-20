@@ -102,6 +102,11 @@ Xcode 26.4 includes fixes for Simulator cache creation and `simctl` hangs
 170836966 and 172343027). Runtime cache preparation and a system-app launch
 probe run before admitting the reader tests; the reader's own launch or test
 failures remain failures. Different Xcode/host combinations use separate caches.
+The disposable iPad's first boot has a 600-second budget for initial system
+data migration. Reader launches retain their 180-second bound; this does not
+retry or admit a timed-out launch. Failed simulator commands retain partial
+standard output as well as standard error, followed by bounded diagnostics
+and owned-device cleanup.
 
 Rustup installs `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The build phase
 preserves the selected Rust toolchain and honors Cargo's target directory.
