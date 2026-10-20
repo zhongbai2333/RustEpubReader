@@ -284,10 +284,13 @@ pub(crate) fn reader_text_layout(
     available_width: f32,
     available_height: f32,
     scroll_mode: bool,
+    force_single_column: bool,
 ) -> ReaderTextLayout {
     let landscape_enough = available_width >= available_height * 1.15;
-    let is_dual_column =
-        !scroll_mode && available_width > DUAL_COLUMN_THRESHOLD && landscape_enough;
+    let is_dual_column = !scroll_mode
+        && !force_single_column
+        && available_width > DUAL_COLUMN_THRESHOLD
+        && landscape_enough;
 
     if is_dual_column {
         let col_w = ((available_width - DUAL_COLUMN_GAP) / 2.0).max(1.0);
@@ -467,7 +470,7 @@ mod tests {
 
     #[test]
     fn dual_column_scales_on_4k_width() {
-        let layout = reader_text_layout(2560.0, 1440.0, false);
+        let layout = reader_text_layout(2560.0, 1440.0, false, false);
 
         assert!(layout.is_dual_column);
         assert!(layout.text_width > 900.0);
@@ -476,7 +479,7 @@ mod tests {
 
     #[test]
     fn portrait_view_stays_single_column_and_uses_width() {
-        let layout = reader_text_layout(1200.0, 2000.0, false);
+        let layout = reader_text_layout(1200.0, 2000.0, false, false);
 
         assert!(!layout.is_dual_column);
         assert!(layout.text_width > 1000.0);
@@ -485,9 +488,18 @@ mod tests {
 
     #[test]
     fn scroll_mode_stays_single_column() {
-        let layout = reader_text_layout(2560.0, 1440.0, true);
+        let layout = reader_text_layout(2560.0, 1440.0, true, false);
 
         assert!(!layout.is_dual_column);
         assert!(layout.text_width > 2400.0);
+    }
+
+    #[test]
+    fn forced_single_column_overrides_wide_and_landscape_layouts() {
+        for (width, height) in [(2560., 1440.), (1400., 800.), (1200., 2000.)] {
+            let layout = reader_text_layout(width, height, false, true);
+            assert!(!layout.is_dual_column);
+            assert!(layout.text_width > width * 0.8);
+        }
     }
 }

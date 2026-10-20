@@ -132,26 +132,38 @@ impl SyncJournal {
         true
     }
     pub fn seed_entry(&mut self, root: &str, entry: &crate::library::BookEntry) {
-        if let Some(hash) =
-            crate::library::Library::read_book_config(root, &entry.id).and_then(|c| c.file_hash)
-        {
-            self.seed(ProgressEntry {
-                book_hash: hash,
-                title: entry.title.clone(),
-                chapter: entry.last_chapter,
-                block: entry.last_block,
-                char_offset: entry.last_char_offset,
-                chapter_title: entry.last_chapter_title.clone(),
-                timestamp: if (entry.last_chapter, entry.last_block, entry.last_char_offset)
-                    == (0, 0, 0)
-                {
-                    0
-                } else {
-                    entry.last_opened
-                },
-            });
+        let Some(config) = crate::library::Library::read_book_config(root, &entry.id) else {
+            return;
+        };
+        let Some(hash) = config.file_hash.clone() else {
+            return;
+        };
+        let mut progress = ProgressEntry {
+            book_hash: hash.clone(),
+            title: entry.title.clone(),
+            chapter: entry.last_chapter,
+            block: entry.last_block,
+            char_offset: entry.last_char_offset,
+            chapter_title: entry.last_chapter_title.clone(),
+            timestamp: if (entry.last_chapter, entry.last_block, entry.last_char_offset)
+                == (0, 0, 0)
+            {
+                0
+            } else {
+                entry.last_opened
+            },
+        };
+        if let Some(mut version) = config.reading_version() {
+            if version.device.is_empty() {
+                version.device = self.own.device_id.clone();
+            }
+            progress.timestamp = version.modified_ms / 1000;
+            self.accept(&VersionedProgress { progress, version });
+        } else {
+            self.seed(progress);
         }
     }
+
     /// Seed a pre-existing locator without treating open/import/reflow as reading.
     pub fn seed(&mut self, progress: ProgressEntry) {
         self.own

@@ -4,7 +4,7 @@
 
 | Entry | Checks and output |
 | --- | --- |
-| `ci.yml`: main/dev pushes, PRs, manual | Rust fmt / locked metadata / strict Clippy / workspace tests; Android JVM tests and Release lint; all three platform builds |
+| `ci.yml`: main/dev pushes, PRs, manual | Rust fmt / locked metadata / strict Clippy / workspace tests; native Windows core safety tests; Android JVM tests and Release lint; all three platform builds |
 | `desktop-build.yml`: reusable | Windows x64/arm64 ZIP, Linux x64/arm64 ZIP, macOS Intel/Apple Silicon DMG |
 | `android-build.yml`: reusable | Three per-ABI Release APKs; publishing secrets are optional, otherwise development signing |
 | `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift checks, IPA packaging regressions, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive and IPA with SHA-256 receipt |
@@ -13,6 +13,30 @@
 
 Both `ios/**` and `ios-bridge/**` trigger CI. Shared Swift scheme and
 `Package.resolved` belong in Git; local Xcode user state and runtime data do not.
+
+## Linux desktop dependencies
+
+The release ZIP contains the reader executable and relies on system GTK, audio,
+keyboard and graphics libraries. A build passing without starting a window does
+not check runtime-loaded libraries. On Ubuntu24.04, install:
+
+```sh
+sudo apt-get install libgtk-3-0t64 libasound2t64 libxkbcommon-x11-0 \
+  libegl1 libegl-mesa0 libgl1 libglx-mesa0 libgl1-mesa-dri \
+  fonts-noto-cjk fonts-noto-color-emoji
+```
+
+`libxkbcommon-x11-0` is needed by the X11 native-window backend; installing only
+`libxkbcommon-dev` does not provide it. CJK/emoji fonts supply system fallbacks.
+For source builds, also install the development libraries used by the Linux CI
+steps: GTK3/GLib/ATK, ALSA, XCB render/shape/xfixes, xkbcommon, EGL/OpenGL, a C/C++
+compiler and `pkg-config`. Package names vary across distributions.
+
+The local Ubuntu ARM64 check uses an isolated source snapshot and Xvfb/Openbox
+with Mesa software rendering. That verifies native window/layout behavior on
+that guest; it is separate from a physical GPU, other distributions and a hosted
+job. Its evidence keeps the missing-XKB launch failure as well as the subsequent
+run after installing the required runtime package.
 
 ## App versions
 
@@ -94,8 +118,8 @@ required for these build checks or unsigned IPA packaging. The packager preserve
 embedded frameworks and executable permissions; it rejects simulator/wrong-CPU
 executables, app signing metadata and invalid ZIP/checksum data. The publisher
 verifies the downloaded IPA before attaching it to a Release. Developer signing,
-provisioning and store submission are not configured. The project has host Swift checks and Rust tests,
-but no XCTest/UI test target. Compilation does not validate physical page-turn
+provisioning and store submission are not configured. The project has host Swift checks, Rust tests and an isolated `ReaderUITests`
+UI-test target for native selection, system Reduce Motion and Files interactions. Compilation does not validate physical page-turn
 gestures, background behavior or App Store acceptance.
 
 All three readers use native rendering. Publication scripts use an embedded
@@ -105,9 +129,11 @@ libclang (provided by the CI LLVM toolchain). Desktop builds need no WebView2 or
 WebKitGTK runtime.
 
 For native EPUB image diagnostics and CSS/JavaScript runtime boundaries,
-see [EPUB media and interactivity](EPUB_MEDIA_AND_INTERACTIVITY.md). The iOS
-Debug painting diagnostic and Android device runner are local checks; CI does not
-currently launch them in a simulator/emulator.
+see [EPUB media and interactivity](EPUB_MEDIA_AND_INTERACTIVITY.md). The reusable mobile workflows launch native simulator/emulator checks through
+`scripts/check-mobile-runtime.py`, including the committed painting corpus and
+real selection gestures. See [mobile runtime checks](MOBILE_RUNTIME_CI.md) for
+artifact isolation, system-setting restoration and exact invocation. Local
+passes and configured jobs do not establish a hosted pass for unpushed source.
 
 ## Local gates
 

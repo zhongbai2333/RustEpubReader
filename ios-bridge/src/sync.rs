@@ -39,6 +39,8 @@ pub(crate) struct PreparedResult {
     next_retry_after: Option<u64>,
     #[serde(default)]
     terminal_error: Option<String>,
+    #[serde(default)]
+    annotation_error: Option<String>,
 }
 
 fn stage_path(data_dir: &str, hash: &str) -> Result<PathBuf, String> {
@@ -82,10 +84,14 @@ pub(crate) fn run(
     let (library, journal) = {
         let _guard = super::DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         (
-            Library::load_from(data_dir),
+            Library::load_from(data_dir)?,
             SyncJournal::load(data_dir, device_id),
         )
     };
+    let mut journal = journal;
+    for entry in &library.books {
+        journal.seed_entry(data_dir, entry);
+    }
     let mut own = journal.own.clone();
     let mut books = Vec::new();
     let mut skipped = 0;
@@ -211,6 +217,7 @@ pub(crate) fn run(
         failed: result.failed,
         next_retry_after: result.next_retry_after,
         terminal_error: result.terminal_error,
+        annotation_error: result.annotation_error,
     })
 }
 pub(crate) fn apply(
@@ -225,7 +232,7 @@ pub(crate) fn apply(
     reader_core::reading_activity::import(data_dir, device_id, &prepared.snapshots)?;
     journal.seen.extend(prepared.own.progress.keys().cloned());
     let latest = reader_core::cloud_progress::latest_records(&prepared.snapshots, &journal.own);
-    let mut library = Library::load_from(data_dir);
+    let mut library = Library::load_from(data_dir)?;
     reader_core::library::archive::ArchiveStore::apply_verified(
         data_dir,
         &mut library,
@@ -283,13 +290,13 @@ pub(crate) fn apply(
                         staged.to_string_lossy().into_owned(),
                         0,
                         None,
-                    )
+                    )?
                 };
                 if !PathBuf::from(&entry.path).starts_with(PathBuf::from(data_dir).join("books"))
                     || EpubBook::file_hash(&entry.path).ok().as_ref() != Some(&book.info.hash)
                 {
                     library = previous;
-                    library.save_to(data_dir);
+                    library.save_to(data_dir)?;
                     return Err("Cannot save downloaded book".into());
                 }
                 Ok::<_, String>(entry)
@@ -353,29 +360,27 @@ pub(crate) fn apply(
             skipped += 1;
             continue;
         }
+        if !library.apply_versioned_position(data_dir, path, &record)? {
+            continue;
+        }
         if path == open_path && changed {
             offer = Some(p.clone());
         }
         journal.accept(&record);
-        if changed {
-            library.apply_position(
-                data_dir,
-                path,
-                p.chapter,
-                p.chapter_title.clone(),
-                p.block,
-                p.char_offset,
-            );
-        }
         journal.applied.insert(hash, p.timestamp);
         if changed {
             updated.push(serde_json::json!({"path":path,"chapter":p.chapter}));
         }
     }
-    journal.apply_recent(data_dir, &mut library, &prepared.snapshots);
+    if let Err(error) =
+        reader_core::github_sync::apply_cached_annotations(data_dir, &prepared.owner)
+    {
+        prepared.annotation_error.get_or_insert(error);
+    }
+    journal.apply_recent(data_dir, &mut library, &prepared.snapshots)?;
     journal.save(data_dir)?;
     Ok(
-        serde_json::json!({"uploaded":prepared.uploaded,"downloaded":imported,"skipped":skipped,"offer":offer,"updated":updated,"failed":prepared.failed,"next_retry_after":prepared.next_retry_after,"terminal_error":prepared.terminal_error}),
+        serde_json::json!({"uploaded":prepared.uploaded,"downloaded":imported,"skipped":skipped,"offer":offer,"updated":updated,"failed":prepared.failed,"next_retry_after":prepared.next_retry_after,"terminal_error":prepared.terminal_error,"annotation_error":prepared.annotation_error}),
     )
 }
 
@@ -395,17 +400,19 @@ mod tests {
         .unwrap();
         let result =
             reader_core::txt::convert_txt_to_epub(&txt, dir.path(), &Default::default()).unwrap();
-        let mut library = Library::load_from(&data_dir);
-        let entry = library.add_or_update(
-            &data_dir,
-            "Book".into(),
-            result.epub_path.to_string_lossy().into_owned(),
-            1,
-            None,
-        );
+        let mut library = Library::load_from(&data_dir).unwrap();
+        let entry = library
+            .add_or_update(
+                &data_dir,
+                "Book".into(),
+                result.epub_path.to_string_lossy().into_owned(),
+                1,
+                None,
+            )
+            .unwrap();
         let hash = EpubBook::file_hash(&entry.path).unwrap();
         library.books[0].last_opened = 10;
-        library.save_to(&data_dir);
+        library.save_to(&data_dir).unwrap();
         (dir, entry.path, hash)
     }
     fn progress(hash: &str, chapter: usize, timestamp: u64) -> ProgressEntry {
@@ -435,6 +442,7 @@ mod tests {
             failed: vec![],
             next_retry_after: None,
             terminal_error: None,
+            annotation_error: None,
         }
     }
     #[test]
@@ -444,7 +452,10 @@ mod tests {
         let data_dir = dir.path().to_str().unwrap();
         let result = apply(data_dir, "ios-test", prepared(&hash), &path).unwrap();
         assert_eq!(result["offer"]["chapter"], 0);
-        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 0);
+        assert_eq!(
+            Library::load_from(data_dir).unwrap().books[0].last_chapter,
+            0
+        );
         assert!(SyncJournal::load(data_dir, "ios-test")
             .own
             .validate()
@@ -458,14 +469,17 @@ mod tests {
         let mut journal = SyncJournal::load(data_dir, "ios-test");
         journal.record(progress(&hash, 2, 40));
         journal.save(data_dir).unwrap();
-        Library::load_from(data_dir).update_position(
-            data_dir,
-            &Library::load_from(data_dir).books[0].path,
-            2,
-            None,
-            0,
-            0,
-        );
+        Library::load_from(data_dir)
+            .unwrap()
+            .update_position(
+                data_dir,
+                &Library::load_from(data_dir).unwrap().books[0].path,
+                2,
+                None,
+                0,
+                0,
+            )
+            .unwrap();
         let result = apply(data_dir, "ios-test", prepared(&hash), "").unwrap();
         assert!(result["offer"].is_null());
         assert_eq!(
@@ -480,7 +494,10 @@ mod tests {
         let (dir, _, hash) = fixture();
         let data_dir = dir.path().to_str().unwrap();
         apply(data_dir, "ios-test", prepared(&hash), "").unwrap();
-        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 0);
+        assert_eq!(
+            Library::load_from(data_dir).unwrap().books[0].last_chapter,
+            0
+        );
         assert_eq!(SyncJournal::load(data_dir, "ios-test").applied[&hash], 30);
     }
     #[test]
@@ -492,7 +509,10 @@ mod tests {
         let applied = apply(dir.path().to_str().unwrap(), "ios-test", result, "").unwrap();
         assert_eq!(applied["skipped"], 1);
         assert_eq!(
-            Library::load_from(dir.path().to_str().unwrap()).books[0].last_chapter,
+            Library::load_from(dir.path().to_str().unwrap())
+                .unwrap()
+                .books[0]
+                .last_chapter,
             1
         );
     }
@@ -514,7 +534,7 @@ mod tests {
             serde_json::json!({"root":root,"device":"ios-test","op":"apply_sync","epoch":epoch}),
         );
         assert_eq!(result.unwrap_err(), "Sync cancelled");
-        assert_eq!(Library::load_from(root).books[0].last_chapter, 1);
+        assert_eq!(Library::load_from(root).unwrap().books[0].last_chapter, 1);
         assert!(super::super::SESSION.lock().unwrap().pending.is_none());
     }
     #[test]
@@ -537,7 +557,7 @@ mod tests {
             .insert(hash.clone(), event.clone());
         apply(root, "ios-test", incoming, "").unwrap();
         assert_eq!(
-            Library::load_from(root).books[0].last_opened,
+            Library::load_from(root).unwrap().books[0].last_opened,
             event.opened_ms
         );
         let journal = SyncJournal::load(root, "ios-test");
@@ -569,7 +589,7 @@ mod tests {
         let result = apply(root, "ios-test", files, "").unwrap();
         assert_eq!(result["failed"].as_array().unwrap().len(), 1);
         assert_eq!(result["downloaded"], 0);
-        assert_eq!(Library::load_from(root).books[0].last_chapter, 0);
+        assert_eq!(Library::load_from(root).unwrap().books[0].last_chapter, 0);
         assert_eq!(SyncJournal::load(root, "ios-test").applied[&hash], 30);
     }
 }

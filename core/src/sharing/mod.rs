@@ -55,7 +55,9 @@ pub mod discovery;
 #[cfg(feature = "keychain")]
 pub mod keystore;
 pub mod peer;
+pub mod progress;
 pub mod protocol;
+pub use progress::{apply_received_progress, CommittedProgress};
 
 pub use crypto::*;
 pub use discovery::*;

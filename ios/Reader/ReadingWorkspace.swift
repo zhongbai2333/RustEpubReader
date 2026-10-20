@@ -20,6 +20,7 @@ struct ReaderOptions: Equatable {
     var backgroundImageEnabled = true
     var language = ReaderI18n.shared.resolvedCode
     var backgroundImageOpacity = 0.22
+    var forceSingleColumn = false
     var paper: UIColor {
         switch theme {
         case "dark": return UIColor(hex: "1A1A1C")
@@ -185,6 +186,7 @@ struct ReadingWorkspace: View {
     @AppStorage("preview.textHex") private var textHex = "252525"
     @AppStorage("preview.paragraphSpacing") private var paragraphSpacing = 0.65
     @AppStorage("preview.pageMargin") private var pageMargin = 24.0
+    @AppStorage(ReadingSpread.preferenceKey) private var forceSingleColumn = false
     @AppStorage("preview.firstLineIndent") private var firstLineIndent = 2.0
     @AppStorage("preview.justified") private var justified = true
     @AppStorage("preview.backgroundImageName") private var backgroundImageName = ""
@@ -193,7 +195,7 @@ struct ReadingWorkspace: View {
     private var options: ReaderOptions {
         let paint = appearance.style[dark: appearanceDark]
         return .init(fontSize: fontSize, lineHeight: lineHeight, fontName: latinFontName, theme: "custom", sliding: pageAnimation != "curl" || reduceMotion,
-        backgroundHex: paint.paper, textHex: paint.ink, paragraphSpacing: paragraphSpacing, pageMargin: pageMargin, firstLineIndent: firstLineIndent, justified: justified, cjkFontName: fontName, nativeRevision: nativeRevision, readingMode: ReadingMode.resolve(style: readingMode, animation: pageAnimation), backgroundImageName: paint.image, backgroundImageEnabled: !paint.image.isEmpty, backgroundImageOpacity: paint.strength) }
+        backgroundHex: paint.paper, textHex: paint.ink, paragraphSpacing: paragraphSpacing, pageMargin: pageMargin, firstLineIndent: firstLineIndent, justified: justified, cjkFontName: fontName, nativeRevision: nativeRevision, readingMode: ReadingMode.resolve(style: readingMode, animation: pageAnimation), backgroundImageName: paint.image, backgroundImageEnabled: !paint.image.isEmpty, backgroundImageOpacity: paint.strength, forceSingleColumn: forceSingleColumn) }
     private var bookmarked: Bool { annotations.value.bookmarks.contains { $0.chapter == current.chapter && $0.block == current.block } }
     private var showTools: Bool { tools && panel == nil && passage == nil }
     private var showTopTools: Bool { tools && passage == nil && (panel == nil || panelDetent != .large) }
@@ -402,6 +404,9 @@ struct ReadingWorkspace: View {
             }
         }
         .onChange(of: options.paper) { _, value in paperChanged(value) }
+        .onChange(of: library.annotationSyncRevision) { _, _ in
+            Task { _ = await annotations.perform() }
+        }
         .onChange(of: annotations.revision) { _, _ in speech.refreshText(corrections: annotations.value.corrections ?? []) }
         .task {
             while !Task.isCancelled {

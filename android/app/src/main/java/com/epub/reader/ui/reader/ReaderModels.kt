@@ -32,3 +32,6 @@ data class BlockLayoutInfo(
     val coordinates: LayoutCoordinates,
     val sourceCharOffset: Int = 0
 )
+
+/** Read-only native layout/selection observation. No shipping caller installs it. */
+typealias ReaderSelectionObserver = (Map<Int, BlockLayoutInfo>, TextSelectionState?, String) -> Unit

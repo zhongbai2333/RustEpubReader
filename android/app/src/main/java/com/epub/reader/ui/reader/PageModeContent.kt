@@ -30,6 +30,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.ScrollAxisRange
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.horizontalScrollAxisRange
+import androidx.compose.ui.semantics.scrollBy
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -71,6 +77,9 @@ private const val SELECTION_TAP_SUPPRESS_MS = 700L
 internal class PageTurnController {
     var turn: (suspend (Boolean) -> Unit)? = null
     var page: () -> Int = { 0 }
+    var snapshot: () -> String = { "unprepared" }
+    val resets = ArrayDeque<String>()
+    fun recordReset(value: String) { resets.addLast(value);while(resets.size>256)resets.removeFirst() }
 }
 
 @Composable
@@ -97,6 +106,7 @@ internal fun PageModeContent(
     onLinkClick: (String) -> Unit,
     onTextTapped: () -> Unit,
     lineSpacing: Float = 1.5f,
+    forceSingleColumn: Boolean = false,
     paraSpacing: Float = 0.5f,
     textIndent: Int = 2,
     titleFontScale: Float = 1.5f,
@@ -120,6 +130,7 @@ internal fun PageModeContent(
     onContentPrepared: () -> Unit = {},
     turnController: PageTurnController? = null,
 ) {
+    val highlightsByChapter = remember(highlights) { highlights.groupBy { it.chapter } }
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val fontResolver = androidx.compose.ui.platform.LocalFontFamilyResolver.current
@@ -127,7 +138,7 @@ internal fun PageModeContent(
     val screenHeightDp = configuration.screenHeightDp.dp
     val screenWidthDp = configuration.screenWidthDp.dp
     // 按屏幕比例计算边距，适配不同尺寸设备
-    val isTwoColumn = screenWidthDp > 600.dp // 平板或宽屏双列模式
+    val isTwoColumn = readerColumnCount(screenWidthDp.value, forceSingleColumn) == 2
     val hPaddingDp = screenWidthDp * 0.065f // 左右各约 6.5%
     val topPaddingDp = READER_VERTICAL_PADDING
     val bottomPaddingDp = READER_VERTICAL_PADDING
@@ -415,17 +426,26 @@ internal fun PageModeContent(
             },
         )
     bookSpreadCurlConfig.backPageColor = bgColor
+    val performPageTurn: suspend (Boolean) -> Unit = { forward ->
+        if (pageAnimation == "Realistic") {
+            val state=if(isBookSpread)bookSpreadPageCurlState else pageCurlState
+            if(forward) state.next() else state.prev()
+        } else {
+            val target=(pagerState.currentPage+if(forward)1 else -1).coerceIn(0,(pagerState.pageCount-1).coerceAtLeast(0))
+            if(pageAnimation=="None")pagerState.scrollToPage(target) else pagerState.animateScrollToPage(target)
+        }
+    }
+    fun accessibilityPageTurn(forward: Boolean): Boolean {
+        if (chapterJumpTriggered || flipJob?.isActive == true) return false
+        val current=if(pageAnimation=="Realistic") (if(isBookSpread)bookSpreadPageCurlState.current else pageCurlState.current) else pagerState.currentPage
+        if ((forward && current >= totalSlots-1) || (!forward && current <= 0)) return false
+        flipJob=coroutineScope.launch {performPageTurn(forward)}
+        return true
+    }
     androidx.compose.runtime.SideEffect {
-        turnController?.turn = { forward -> coroutineScope.async {
-            if (pageAnimation == "Realistic") {
-                val state=if(isBookSpread)bookSpreadPageCurlState else pageCurlState
-                if(forward) state.next() else state.prev()
-            } else {
-                val target=(pagerState.currentPage+if(forward)1 else -1).coerceIn(0,(pagerState.pageCount-1).coerceAtLeast(0))
-                if(pageAnimation=="None")pagerState.scrollToPage(target) else pagerState.animateScrollToPage(target)
-            }
-        }.await() }
+        turnController?.turn = { forward -> coroutineScope.async {performPageTurn(forward)}.await() }
         turnController?.page = { if(pageAnimation=="Realistic") (if(isBookSpread)bookSpreadPageCurlState.current else pageCurlState.current) else pagerState.currentPage }
+        turnController?.snapshot = { "chapter=$currentChapter previous=$prevChapterKey pages=${pages.size} pairs=${pairedPages.size} leading=$leadingVirtual locked=$chapterJumpTriggered pendingLast=${startAtLastPageRef[0]} geometry=$layoutTag" }
     }
 
 
@@ -447,6 +467,7 @@ internal fun PageModeContent(
             } else {
                 slotForBlock(initialBlock)
             }
+        turnController?.recordReset("chapter=$currentChapter previous=$prevChapterKey back=$isGoingBack target=$targetSlot pairs=${pairedPages.size} initialBlock=$initialBlock geometry=$layoutTag")
         when {
             isRealChapterChange && pageAnimation == "Slide" -> {
                 // Slide 模式已经通过 HorizontalPager 的虚拟相邻章节页完成了跨章滑动。
@@ -572,6 +593,23 @@ internal fun PageModeContent(
     Column(
         modifier =
             Modifier.fillMaxSize()
+                .semantics(mergeDescendants = false) {
+                    // Keep the text/image descendants readable, including in
+                    // curl/cover modes that have no native Pager scroll action.
+                    customActions = listOf(
+                        CustomAccessibilityAction(I18n.t("reader.next_page")) {accessibilityPageTurn(true)},
+                        CustomAccessibilityAction(I18n.t("reader.previous_page")) {accessibilityPageTurn(false)},
+                    )
+                    horizontalScrollAxisRange = ScrollAxisRange(
+                        value = { (if(pageAnimation=="Realistic") (if(isBookSpread)bookSpreadPageCurlState.current else pageCurlState.current) else pagerState.currentPage).toFloat() },
+                        maxValue = {(totalSlots-1).coerceAtLeast(0).toFloat()},
+                        reverseScrolling = false,
+                    )
+                    scrollBy {x,y ->
+                        val direction=if(x.absoluteValue>=y.absoluteValue) x else y
+                        direction != 0f && accessibilityPageTurn(direction>0f)
+                    }
+                }
                 .graphicsLayer {
                     alpha = chapterAlpha.value
                 }
@@ -755,6 +793,7 @@ internal fun PageModeContent(
                 }
 
                 PageRenderLayer(
+                    chapterIndex = renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual),
                     slotShowTitle = slotShowTitle,
                     slotTitle = slotTitle,
                     slotColumns = slotColumns,
@@ -778,13 +817,13 @@ internal fun PageModeContent(
                     paraSpacing = paraSpacing,
                     textIndentChars = textIndent,
                     titleFontScale = titleFontScale,
-                    chapter = chapter,
+                    chapter = allChapters.getOrNull(renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual)),
                     textSelection = textSelection,
                     onSelectionChange = onSelectionChange,
                     blockLayoutRegistry =
                         if (spreadIndex == bookSpreadPageCurlState.current) blockLayoutRegistry
                         else null,
-                    highlights = highlights,
+                    highlights = highlightsByChapter[renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual)].orEmpty(),
                     cscBlockCorrections = cscBlockCorrections,
                     cscMode = cscMode,
                     ttsCurrentBlock = ttsCurrentBlock,
@@ -874,6 +913,7 @@ internal fun PageModeContent(
                 }
 
                 PageRenderLayer(
+                    chapterIndex = renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual),
                     slotShowTitle = slotShowTitle,
                     slotTitle = slotTitle,
                     slotColumns = slotColumns,
@@ -896,12 +936,12 @@ internal fun PageModeContent(
                     paraSpacing = paraSpacing,
                     textIndentChars = textIndent,
                     titleFontScale = titleFontScale,
-                    chapter = chapter,
+                    chapter = allChapters.getOrNull(renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual)),
                     textSelection = textSelection,
                     onSelectionChange = onSelectionChange,
                     blockLayoutRegistry =
                         if (pageIndex == pageCurlState.current) blockLayoutRegistry else null,
-                    highlights = highlights,
+                    highlights = highlightsByChapter[renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual)].orEmpty(),
                     cscBlockCorrections = cscBlockCorrections,
                     cscMode = cscMode,
                     ttsCurrentBlock = ttsCurrentBlock,
@@ -1060,6 +1100,7 @@ internal fun PageModeContent(
                             )
                 ) {
                     PageRenderLayer(
+                        chapterIndex = renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual),
                         slotShowTitle = slotShowTitle,
                         slotTitle = slotTitle,
                         slotColumns = slotColumns,
@@ -1082,12 +1123,12 @@ internal fun PageModeContent(
                         paraSpacing = paraSpacing,
                         textIndentChars = textIndent,
                         titleFontScale = titleFontScale,
-                        chapter = chapter,
+                        chapter = allChapters.getOrNull(renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual)),
                         textSelection = textSelection,
                         onSelectionChange = onSelectionChange,
                         blockLayoutRegistry =
                             if (pageIndex == pagerState.currentPage) blockLayoutRegistry else null,
-                        highlights = highlights,
+                        highlights = highlightsByChapter[renderedHighlightChapter(currentChapter, isTransitioning, isLeadingVirtual, isTrailingVirtual)].orEmpty(),
                         cscBlockCorrections = cscBlockCorrections,
                         cscMode = cscMode,
                         ttsCurrentBlock = ttsCurrentBlock,
@@ -1101,6 +1142,7 @@ internal fun PageModeContent(
 
 @Composable
 private fun PageRenderLayer(
+    chapterIndex: Int,
     slotShowTitle: Boolean,
     slotTitle: String,
     slotColumns: List<List<PaginatedBlock>>,
@@ -1184,8 +1226,10 @@ private fun PageRenderLayer(
                         val block = paginatedBlock.block
                         val blockIndex = paginatedBlock.sourceBlockIndex
                         ContentBlockView(
+                            chapterIndex = chapterIndex,
                             blockIndex = blockIndex,
                             block = block,
+                            sourceText = remember(chapter, blockIndex) { readerSourceText(chapter?.blocks?.getOrNull(blockIndex) ?: block) },
                             sourceCharOffset = paginatedBlock.sourceCharOffset,
                             imageMaxHeight = paginatedBlock.imageMaxHeight,
                             fontSize = fontSize,

@@ -216,7 +216,52 @@ pub fn sync_phase(
         SyncPhase::Books => {
             let _guard = TRANSFER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let mut retries = RetryQueue::load(data_dir, &api.owner, &own.device_id)?;
-            files(&api, &mut own, books, &mut retries, retry_failed)
+            authorize(&api, &own)?;
+            let annotation_error = super::annotations::sync(&api, data_dir, &own.device_id).err();
+            if api.cancel.load(Ordering::SeqCst) {
+                return Err("Sync cancelled".into());
+            }
+            let transfer =
+                if let Some(error) = annotation_error.as_deref().filter(|e| global_error(e)) {
+                    Err(error.to_owned())
+                } else {
+                    files(&api, &mut own, books, &mut retries, retry_failed)
+                };
+            if api.cancel.load(Ordering::SeqCst) {
+                return Err("Sync cancelled".into());
+            }
+            finish_file_phase(&own, &retries, annotation_error, transfer)
+        }
+    }
+}
+
+/// Deliver staged metadata through the normal guarded UI application even if bulk
+/// transfer failed. The terminal error still drives reauthorization/retry feedback.
+pub(super) fn finish_file_phase(
+    own: &DeviceSnapshot,
+    retries: &RetryQueue,
+    annotation_error: Option<String>,
+    transfer: Result<SyncResult, String>,
+) -> Result<SyncResult, String> {
+    match transfer {
+        Ok(mut result) => {
+            result.annotation_error = annotation_error;
+            Ok(result)
+        }
+        Err(error) if error == "Sync cancelled" => Err(error),
+        Err(error) => {
+            own.validate()?;
+            Ok(SyncResult {
+                annotation_error,
+                confirmed_archives: Default::default(),
+                own: own.clone(),
+                snapshots: Vec::new(),
+                downloaded: Vec::new(),
+                uploaded: 0,
+                failed: retries.failures.values().cloned().collect(),
+                next_retry_after: Some(30),
+                terminal_error: Some(error),
+            })
         }
     }
 }
@@ -277,6 +322,7 @@ pub(super) fn progress(api: &Api, own: &mut DeviceSnapshot) -> Result<SyncResult
     authorize(api, own)?;
     publish(api, own)?;
     Ok(SyncResult {
+        annotation_error: None,
         confirmed_archives: Default::default(),
         snapshots: api.snapshots()?,
         own: own.clone(),
@@ -757,6 +803,7 @@ pub(super) fn files(
         .chain((remaining > 0).then_some(15))
         .min();
     Ok(SyncResult {
+        annotation_error: None,
         confirmed_archives,
         own: own.clone(),
         snapshots,

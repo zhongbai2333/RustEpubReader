@@ -65,6 +65,7 @@ internal fun ScrollModeContent(
     onPageLabel: (String) -> Unit = {},
     onContentPrepared: () -> Unit = {},
 ) {
+    val highlightsByChapter = remember(highlights) { highlights.groupBy { it.chapter } }
     var initialRestore by remember { mutableStateOf(true) }
     var restoredSource by remember { mutableStateOf<Chapter?>(null) }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialChapter.coerceIn(0, allChapters.lastIndex.coerceAtLeast(0)))
@@ -259,9 +260,10 @@ internal fun ScrollModeContent(
                 }
                 chapterItem.blocks.forEachIndexed { blockIndex, block ->
                     chapterItem.images.filter { it.block == blockIndex && !it.after }.forEach { image ->
-                        ContentBlockView(blockIndex = null, block = image.content(), fontSize = fontSize, textColor = textColor, linkColor = linkColor, bgColor = bgColor, fontFamily = fontFamily, onLinkClick = onLinkClick, onTextTapped = onTextTapped)
+                        ContentBlockView(chapterIndex = chapterIndex, blockIndex = null, block = image.content(), fontSize = fontSize, textColor = textColor, linkColor = linkColor, bgColor = bgColor, fontFamily = fontFamily, onLinkClick = onLinkClick, onTextTapped = onTextTapped)
                     }
                     ContentBlockView(
+                        chapterIndex = chapterIndex,
                         blockIndex = blockIndex,
                         block = block,
                         fontSize = fontSize,
@@ -279,8 +281,7 @@ internal fun ScrollModeContent(
                         onSelectionChange = onSelectionChange,
                         blockLayoutRegistry =
                             if (chapterIndex == initialChapter) blockLayoutRegistry else null,
-                        highlights =
-                            if (chapterIndex == initialChapter) highlights else emptyList(),
+                        highlights = highlightsByChapter[chapterIndex].orEmpty(),
                         cscBlockCorrections =
                             if (chapterIndex == initialChapter)
                                 cscBlockCorrections[blockIndex] ?: emptyList()
@@ -291,7 +292,7 @@ internal fun ScrollModeContent(
                         onCscCorrectionClick = onCscCorrectionClick,
                     )
                     chapterItem.images.filter { it.block == blockIndex && it.after }.forEach { image ->
-                        ContentBlockView(blockIndex = null, block = image.content(), fontSize = fontSize, textColor = textColor, linkColor = linkColor, bgColor = bgColor, fontFamily = fontFamily, onLinkClick = onLinkClick, onTextTapped = onTextTapped)
+                        ContentBlockView(chapterIndex = chapterIndex, blockIndex = null, block = image.content(), fontSize = fontSize, textColor = textColor, linkColor = linkColor, bgColor = bgColor, fontFamily = fontFamily, onLinkClick = onLinkClick, onTextTapped = onTextTapped)
                     }
                 }
                 Spacer(Modifier.height(64.dp))

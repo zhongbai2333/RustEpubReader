@@ -69,7 +69,7 @@ impl SyncJournal {
         root: &str,
         library: &mut Library,
         snapshots: &[DeviceSnapshot],
-    ) -> usize {
+    ) -> Result<usize, String> {
         for snapshot in snapshots {
             merge(&mut self.own.recent_reading, &snapshot.recent_reading);
         }
@@ -86,8 +86,8 @@ impl SyncJournal {
             }
         }
         let count = changes.len();
-        library.apply_reading_times(root, &changes);
-        count
+        library.apply_reading_times(root, &changes)?;
+        Ok(count)
     }
 }
 
@@ -95,8 +95,10 @@ impl SyncJournal {
 mod tests {
     use super::*;
     fn book(root: &str, title: &str) -> (String, String) {
-        let mut library = Library::load_from(root);
-        let entry = library.add_or_update_from_bytes(root, title.into(), title.as_bytes(), 0, None);
+        let mut library = Library::load_from(root).unwrap();
+        let entry = library
+            .add_or_update_from_bytes(root, title.into(), title.as_bytes(), 0, None)
+            .unwrap();
         (entry.path, crate::bytes_hash(title.as_bytes()))
     }
     #[test]
@@ -113,10 +115,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         let (path, _) = book(root, "Book");
-        let mut lib = Library::load_from(root);
+        let mut lib = Library::load_from(root).unwrap();
         assert_eq!(lib.books[0].last_opened, 0);
-        lib.apply_position(root, &path, 4, None, 8, 1);
-        assert_eq!(Library::load_from(root).books[0].last_opened, 0);
+        lib.apply_position(root, &path, 4, None, 8, 1).unwrap();
+        assert_eq!(Library::load_from(root).unwrap().books[0].last_opened, 0);
         let journal = SyncJournal::load(root, "phone");
         assert!(journal.own.recent_reading.is_empty());
     }
@@ -128,23 +130,23 @@ mod tests {
         let b = b.path().to_str().unwrap();
         let (pa, hash) = book(a, "Book");
         let (pb, _) = book(b, "Book");
-        let mut la = Library::load_from(a);
-        la.set_last_opened(a, &pa, 1_800_000_000_123);
+        let mut la = Library::load_from(a).unwrap();
+        la.set_last_opened(a, &pa, 1_800_000_000_123).unwrap();
         let mut ja = SyncJournal::load(a, "phone");
         let version = ja.own.progress_version(&hash);
-        la.set_last_opened(a, &pa, 1_800_000_000_456);
+        la.set_last_opened(a, &pa, 1_800_000_000_456).unwrap();
         ja.capture_recent(a);
         ja.save(a).unwrap();
         assert_eq!(ja.own.progress_version(&hash), version);
         let mut jb = SyncJournal::load(b, "tablet");
-        let mut lb = Library::load_from(b);
-        assert_eq!(jb.apply_recent(b, &mut lb, &[ja.own.clone()]), 1);
+        let mut lb = Library::load_from(b).unwrap();
+        assert_eq!(jb.apply_recent(b, &mut lb, &[ja.own.clone()]).unwrap(), 1);
         assert_eq!(lb.books[0].last_opened, 1_800_000_000_456);
         jb.save(b).unwrap();
         let jb = SyncJournal::load(b, "tablet");
         assert_eq!(jb.own.recent_reading[&hash].device, "phone");
         assert_eq!(jb.own.recent_reading[&hash], ja.own.recent_reading[&hash]);
-        lb.apply_position(b, &pb, 3, None, 2, 0);
+        lb.apply_position(b, &pb, 3, None, 2, 0).unwrap();
         assert_eq!(
             SyncJournal::load(b, "tablet").own.recent_reading[&hash],
             ja.own.recent_reading[&hash]
@@ -173,19 +175,21 @@ mod tests {
             },
         );
         let mut journal = SyncJournal::load(root, "desktop");
-        journal.apply_recent(
-            root,
-            &mut Library::load_from(root),
-            &[two.clone(), one.clone()],
-        );
+        journal
+            .apply_recent(
+                root,
+                &mut Library::load_from(root).unwrap(),
+                &[two.clone(), one.clone()],
+            )
+            .unwrap();
         book(root, "Newer");
         book(root, "Older");
-        let mut lib = Library::load_from(root);
-        journal.apply_recent(root, &mut lib, &[]);
+        let mut lib = Library::load_from(root).unwrap();
+        journal.apply_recent(root, &mut lib, &[]).unwrap();
         assert_eq!(lib.books[lib.sorted_indices_by_recent()[0]].title, "Newer");
         let mut reverse = SyncJournal::load(root, "third");
         reverse.own.recent_reading.clear();
-        reverse.apply_recent(root, &mut lib, &[one, two]);
+        reverse.apply_recent(root, &mut lib, &[one, two]).unwrap();
         assert_eq!(reverse.own.recent_reading, journal.own.recent_reading);
         let mut stale = DeviceSnapshot::new("stale".into());
         stale.recent_reading.insert(
@@ -195,7 +199,7 @@ mod tests {
                 device: "stale".into(),
             },
         );
-        journal.apply_recent(root, &mut lib, &[stale]);
+        journal.apply_recent(root, &mut lib, &[stale]).unwrap();
         assert_eq!(
             journal.own.recent_reading[&newer].opened_ms,
             1_800_000_001_900

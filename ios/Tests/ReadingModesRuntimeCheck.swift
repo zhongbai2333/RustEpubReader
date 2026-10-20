@@ -7,9 +7,10 @@ import SwiftUI
 // Exercises the same UIKit controllers used by the reading screen, with a
 // caller-supplied EPUB in this diagnostic installation's Documents folder.
 enum ReadingModesRuntimeCheck {
-    @MainActor static func run() {
+    @MainActor static func run(reducedMotion:Bool=false, completion:(( [String:Any])->Void)?=nil) {
         Task { @MainActor in
             var report: [String: Any] = [:]
+            defer {completion?(report)}
             var window: UIWindow?
             do {
                 for _ in 0..<50 {
@@ -24,11 +25,40 @@ enum ReadingModesRuntimeCheck {
                 let client = CoreClient(root: root.path, device: "reading-modes-check")
                 let entry: LibraryEntry = try client.call("import", ["path": documents.appendingPathComponent("reading-modes.epub").path])
                 let book: PreviewBook = try client.call("open", ["id": entry.id])
-                if CommandLine.arguments.contains("--verify-navigation") {
-                    report = try await verifyNavigation(scene: scene, book: book)
+                if CommandLine.arguments.contains("--verify-single-column") {
+                    report = try await verifySingleColumn(scene: scene, book: book)
+                    report["annotation_tools"]=try verifyAnnotationTools(caches:caches,source:documents.appendingPathComponent("reading-modes.epub"))
+                    report["backup_tools"]=true
+                    report["coordinate_contract"]=try verifyCoordinateContract()
+                    report["deferred_voice_catalog"]=try await verifyDeferredVoiceCatalog(book:book)
+                    try await LibraryPanelsRuntimeCheck.capture(scene:scene,caches:caches,source:documents.appendingPathComponent("reading-modes.epub"))
+                    report["support_panels_rendered"]=true
+                    let token: UInt64 = try client.call("begin_open")
+                    let start = ContinuousClock.now
+                    let _: Bool = try client.call("cancel_open", ["token":token])
+                    let duration = start.duration(to: .now)
+                    do {
+                        let _: PreviewBook = try client.call("open", ["id":entry.id,"open_token":token])
+                        throw CoreFailure(message:"Cancelled opening returned a book")
+                    } catch let failure as CoreFailure {
+                        guard failure.message == "Book opening cancelled" else { throw failure }
+                    }
+                    let _: Bool = try client.call("finish_open", ["token":token])
+                    let _: PreviewBook = try client.call("open", ["id":entry.id])
+                    report["cancel_before_dispatch"] = true
+                    report["opening_cancel_request_ms"] = Double(duration.components.seconds)*1000 + Double(duration.components.attoseconds)/1e15
+                    report["passed"] = true
+                    try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                        .write(to: caches.appendingPathComponent("single-column-verification.json"), options: .atomic)
+                    return
+                }
+                if reducedMotion || CommandLine.arguments.contains("--verify-navigation") {
+                    if reducedMotion && !UIAccessibility.isReduceMotionEnabled {throw CoreFailure(message:"System Reduce Motion is not enabled")}
+                    report = try await verifyNavigation(scene: scene, book: book, requireReducedMotion:reducedMotion)
+                    report["system_reduce_motion"] = UIAccessibility.isReduceMotionEnabled
                     report["passed"] = true
                     let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
-                    try data.write(to: caches.appendingPathComponent("navigation-verification.json"), options: .atomic)
+                    try data.write(to: caches.appendingPathComponent(reducedMotion ? "reduced-motion-verification.json" : "navigation-verification.json"), options: .atomic)
                     return
                 }
                 if CommandLine.arguments.contains("--verify-chapter-loading") {
@@ -46,6 +76,8 @@ enum ReadingModesRuntimeCheck {
                     return
                 }
                 report["lazy_paging"] = try await verifyLazyPaging(scene: scene, entry: entry)
+                report["accessible_page_turns"] = try await verifyAccessibleTurns(scene:scene,book:book)
+                report["accessible_inline_actions"] = try verifyAccessibleInlineActions()
                 report["full_book_search"] = try verifySearch(entry: entry)
                 report["background_image"] = try verifyBackground(scene: scene, book: book)
                 report["mixed_held_pan"] = try verifyMixedHeldPan(scene: scene, entry: entry)
@@ -99,8 +131,11 @@ enum ReadingModesRuntimeCheck {
                 let saved: [LibraryEntry] = try client.call("library")
                 try require(saved.first(where: { $0.id == book.id })?.lastChapter == 19, "Reverse scroll progress not persisted")
                 let target = ReadingAnchor(chapter: 21, block: 1, charOffset: 3)
+                var completedJump = 0
+                controller.navigated = { _, token in completedJump = token }
                 controller.update(options: options, jump: target, jumpID: 1, annotations: .empty, revision: 0)
-                try require(controller.anchor == target, "Directory jump lost scalar anchor")
+                for _ in 0..<150 {if completedJump == 1 {break};try await Task.sleep(for:.milliseconds(20))}
+                try require(completedJump == 1 && controller.anchor == target, "Directory jump lost scalar anchor/completion")
                 for _ in 0..<3 {
                     for mode in [ReadingMode.curl, .slide, .cover, .none, .scroll] {
                         options.readingMode = mode; options.sliding = mode != .curl
@@ -154,23 +189,173 @@ enum ReadingModesRuntimeCheck {
                 let highlight = SpeechHighlight(start: .init(chapter: 23, block: 1), end: .init(chapter: 23, block: 2))
                 controller.updateSpeech(highlight, following: true)
                 try require(controller.anchor == highlight.start, "Native scroll speech follow failed")
+                let inlineActions = report["accessible_inline_actions"]!
+                let accessible = report["accessible_page_turns"]!
                 let lazy = report["lazy_paging"]!
                 let search = report["full_book_search"]!
                 let background = report["background_image"]!
                 let bounded = report["bounded_scroll"]!
                 let short = report["short_chapters"]!
                 let mixed = report["mixed_held_pan"]!
-                report = ["lazy_paging": lazy, "full_book_search": search, "background_image": background, "mixed_held_pan": mixed, "short_chapters": short, "bounded_scroll": bounded, "passed": true, "paged_chapter_cache": true, "chapter_count": book.chapters.count, "continuous_boundary": true, "styled_row_coverage": true, "footer_reserved": true,
+                report = ["accessible_inline_actions":inlineActions,"accessible_page_turns":accessible,"lazy_paging": lazy, "full_book_search": search, "background_image": background, "mixed_held_pan": mixed, "short_chapters": short, "bounded_scroll": bounded, "passed": true, "paged_chapter_cache": true, "chapter_count": book.chapters.count, "continuous_boundary": true, "styled_row_coverage": true, "footer_reserved": true,
                     "forward_and_reverse": true, "saved_progress": true, "directory_jump": true,
                     "mode_round_trips": 15, "cover_forward_reverse": true, "no_animation_forward_reverse": true, "landscape_slide": true, "landscape_curl": true,
                     "large_font_single_page": true, "portrait_anchor": true, "cancelled_turn": true, "speech_follow": true]
             } catch { report = ["passed": false, "error": String(describing: error)] }
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: caches.appendingPathComponent(CommandLine.arguments.contains("--verify-navigation") ? "navigation-verification.json" : CommandLine.arguments.contains("--verify-chapter-loading") ? "chapter-loading-verification.json" : CommandLine.arguments.contains("--verify-page-footers") ? "page-footers-verification.json" : "reading-modes-verification.json"), options: .atomic) }
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: caches.appendingPathComponent(reducedMotion ? "reduced-motion-verification.json" : CommandLine.arguments.contains("--verify-single-column") ? "single-column-verification.json" : CommandLine.arguments.contains("--verify-navigation") ? "navigation-verification.json" : CommandLine.arguments.contains("--verify-chapter-loading") ? "chapter-loading-verification.json" : CommandLine.arguments.contains("--verify-page-footers") ? "page-footers-verification.json" : "reading-modes-verification.json"), options: .atomic) }
             window?.isHidden = true
         }
     }
-    @MainActor private static func verifyNavigation(scene: UIWindowScene, book: PreviewBook) async throws -> [String: Any] {
+    @MainActor private static func verifyDeferredVoiceCatalog(book:PreviewBook) async throws -> Bool {
+        let gate=DeferredVoiceCatalogGate()
+        let catalog=SystemVoiceCatalog(loader:{await gate.load()})
+        let suite="deferred-voices-"+UUID().uuidString
+        let preferences=UserDefaults(suiteName:suite)!
+        defer {preferences.removePersistentDomain(forName:suite)}
+        preferences.set("saved-en",forKey:"reader.speech.systemVoice")
+        let first=ReadingSpeech(book:book,defaults:preferences,voiceCatalog:catalog)
+        let second=ReadingSpeech(book:book,defaults:preferences,voiceCatalog:catalog)
+        guard await gate.calls == 0,first.systemVoices.isEmpty,second.systemVoices.isEmpty else {
+            throw CoreFailure(message:"Reader initialization queried system voices")
+        }
+        let request=Task {@MainActor in await first.prepareSystemVoices()}
+        for _ in 0..<100 {if await gate.calls == 1 {break};try await Task.sleep(for:.milliseconds(5))}
+        let concurrent=Task {@MainActor in await second.prepareSystemVoices()}
+        // The worker remains suspended. Main-actor turns must still execute.
+        try await Task.sleep(for:.milliseconds(20))
+        guard first.systemVoicesLoading,await gate.calls == 1 else {throw CoreFailure(message:"Voice preparation did not coalesce off the reader initializer")}
+        first.stop() // An unused reader must not create/deactivate the OS audio session.
+        await gate.finish()
+        await request.value;await concurrent.value
+        guard !first.systemVoicesLoading,first.systemVoices.count==2,
+              first.systemVoice=="saved-en",second.systemVoice=="saved-en",await gate.calls==1 else {
+            throw CoreFailure(message:"Deferred voices lost saved choice or duplicated a request")
+        }
+        let snapshot=await catalog.load()
+        guard snapshot.selected("missing")=="preferred-zh",await gate.calls==1 else {throw CoreFailure(message:"System voice fallback/cache mismatch")}
+        return true
+    }
+
+    private static func verifyCoordinateContract() throws -> Bool {
+        struct Case:Decodable {let source:String;let scalar_to_utf16:[Int];let utf16_to_scalar:[Int]}
+        struct Contract:Decodable {let persisted_unit:String;let cases:[Case]}
+        guard let file=Bundle.main.url(forResource:"reader-coordinates",withExtension:"json") else {throw CoreFailure(message:"Shared reader coordinate contract missing")}
+        let contract=try JSONDecoder().decode(Contract.self,from:Data(contentsOf:file))
+        guard contract.persisted_unit=="unicode_scalar" else {throw CoreFailure(message:"Unknown reader coordinate unit")}
+        for item in contract.cases {
+            let coordinate=BlockCoordinate(block:3,start:2,source:item.source)
+            let layout=LaidOutChapter(text:NSAttributedString(string:"  "+item.source),coordinates:[coordinate])
+            for (scalar,utf16) in item.scalar_to_utf16.enumerated() {
+                let anchor=ReadingAnchor(chapter:7,block:3,charOffset:scalar)
+                guard coordinate.utf16(atScalar:scalar)==utf16,layout.utf16(for:anchor)==utf16+2 else {throw CoreFailure(message:"Native scalar-to-UTF16 conversion diverged")}
+            }
+            for (utf16,scalar) in item.utf16_to_scalar.enumerated() {
+                guard coordinate.scalar(atUTF16:utf16)==scalar,layout.anchor(chapter:7,at:utf16+2).charOffset==scalar else {throw CoreFailure(message:"Native UTF16-to-scalar conversion diverged")}
+            }
+        }
+        return true
+    }
+
+    private static func verifyAnnotationTools(caches:URL,source:URL) throws -> Bool {
+        func require(_ value:Bool,_ message:String) throws {if !value {throw CoreFailure(message:message)}}
+        let root=caches.appendingPathComponent("AnnotationCheck-"+UUID().uuidString)
+        let client=CoreClient(root:root.path,device:"annotation-check")
+        let entry:LibraryEntry=try client.call("import",["path":source.path])
+        let book:PreviewBook=try client.call("open",["id":entry.id])
+        let chapter=try book.chapter(at:0)
+        guard let selected=chapter.blocks.enumerated().first(where:{$0.element.type=="Paragraph"&&($0.element.spans ?? []).map(\.text).joined().unicodeScalars.count>=4}) else {throw CoreFailure(message:"Annotation fixture has no text")}
+        let block=selected.element.core_block ?? selected.offset
+        let added:ReaderAnnotations=try client.call("annotations",["action":"highlight","id":entry.id,"chapter":0,"start_block":block,"end_block":block,"start_offset":0,"end_offset":4,"note":"Original"])
+        guard let highlight=added.highlights.first else {throw CoreFailure(message:"Highlight was not saved")}
+        func save(_ content:String,_ original:String?) throws ->ReaderAnnotations {
+            try client.call("annotation_tools",["action":"note","id":entry.id,"highlight_id":highlight.id,"content":content,"original_note":original.map {$0 as Any} ?? NSNull()])
+        }
+        _=try save("Remote-like edit","Original")
+        let concurrent=try save("Local draft","Original")
+        guard let combined=concurrent.notes.first?.content else {throw CoreFailure(message:"Concurrent notes disappeared")}
+        try require(combined.contains("Local draft")&&combined.contains("Remote-like edit"),"Stale editor overwrote another note")
+        try require(concurrent.concurrent_notes==[highlight.id],"Concurrent note marker missing")
+        let details:AnnotationSyncDetails=try client.call("annotation_tools",["action":"details","id":entry.id,"key":"n:"+highlight.id])
+        try require(details.concurrent&&details.revisions.count==2,"Concurrent note details missing")
+        let resolved=try save("Resolved",combined)
+        try require(resolved.concurrent_notes?.isEmpty==true,"Merged note retained conflict marker")
+        let document:AnnotationMarkdownDocument=try client.call("annotation_tools",["action":"export","id":entry.id])
+        try require(document.filename.hasSuffix(".md")&&document.markdown.contains("Resolved"),"Markdown export missing saved note")
+        let backup=caches.appendingPathComponent(UUID().uuidString+".readerbackup")
+        let restoreRoot=caches.appendingPathComponent("BackupRestore-"+UUID().uuidString)
+        defer {try? FileManager.default.removeItem(at:backup);try? FileManager.default.removeItem(at:restoreRoot)}
+        let _:LibraryBackupSummary=try client.call("backup",["action":"export","path":backup.path])
+        let restored=CoreClient(root:restoreRoot.path,device:"backup-restored")
+        let verified:LibraryBackupSummary=try restored.call("backup",["action":"inspect","path":backup.path])
+        for _ in 0..<2 {
+            let _:LibraryBackupSummary=try restored.call("backup",["action":"restore","path":backup.path,"expected_manifest":verified.manifest_sha256])
+            let entries:[LibraryEntry]=try restored.call("library")
+            try require(entries.count==1&&entries[0].id != entry.id,"Backup duplicated a book or reused a foreign ID")
+            let markdown:AnnotationMarkdownDocument=try restored.call("annotation_tools",["action":"export","id":entries[0].id])
+            try require(markdown.markdown.contains("Resolved"),"Backup lost a note through C ABI")
+        }
+        var rejected=false
+        do {let _:LibraryBackupSummary=try restored.call("backup",["action":"restore","path":backup.path,"expected_manifest":String(repeating:"0",count:64)])}
+        catch {rejected=true}
+        try require(rejected,"Restore accepted an unconfirmed backup fingerprint")
+        let deleted=try save("","Resolved");try require(deleted.notes.isEmpty,"Note deletion was not saved")
+        let removed:ReaderAnnotations=try client.call("annotations",["action":"delete","id":entry.id,"highlight_id":highlight.id])
+        try require(removed.highlights.isEmpty,"Highlight deletion was not saved")
+        return true
+    }
+    @MainActor private static func verifySingleColumn(scene: UIWindowScene, book: PreviewBook) async throws -> [String: Any] {
+        func require(_ value: Bool, _ message: String) throws { if !value { throw CoreFailure(message: message) } }
+        let host = UIViewController(), window = UIWindow(windowScene: scene)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let origin = ReadingAnchor(chapter: 19, block: 3, charOffset: 37)
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        var results = [[String: Any]]()
+        for mode in [ReadingMode.curl, .slide, .cover, .none] {
+            var options = ReaderOptions(fontSize: 18, lineHeight: 1.65, fontName: "Helvetica", theme: "light", sliding: mode != .curl, cjkFontName: "PingFangSC-Regular", readingMode: mode)
+            let reader = NativeReadingController(book: book, anchor: origin, options: options)
+            var saves = 0
+            reader.committed = { _ in saves += 1 }
+            host.addChild(reader); host.view.addSubview(reader.view); reader.didMove(toParent: host)
+            defer { reader.willMove(toParent: nil); reader.view.removeFromSuperview(); reader.removeFromParent() }
+            reader.view.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
+            reader.view.setNeedsLayout(); reader.view.layoutIfNeeded()
+            try require(reader.dual, "Automatic wide layout lost dual columns")
+            func snapshot(_ name: String) throws {
+                let renderer = UIGraphicsImageRenderer(size: reader.view.bounds.size)
+                let image = renderer.image { _ in reader.view.drawHierarchy(in: reader.view.bounds, afterScreenUpdates: true) }
+                try image.pngData()?.write(to: caches.appendingPathComponent(name))
+            }
+            if mode == .curl { try snapshot("ios-auto-columns.png") }
+            options.forceSingleColumn = true
+            reader.update(options: options, jump: nil, jumpID: 0, annotations: .empty, revision: 0)
+            try require(!reader.dual && reader.pager?.viewControllers?.count == 1, "Force single column did not reach native pager")
+            try require(reader.anchor == origin && saves == 0, "Column reflow changed shared progress")
+            let page = reader.pages[reader.currentIndex], offset = page.content.utf16(for: origin)
+            try require(offset >= page.range.location && offset < page.range.location + page.range.length, "Reflow omitted precise reading position")
+            if mode == .curl { try snapshot("ios-single-column.png") }
+            // Let the replacement UIKit pager enter the window before animating.
+            try await Task.sleep(for: .milliseconds(200))
+            let next = reader.currentIndex + 1
+            try require(reader.pages.indices.contains(next), "Fixture needs another page")
+            let expected = reader.pages[next].anchor
+            reader.turnSpread(forward: true)
+            for _ in 0..<100 { if reader.anchor == expected { break }; try await Task.sleep(for: .milliseconds(20)) }
+            try require(reader.anchor == expected, "Single-column turn failed for \(mode.rawValue): actual \(reader.anchor), expected \(expected), index \(reader.currentIndex)")
+            let turned = reader.anchor
+            options.forceSingleColumn = false
+            reader.update(options: options, jump: nil, jumpID: 0, annotations: .empty, revision: 0)
+            try require(reader.dual && reader.anchor == turned, "Disabling force did not restore auto layout/position")
+            reader.view.frame.size = CGSize(width: 402, height: 874)
+            reader.view.setNeedsLayout(); reader.view.layoutIfNeeded()
+            try require(!reader.dual, "Portrait unexpectedly became dual-column")
+            results.append(["mode": mode.rawValue, "single_column": true, "precise_reflow": true, "one_page_turn": true, "auto_restored": true])
+        }
+        return ["cases": results]
+    }
+
+    @MainActor private static func verifyNavigation(scene: UIWindowScene, book: PreviewBook, requireReducedMotion:Bool=false) async throws -> [String: Any] {
         func require(_ value: Bool, _ message: String) throws { if !value { throw CoreFailure(message: message) } }
         let host = UIViewController(), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
@@ -179,22 +364,47 @@ enum ReadingModesRuntimeCheck {
         let remote = ReadingAnchor(chapter: 21, block: 3, charOffset: 3)
         let sameChapter = ReadingAnchor(chapter: 21, block: 3, charOffset: 80)
         var cases = [[String: Any]]()
+        var motionChecks=0
+        func requireNoMotion(_ layer:CALayer) throws {
+            for key in layer.animationKeys() ?? [] {
+                if let animation=layer.animation(forKey:key) as? CAPropertyAnimation, let property=animation.keyPath,
+                   ["position","bounds","transform"].contains(where:{property == $0 || property.hasPrefix($0+".")}) {
+                    throw CoreFailure(message:"Reduce Motion retained geometric animation: \(property)")
+                }
+                if layer.animation(forKey:key) is CATransition {throw CoreFailure(message:"Reduce Motion retained a transition")}
+            }
+            for child in layer.sublayers ?? [] {try requireNoMotion(child)}
+        }
         for mode in [ReadingMode.curl, .slide, .cover, .none, .scroll] {
             var options = ReaderOptions(fontSize: 18, lineHeight: 1.65, fontName: "Helvetica", theme: "light", sliding: mode != .curl, cjkFontName: "PingFangSC-Regular", readingMode: mode)
             let reader = NativeReadingController(book: book, anchor: origin, options: options)
             host.addChild(reader); host.view.addSubview(reader.view); reader.didMove(toParent: host)
             reader.view.frame = CGRect(x: 0, y: 0, width: 402, height: 874); reader.view.layoutIfNeeded()
             var completed = 0
-            reader.navigated = { _, token in completed = token }
+            var trace=[String]()
+            func position(_ anchor:ReadingAnchor)->String {"\(anchor.chapter)/\(anchor.block)/\(anchor.charOffset)"}
+            reader.navigated = { anchor, token in completed = token; trace.append("navigated \(token) \(position(anchor))") }
+            reader.committed = {anchor in trace.append("committed \(position(anchor))")}
+            reader.visible = {anchor,_ in
+                let value="visible \(position(anchor))"
+                if trace.last != value {trace.append(value)}
+            }
             var history = ReadingJumpHistory()
             history.record(.init(anchor: origin, chapterTitle: book.chapters[origin.chapter].title, pageLabel: reader.pageInfo(for: reader.currentIndex)), target: remote)
             for (index, target) in [remote, sameChapter, origin].enumerated() {
+                trace.append("request \(index+1) \(position(target)) from \(position(reader.anchor))")
                 reader.update(options: options, jump: target, jumpID: index + 1, annotations: .empty, revision: 0)
+                if requireReducedMotion {
+                    try requireNoMotion(reader.view.layer)
+                    try await Task.sleep(for:.milliseconds(20))
+                    try requireNoMotion(reader.view.layer);motionChecks+=1
+                }
                 for _ in 0..<100 {
                     if completed == index + 1 { break }
                     try await Task.sleep(for: .milliseconds(20))
                 }
-                try require(completed == index + 1 && reader.anchor == target, "Navigation completion lost exact anchor in \(mode.rawValue)")
+                try require(completed == index + 1 && reader.anchor == target,
+                    "Navigation completion lost exact anchor in \(mode.rawValue); request=\(index+1), completed=\(completed), actual=\(position(reader.anchor)), target=\(position(target)), leaf=\(reader.currentIndex), size=\(reader.lastSize), transitioning=\(Mirror(reflecting:reader).children.first(where:{$0.label == "transitioning"})?.value ?? false), trace=\(trace)")
                 try require(reader.pages[reader.currentIndex].chapter == target.chapter, "Rendered page and saved chapter differ")
             }
             try require(history.pop()?.anchor == origin && history.previous == nil, "Return did not consume history")
@@ -204,6 +414,7 @@ enum ReadingModesRuntimeCheck {
             cases.append(["mode": mode.rawValue, "cross_chapter": true, "same_chapter_offset": true, "precise_return": true, "reflow": true])
             reader.willMove(toParent: nil); reader.view.removeFromSuperview(); reader.removeFromParent()
         }
+        let queuedSlideJumps = try await verifyChainedSlideNavigation(host:host,book:book)
         // Render the actual production reading workspace with a persisted return point.
         let library = PreviewLibrary()
         let entry: LibraryEntry = try library.client.call("import", ["path": book.entry.path])
@@ -242,7 +453,34 @@ enum ReadingModesRuntimeCheck {
         // Wait for both the disclosure and the system glass transition to settle.
         try await Task.sleep(for: .milliseconds(4000))
         try snapshot("navigation-reader.png")
-        return ["cases": cases, "persistent_history": true, "automatic_remote_offer": true, "no_local_echo": true, "preview_id": preview.id, "preview_anchor": [25, 3, 8]]
+        return ["cases": cases, "reduced_motion_geometry_checks":motionChecks, "queued_slide_jumps":queuedSlideJumps, "persistent_history": true, "automatic_remote_offer": true, "no_local_echo": true, "preview_id": preview.id, "preview_anchor": [25, 3, 8]]
+    }
+
+    @MainActor private static func verifyChainedSlideNavigation(host:UIViewController,book:PreviewBook) async throws -> Int {
+        let origin=ReadingAnchor(chapter:19,block:3,charOffset:37)
+        let remote=ReadingAnchor(chapter:21,block:3,charOffset:3)
+        let same=ReadingAnchor(chapter:21,block:3,charOffset:80)
+        let options=ReaderOptions(fontSize:18,lineHeight:1.65,fontName:"Helvetica",theme:"light",sliding:true,cjkFontName:"PingFangSC-Regular",readingMode:.slide)
+        let reader=NativeReadingController(book:book,anchor:origin,options:options)
+        host.addChild(reader);host.view.addSubview(reader.view);reader.didMove(toParent:host)
+        reader.view.frame=CGRect(x:0,y:0,width:402,height:874);reader.view.layoutIfNeeded()
+        defer {reader.navigated=nil;reader.willMove(toParent:nil);reader.view.removeFromSuperview();reader.removeFromParent()}
+        let targets=Array(repeating:[remote,same,origin],count:4).flatMap {$0}
+        var completed=0,unexpectedCommits=0
+        reader.committed={_ in unexpectedCommits+=1}
+        // Queue directly from a completion callback: no frame-delay workaround in
+        // the harness. The production controller must accept the next locator.
+        reader.navigated={anchor,token in
+            guard token==completed+1,anchor==targets[token-1] else {return}
+            completed=token
+            if token<targets.count {reader.update(options:options,jump:targets[token],jumpID:token+1,annotations:.empty,revision:0)}
+        }
+        reader.update(options:options,jump:targets[0],jumpID:1,annotations:.empty,revision:0)
+        for _ in 0..<500 {if completed==targets.count {break};try await Task.sleep(for:.milliseconds(20))}
+        guard completed==targets.count,reader.anchor==origin,unexpectedCommits==0 else {
+            throw CoreFailure(message:"Chained slide locator jumps stalled: completed \(completed)/\(targets.count), unexpected reading commits \(unexpectedCommits)")
+        }
+        return completed
     }
 
     @MainActor private static func verifyChapterLoading(scene:UIWindowScene,book:PreviewBook) async throws -> [String:Any] {
@@ -347,8 +585,11 @@ enum ReadingModesRuntimeCheck {
                     try require(reader.anchor.chapter == before.chapter+stride, "Append skipped a chapter in \(mode.rawValue)")
                 }
                 let target = ReadingAnchor(chapter: 2400)
+                var completedJump = 0
+                reader.navigated = { _, token in completedJump = token }
                 reader.update(options: options, jump: target, jumpID: 1, annotations: .empty, revision: 0)
-                try require(reader.anchor == target && reader.residentPagedChapters.count < 8, "Directory jump loaded intervening chapters")
+                for _ in 0..<150 {if completedJump == 1 {break};try await Task.sleep(for:.milliseconds(20))}
+                try require(completedJump == 1 && reader.anchor == target && reader.residentPagedChapters.count < 8, "Directory jump loaded intervening chapters or failed to finish")
                 let builds = reader.pagingTypesetCount
                 options.nativeRevision += 1
                 reader.update(options: options, jump: nil, jumpID: 1, annotations: .empty, revision: 0)
@@ -678,6 +919,52 @@ enum ReadingModesRuntimeCheck {
             "maximum_resident_chapters": maximum, "book_limits": true, "native_animation_samples": 40, "held_pan_draw_checks": 240, "tracking_mode_display_ticks": viewport.trackingDisplayTicks]
     }
 
+
+
+    @MainActor private static func verifyAccessibleInlineActions() throws -> Bool {
+        func require(_ condition:Bool,_ message:String) throws {if !condition {throw CoreFailure(message:message)}}
+        let text=NSMutableAttributedString(string:"😀脚注 链接 展开")
+        let noteRange=(text.string as NSString).range(of:"脚注")
+        text.addAttribute(BookTypesetter.noteKey,value:"notes.xhtml#n1",range:noteRange)
+        text.addAttribute(BookTypesetter.linkKey,value:"notes.xhtml#n1",range:noteRange)
+        text.addAttribute(BookTypesetter.linkKey,value:"chapter2.xhtml",range:(text.string as NSString).range(of:"链接"))
+        text.addAttribute(BookTypesetter.actionKey,value:17,range:(text.string as NSString).range(of:"展开"))
+        let surface=PaperSurface(frame:CGRect(x:0,y:0,width:320,height:600))
+        surface.page=ReadingPage(chapter:4,content:LaidOutChapter(text:text,coordinates:[]),range:CFRange(location:0,length:text.length),textRect:CGRect(x:20,y:20,width:280,height:560))
+        var notes=[String](),links=[String](),events=[Int]()
+        surface.publicationAccessibilityActions(note:{chapter,href in if chapter==4 {notes.append(href)}},link:{chapter,href in if chapter==4 {links.append(href)}},action:{chapter,node in if chapter==4 {events.append(node)}})
+        try require(surface.accessibilityCustomActions?.count==3,"Accessible inline actions missing or footnote duplicated")
+        for action in surface.accessibilityCustomActions ?? [] {try require(action.actionHandler?(action)==true,"Accessible inline action rejected")}
+        try require(notes==["notes.xhtml#n1"] && links==["chapter2.xhtml"] && events==[17],"Accessible inline action changed its source target")
+        surface.page=nil;surface.publicationAccessibilityActions(note:nil,link:nil,action:nil)
+        try require(surface.accessibilityCustomActions?.isEmpty==true,"Reused empty surface retained stale actions")
+        return true
+    }
+    @MainActor private static func verifyAccessibleTurns(scene:UIWindowScene,book:PreviewBook) async throws -> [[String:Any]] {
+        func require(_ condition:Bool,_ message:String) throws {if !condition {throw CoreFailure(message:message)}}
+        func surfaces(_ view:UIView)->[PaperSurface] {((view as? PaperSurface).map {[$0]} ?? []) + view.subviews.flatMap {surfaces($0)}}
+        var results=[[String:Any]]()
+        for mode in [ReadingMode.curl,.slide,.cover,.none] {
+            let options=ReaderOptions(fontSize:18,lineHeight:1.5,fontName:"Helvetica",theme:"light",sliding:mode != .curl,cjkFontName:"PingFangSC-Regular",readingMode:mode)
+            let reader=NativeReadingController(book:book,anchor:.init(chapter:1),options:options)
+            let window=UIWindow(windowScene:scene);window.rootViewController=reader;window.makeKeyAndVisible()
+            defer {window.isHidden=true;window.rootViewController=nil}
+            reader.view.frame=CGRect(x:0,y:0,width:402,height:874);reader.view.setNeedsLayout();reader.view.layoutIfNeeded()
+            try await Task.sleep(for:.milliseconds(80))
+            guard let first=surfaces(reader.view).first(where:{$0.page != nil}) else {throw CoreFailure(message:"No accessible paper: \(mode)")}
+            try require(first.accessibilityCustomActions?.prefix(2).map(\.name)==[L("reader.next_page"),L("reader.previous_page")],"Accessible page actions missing: \(mode)")
+            let origin=reader.anchor
+            try require(first.accessibilityScroll(.left),"Accessible next rejected: \(mode)")
+            for _ in 0..<50 {if reader.anchor != origin {break};try await Task.sleep(for:.milliseconds(20))}
+            try require(reader.anchor != origin,"Accessible next did not commit: \(mode)")
+            guard let next=surfaces(reader.view).first(where:{$0.page?.anchor == reader.anchor}),let previous=next.accessibilityCustomActions?.first(where:{$0.name==L("reader.previous_page")}) else {throw CoreFailure(message:"Accessible reverse action missing: \(mode)")}
+            try require(previous.actionHandler?(previous)==true,"Accessible reverse rejected: \(mode)")
+            for _ in 0..<50 {if reader.anchor==origin {break};try await Task.sleep(for:.milliseconds(20))}
+            try require(reader.anchor==origin,"Accessible reverse lost position: \(mode)")
+            results.append(["mode":mode.rawValue,"native_scroll_forward":true,"custom_action_reverse":true,"exact_return":true,"voiceover_speech_verified":false])
+        }
+        return results
+    }
     @MainActor private static func verifyBoundedScroll(scene: UIWindowScene, entry: LibraryEntry) async throws -> [[String: Any]] {
         func require(_ condition: Bool, _ message: String) throws { if !condition { throw CoreFailure(message: message) } }
         let paragraph = String(repeating: "Scrolling 😀 中文 keeps the same logical position across chapter windows. ", count: 4)
@@ -755,5 +1042,19 @@ enum ReadingModesRuntimeCheck {
         return results
     }
 
+}
+private actor DeferredVoiceCatalogGate {
+    private(set) var calls=0
+    private var pending:CheckedContinuation<SystemVoiceSnapshot,Never>?
+    func load() async -> SystemVoiceSnapshot {
+        calls+=1
+        return await withCheckedContinuation {pending=$0}
+    }
+    func finish() {
+        pending?.resume(returning:SystemVoiceSnapshot(voices:[
+            .init(identifier:"preferred-zh",name:"Chinese",language:"zh-CN"),
+            .init(identifier:"saved-en",name:"English",language:"en-US")],preferred:"preferred-zh"))
+        pending=nil
+    }
 }
 #endif

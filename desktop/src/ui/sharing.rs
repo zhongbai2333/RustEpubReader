@@ -475,6 +475,8 @@ impl ReaderApp {
         let stop_flag = self.server_stop_flag.clone();
         let status = self.sharing_status.clone();
         let shared_book_paths = self.shared_book_paths.clone();
+        let received = self.pending_sync_updates.clone();
+        let reload = self.pending_library_reload.clone();
 
         let (device_id, device_name) = {
             let s = store.lock().unwrap_or_else(|e| e.into_inner());
@@ -512,15 +514,31 @@ impl ReaderApp {
                             let p = pin.clone();
                             let s = store.clone();
                             let st = status.clone();
+                            let received = received.clone();
+                            let reload = reload.clone();
                             let ebp = shared_book_paths
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .clone();
                             std::thread::spawn(move || {
-                                if let Err(e) = handle_client(&mut stream, &dd, &bd, &p, s, &ebp) {
+                                if let Err(e) =
+                                    handle_client(&mut stream, &dd, &bd, &p, s.clone(), &ebp)
+                                {
                                     *st.lock().unwrap_or_else(|e| e.into_inner()) =
                                         format!("Client error: {e}");
                                 }
+                                let snapshot = s.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                match reader_core::sharing::apply_received_progress(&dd, &snapshot)
+                                {
+                                    Ok(notices) => received
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .extend(notices),
+                                    Err(error) => {
+                                        *st.lock().unwrap_or_else(|e| e.into_inner()) = error
+                                    }
+                                }
+                                reload.store(true, Ordering::SeqCst);
                             });
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -547,6 +565,9 @@ impl ReaderApp {
     }
 
     fn do_connect_and_sync(&mut self, addr: String, pin: String, remote_device_id: Option<String>) {
+        if self.backup.busy() {
+            return;
+        }
         self.push_feedback_log(format!(
             "connect_and_sync start addr={} remote_id={:?} pin_len={}",
             addr,
@@ -620,23 +641,24 @@ impl ReaderApp {
                                 ),
                             );
                             // Write back updated store
-                            *store_arc.lock().unwrap_or_else(|e| e.into_inner()) =
-                                store_snapshot.clone();
+                            store_arc
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .merge_session(&store_snapshot, &data_dir);
                             // Signal main thread to reload library from disk
                             // (auto_sync_session already saved downloaded books to library.json)
                             library_reload.store(true, std::sync::atomic::Ordering::SeqCst);
-                            // Apply ALL synced progress (includes both changed and existing)
-                            {
-                                let mut updates =
-                                    pending_updates.lock().unwrap_or_else(|e| e.into_inner());
-                                updates.extend(store_snapshot.progress.iter().cloned());
-                                append_feedback_log(
-                                    &feedback_logs,
-                                    format!(
-                                        "queued pending progress updates count={}",
-                                        updates.len()
-                                    ),
-                                );
+                            match reader_core::sharing::apply_received_progress(
+                                &data_dir,
+                                &store_snapshot,
+                            ) {
+                                Ok(notices) => pending_updates
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .extend(notices),
+                                Err(error) => {
+                                    append_feedback_log(&feedback_logs, &error);
+                                }
                             }
                             *status.lock().unwrap_or_else(|e| e.into_inner()) = sync_done_msg;
                         }
@@ -645,7 +667,10 @@ impl ReaderApp {
                                 &feedback_logs,
                                 format!("auto_sync_session failed: {e}"),
                             );
-                            *store_arc.lock().unwrap_or_else(|e| e.into_inner()) = store_snapshot;
+                            store_arc
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .merge_session(&store_snapshot, &data_dir);
                             *status.lock().unwrap_or_else(|e| e.into_inner()) =
                                 reader_core::i18n::format_template(&sync_fail_tpl, &[&e], &[]);
                         }
@@ -654,7 +679,10 @@ impl ReaderApp {
                 Err(e) => {
                     append_feedback_log(&feedback_logs, format!("connect_to_peer failed: {e}"));
                     // Store might have been updated during pairing
-                    *store_arc.lock().unwrap_or_else(|e| e.into_inner()) = store_snapshot;
+                    store_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .merge_session(&store_snapshot, &data_dir);
                     *status.lock().unwrap_or_else(|e| e.into_inner()) =
                         reader_core::i18n::format_template(&connect_fail_tpl, &[&e], &[]);
                 }
@@ -705,8 +733,15 @@ impl ReaderApp {
                                         .to_string_lossy()
                                         .to_string()
                                 });
-                            self.library
-                                .add_or_update(&self.data_dir, title, full_path, 0, None);
+                            if let Err(error) = self.library.add_or_update(
+                                &self.data_dir,
+                                title,
+                                full_path,
+                                0,
+                                None,
+                            ) {
+                                self.error_msg = Some(error.to_string());
+                            };
                             newly_added += 1;
                         }
                     }
@@ -717,43 +752,32 @@ impl ReaderApp {
             }
         }
 
-        let mut progress_updates_applied = 0usize;
-        // Also apply any synced progress from PeerStore
-        let progress = self
+        // Apply peer records on a worker, with the same validation/version contract.
+        let store = self
             .peer_store
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .progress
             .clone();
-        for pe in &progress {
-            let mut matched_paths = Vec::new();
-            for entry in &self.library.books {
-                if let Ok(h) = reader_core::epub::EpubBook::file_hash(&entry.path) {
-                    if h == pe.book_hash
-                        && (entry.last_chapter != pe.chapter
-                            || entry.last_block != pe.block
-                            || entry.last_char_offset != pe.char_offset)
-                    {
-                        matched_paths.push(entry.path.clone());
-                    }
+        let root = self.data_dir.clone();
+        let pending = self.pending_sync_updates.clone();
+        let reload = self.pending_library_reload.clone();
+        let logs = self.feedback_logs.clone();
+        std::thread::spawn(move || {
+            match reader_core::sharing::apply_received_progress(&root, &store) {
+                Ok(notices) => {
+                    pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend(notices);
+                    reload.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
+                Err(error) => append_feedback_log(&logs, &error),
             }
-            for p in matched_paths {
-                self.library.update_position(
-                    &self.data_dir,
-                    &p,
-                    pe.chapter,
-                    pe.chapter_title.clone(),
-                    pe.block,
-                    pe.char_offset,
-                );
-                progress_updates_applied += 1;
-            }
-        }
+        });
 
         self.push_feedback_log(format!(
-            "refresh library done scanned_epub={} newly_added={} progress_updates_applied={}",
-            scanned_epub, newly_added, progress_updates_applied
+            "refresh library done scanned_epub={} newly_added={}",
+            scanned_epub, newly_added
         ));
     }
 }

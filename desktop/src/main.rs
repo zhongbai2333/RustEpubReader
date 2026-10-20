@@ -4,8 +4,12 @@
 mod app;
 pub(crate) use reader_core::github_sync;
 #[cfg(feature = "performance-checks")]
+mod native_corpus;
+#[cfg(feature = "performance-checks")]
 mod performance;
 mod self_update;
+#[cfg(feature = "performance-checks")]
+mod shelf_performance;
 mod system_fonts;
 mod ui;
 
@@ -107,6 +111,7 @@ fn setup_fonts(ctx: &egui::Context) {
     #[cfg(target_os = "macos")]
     system_fonts::register_defaults(&mut fonts);
     register_reader_font_families(&mut fonts);
+    system_fonts::register_fallbacks(&mut fonts);
     ctx.set_fonts(fonts);
 }
 
@@ -160,8 +165,30 @@ fn startup_open_path_from_process_args() -> Option<PathBuf> {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(feature = "performance-checks")]
+    let shelf_boot = (std::time::Instant::now(), reader_core::diagnostics::rss());
+    #[cfg(feature = "performance-checks")]
+    if std::env::args().any(|arg| arg == "--measure-shelf") {
+        assert!(
+            std::path::Path::new("shelf-performance.fixture.json").is_file(),
+            "Use a provisioned isolated shelf fixture directory"
+        );
+    }
+    #[cfg(feature = "performance-checks")]
+    if std::env::args().any(|arg| arg == "--verify-native-corpus") {
+        assert!(
+            std::path::Path::new("native-corpus.fixture.json").is_file(),
+            "Use an owned native corpus directory"
+        );
+    }
     // Isolated UI diagnostics must never ask for access to real keychain entries.
-    if cfg!(feature = "performance-checks") && std::env::args().any(|arg| arg == "--measure-reader")
+    if cfg!(feature = "performance-checks")
+        && std::env::args().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "--measure-reader" | "--measure-shelf" | "--verify-native-corpus"
+            )
+        })
         || cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--ui-preview")
     {
         keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
@@ -237,6 +264,15 @@ fn main() -> eframe::Result {
                 }
             }
             #[cfg(feature = "performance-checks")]
+            if std::env::args().any(|arg| arg == "--measure-shelf") {
+                app.reader_introduction_seen = true;
+                app.view = app::AppView::Library;
+                app.shelf_performance = Some(shelf_performance::ShelfPerformance::new(
+                    shelf_boot.0,
+                    shelf_boot.1,
+                ));
+            }
+            #[cfg(feature = "performance-checks")]
             if std::env::args().any(|arg| arg == "--measure-reader") {
                 let output = std::env::var("READER_PERFORMANCE_REPORT")
                     .expect("READER_PERFORMANCE_REPORT is required for the isolated benchmark");
@@ -244,6 +280,10 @@ fn main() -> eframe::Result {
                 app.scroll_mode = false;
                 app.reader_page_animation = "Realistic".into();
                 app.reader_performance = Some(performance::ReaderPerformance::new(output.into()));
+            }
+            #[cfg(feature = "performance-checks")]
+            if std::env::args().any(|arg| arg == "--verify-native-corpus") {
+                app.native_corpus = Some(native_corpus::NativeCorpus::new());
             }
             if let Some(path) = &startup_open_path {
                 if path

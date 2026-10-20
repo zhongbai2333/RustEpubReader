@@ -48,6 +48,8 @@ struct PreparedResult {
     next_retry_after: Option<u64>,
     #[serde(default)]
     terminal_error: Option<String>,
+    #[serde(default)]
+    annotation_error: Option<String>,
 }
 
 fn journal(data_dir: &str) -> SyncJournal {
@@ -68,11 +70,70 @@ pub(super) fn seed_local(data_dir: &str, path: &str) {
     }
     let _ = journal.save(data_dir);
 }
-pub(super) fn record_local(data_dir: &str, device_id: &str, progress: ProgressEntry) {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn commit_local(
+    data_dir: &str,
+    device: &str,
+    path: &str,
+    chapter: usize,
+    chapter_title: Option<String>,
+    block: usize,
+    char_offset: usize,
+) -> Result<Option<reader_core::cloud_progress::VersionedProgress>, String> {
+    let event_ms = reader_core::now_millis();
     let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut journal = SyncJournal::load(data_dir, device_id);
-    journal.record(progress);
-    let _ = journal.save(data_dir);
+    let mut library = Library::load_from(data_dir)?;
+    let Some(entry) = library.books.iter().find(|e| e.path == path).cloned() else {
+        return Ok(None);
+    };
+    let mut journal = SyncJournal::load(data_dir, device);
+    journal.seed_entry(data_dir, &entry);
+    if (entry.last_chapter, entry.last_block, entry.last_char_offset)
+        == (chapter, block, char_offset)
+    {
+        library.apply_position(data_dir, path, chapter, chapter_title, block, char_offset)?;
+        return Ok(None);
+    }
+    let hash = Library::load_book_config(data_dir, &entry.id)?
+        .and_then(|c| c.file_hash)
+        .map(Ok)
+        .unwrap_or_else(|| EpubBook::file_hash(path))?;
+    let progress = ProgressEntry {
+        book_hash: hash.clone(),
+        title: entry.title,
+        chapter,
+        block,
+        char_offset,
+        chapter_title,
+        timestamp: event_ms / 1000,
+    };
+    if !journal.record_at(progress, event_ms) {
+        return Ok(None);
+    }
+    let record = reader_core::cloud_progress::VersionedProgress {
+        progress: journal.own.progress[&hash].clone(),
+        version: journal.own.progress_version(&hash),
+    };
+    if !library.apply_versioned_position(data_dir, path, &record)? {
+        return Ok(None);
+    }
+    journal.save(data_dir)?;
+    Ok(Some(record))
+}
+pub(super) fn accept_committed(
+    data_dir: &str,
+    device: &str,
+    notices: &[reader_core::sharing::CommittedProgress],
+) -> Result<(), String> {
+    if notices.is_empty() {
+        return Ok(());
+    }
+    let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut journal = SyncJournal::load(data_dir, device);
+    for notice in notices {
+        journal.accept(&notice.record);
+    }
+    journal.save(data_dir)
 }
 fn stage_path(data_dir: &str, hash: &str) -> Result<PathBuf, String> {
     if !valid_hash(hash) {
@@ -100,6 +161,10 @@ fn run(
         let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         journal(data_dir)
     };
+    let mut journal = journal;
+    for entry in &library.books {
+        journal.seed_entry(data_dir, entry);
+    }
     let mut own = journal.own.clone();
     let mut books = Vec::new();
     let mut skipped = 0;
@@ -230,6 +295,7 @@ fn run(
         failed: result.failed,
         next_retry_after: result.next_retry_after,
         terminal_error: result.terminal_error,
+        annotation_error: result.annotation_error,
     })
 }
 fn apply(
@@ -243,7 +309,7 @@ fn apply(
     reader_core::reading_activity::import(data_dir, &journal.own.device_id, &prepared.snapshots)?;
     journal.seen.extend(prepared.own.progress.keys().cloned());
     let latest = reader_core::cloud_progress::latest_records(&prepared.snapshots, &journal.own);
-    let mut library = Library::load_from(data_dir);
+    let mut library = Library::load_from(data_dir)?;
     reader_core::library::archive::ArchiveStore::apply_verified(
         data_dir,
         &mut library,
@@ -301,13 +367,13 @@ fn apply(
                         staged.to_string_lossy().into_owned(),
                         0,
                         None,
-                    )
+                    )?
                 };
                 if !PathBuf::from(&entry.path).starts_with(PathBuf::from(data_dir).join("books"))
                     || EpubBook::file_hash(&entry.path).ok().as_ref() != Some(&book.info.hash)
                 {
                     library = previous;
-                    library.save_to(data_dir);
+                    library.save_to(data_dir)?;
                     return Err("Cannot save downloaded book".into());
                 }
                 Ok::<_, String>(entry)
@@ -369,29 +435,27 @@ fn apply(
         {
             continue;
         }
+        if !library.apply_versioned_position(data_dir, path, &record)? {
+            continue;
+        }
         if path == open_path && changed {
             offer = Some(p.clone());
         }
         journal.accept(&record);
-        if changed {
-            library.apply_position(
-                data_dir,
-                path,
-                p.chapter,
-                p.chapter_title.clone(),
-                p.block,
-                p.char_offset,
-            );
-        }
         journal.applied.insert(hash, p.timestamp);
         if changed {
             updated.push(serde_json::json!({"path":path,"chapter":p.chapter}));
         }
     }
-    journal.apply_recent(data_dir, &mut library, &prepared.snapshots);
+    if let Err(error) =
+        reader_core::github_sync::apply_cached_annotations(data_dir, &prepared.owner)
+    {
+        prepared.annotation_error.get_or_insert(error);
+    }
+    journal.apply_recent(data_dir, &mut library, &prepared.snapshots)?;
     journal.save(data_dir)?;
     Ok(
-        serde_json::json!({"uploaded":prepared.uploaded,"downloaded":imported,"skipped":prepared.skipped,"offer":offer,"updated":updated,"failed":prepared.failed,"next_retry_after":prepared.next_retry_after,"terminal_error":prepared.terminal_error}),
+        serde_json::json!({"uploaded":prepared.uploaded,"downloaded":imported,"skipped":prepared.skipped,"offer":offer,"updated":updated,"failed":prepared.failed,"next_retry_after":prepared.next_retry_after,"terminal_error":prepared.terminal_error,"annotation_error":prepared.annotation_error}),
     )
 }
 fn output(env: &mut JNIEnv, result: Result<serde_json::Value, String>) -> jstring {
@@ -509,12 +573,13 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_githubSyncEpoch(
     EPOCH.load(Ordering::SeqCst) as jni::sys::jlong
 }
 
-pub(super) fn opened(data_dir: &str, path: &str) {
+pub(super) fn opened(data_dir: &str, path: &str) -> Result<(), String> {
     let _guard = JOURNAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut library = Library::load_from(data_dir);
-    library.set_last_opened(data_dir, path, reader_core::now_millis());
+    let mut library = Library::load_from(data_dir)?;
+    library.set_last_opened(data_dir, path, reader_core::now_millis())?;
     let journal = journal(data_dir);
-    let _ = journal.save(data_dir);
+    journal.save(data_dir)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -538,17 +603,19 @@ mod tests {
         .unwrap();
         let result =
             reader_core::txt::convert_txt_to_epub(&txt, dir.path(), &Default::default()).unwrap();
-        let mut library = Library::load_from(&data_dir);
-        let entry = library.add_or_update(
-            &data_dir,
-            "Book".into(),
-            result.epub_path.to_string_lossy().into_owned(),
-            1,
-            None,
-        );
+        let mut library = Library::load_from(&data_dir).unwrap();
+        let entry = library
+            .add_or_update(
+                &data_dir,
+                "Book".into(),
+                result.epub_path.to_string_lossy().into_owned(),
+                1,
+                None,
+            )
+            .unwrap();
         let hash = EpubBook::file_hash(&entry.path).unwrap();
         library.books[0].last_opened = 10;
-        library.save_to(&data_dir);
+        library.save_to(&data_dir).unwrap();
         (dir, entry.path, hash)
     }
     fn progress(hash: &str, chapter: usize, timestamp: u64) -> ProgressEntry {
@@ -578,6 +645,7 @@ mod tests {
             failed: vec![],
             next_retry_after: None,
             terminal_error: None,
+            annotation_error: None,
         }
     }
     #[test]
@@ -587,7 +655,10 @@ mod tests {
         let data_dir = dir.path().to_str().unwrap();
         let result = apply(data_dir, prepared(&hash), &path).unwrap();
         assert_eq!(result["offer"]["chapter"], 0);
-        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 0);
+        assert_eq!(
+            Library::load_from(data_dir).unwrap().books[0].last_chapter,
+            0
+        );
         assert!(SyncJournal::load(data_dir, "android-test")
             .own
             .validate()
@@ -598,15 +669,19 @@ mod tests {
         let _test = TEST_LOCK.lock().unwrap();
         let (dir, _, hash) = fixture();
         let data_dir = dir.path().to_str().unwrap();
-        record_local(data_dir, "android-test", progress(&hash, 2, 40));
-        Library::load_from(data_dir).update_position(
-            data_dir,
-            &Library::load_from(data_dir).books[0].path,
-            2,
-            None,
-            0,
-            0,
-        );
+        let path = Library::load_from(data_dir).unwrap().books[0].path.clone();
+        commit_local(data_dir, "android-test", &path, 2, None, 0, 0).unwrap();
+        Library::load_from(data_dir)
+            .unwrap()
+            .update_position(
+                data_dir,
+                &Library::load_from(data_dir).unwrap().books[0].path,
+                2,
+                None,
+                0,
+                0,
+            )
+            .unwrap();
         let result = apply(data_dir, prepared(&hash), "").unwrap();
         assert!(result["offer"].is_null());
         assert_eq!(
@@ -621,7 +696,10 @@ mod tests {
         let (dir, _, hash) = fixture();
         let data_dir = dir.path().to_str().unwrap();
         apply(data_dir, prepared(&hash), "").unwrap();
-        assert_eq!(Library::load_from(data_dir).books[0].last_chapter, 0);
+        assert_eq!(
+            Library::load_from(data_dir).unwrap().books[0].last_chapter,
+            0
+        );
         assert_eq!(
             SyncJournal::load(data_dir, "android-test").applied[&hash],
             30
@@ -647,7 +725,7 @@ mod tests {
             .insert(hash.clone(), event.clone());
         apply(root, incoming, "").unwrap();
         assert_eq!(
-            Library::load_from(root).books[0].last_opened,
+            Library::load_from(root).unwrap().books[0].last_opened,
             event.opened_ms
         );
         let journal = SyncJournal::load(root, "android-test");
@@ -679,7 +757,7 @@ mod tests {
         let result = apply(root, files, "").unwrap();
         assert_eq!(result["failed"].as_array().unwrap().len(), 1);
         assert_eq!(result["downloaded"], 0);
-        assert_eq!(Library::load_from(root).books[0].last_chapter, 0);
+        assert_eq!(Library::load_from(root).unwrap().books[0].last_chapter, 0);
         assert_eq!(SyncJournal::load(root, "android-test").applied[&hash], 30);
     }
 }

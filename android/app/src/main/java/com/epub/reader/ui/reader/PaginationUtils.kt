@@ -270,7 +270,21 @@ private fun findParagraphSplitOffset(
             if(layout.getLineBottom(line)-top>available+0.1f)break
             end=layout.getLineEnd(line,visibleEnd=false)
         }
-        return (end-base).coerceIn(1,length)
+        var candidate=(end-base).coerceIn(1,length)
+        // A line end shaped in the full paragraph can wrap differently once it
+        // becomes the end of a fragment (for example before CJK punctuation).
+        // Validate the actual short fragment, rather than overflowing the page
+        // or reshaping the entire remaining chapter on every split.
+        val source=paragraph.spans.joinToString(""){it.text}
+        while(candidate>1) {
+            val head=splitParagraph(paragraph,candidate).first
+            val (shaped,padding)=paragraphGeometry(head,fontSize,lineHeight,contentWidthPx,density,paraSpacing,textIndentChars,textMeasurer,fontFamily,sourceCharOffset)
+            if(shaped.size.height+ceil(padding)<=maxHeightPx+0.1f)break
+            val previousLine=if(shaped.lineCount>1)shaped.getLineStart(shaped.lineCount-1)else candidate
+            candidate=if(previousLine in 1 until candidate)previousLine else Character.offsetByCodePoints(source,candidate,-1)
+            if(candidate>0 && candidate<source.length && Character.isLowSurrogate(source[candidate]) && Character.isHighSurrogate(source[candidate-1]))candidate--
+        }
+        return candidate.coerceAtLeast(Character.charCount(source.codePointAt(0)))
     }
     var low = 1
     var high = length
@@ -323,7 +337,7 @@ private fun adjustSplitForCjk(text: String, proposed: Int): Int {
     while (offset > 1 && offset < text.length && NO_BREAK_BEFORE.contains(text[offset])) offset--
     while (offset > 1 && NO_BREAK_AFTER.contains(text[offset - 1])) offset--
     if(offset<text.length&&offset>0&&Character.isLowSurrogate(text[offset])&&Character.isHighSurrogate(text[offset-1]))offset--
-    return offset.coerceAtLeast(1)
+    return offset.coerceAtLeast(Character.charCount(text.codePointAt(0)))
 }
 
 private fun paragraphGeometry(block:ContentBlock.Paragraph,font:Float,lineHeight:Float,width:Float,density:androidx.compose.ui.unit.Density,
@@ -343,7 +357,7 @@ private fun paragraphGeometry(block:ContentBlock.Paragraph,font:Float,lineHeight
     return layout to vertical
 }
 
-private fun measuredBlockHeight(block:ContentBlock,font:Float,lineHeight:Float,width:Float,density:androidx.compose.ui.unit.Density,
+internal fun measuredBlockHeight(block:ContentBlock,font:Float,lineHeight:Float,width:Float,density:androidx.compose.ui.unit.Density,
     para:Float,indent:Int,titleScale:Float,measurer:TextMeasurer?,family:FontFamily,sourceOffset:Int=0):Float {
     if(measurer==null)return estimateBlockHeight(block,font,lineHeight,width,density,para,indent,titleScale)
     if(block is ContentBlock.Paragraph&&block.nativeStyle.table==null&&block.nativeStyle.list.isEmpty()) {

@@ -55,6 +55,7 @@ impl ChapterStore {
     }
 
     fn load(&self, index: usize) -> Result<Arc<LoadedChapter>, String> {
+        crate::open_operation::check()?;
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(at) = cache.iter().position(|(i, _)| *i == index) {
             let value = cache.remove(at).unwrap();
@@ -75,6 +76,7 @@ impl ChapterStore {
             let html = String::from_utf8(read_bounded(&epub, path, 64 * 1024 * 1024)?)
                 .map_err(|_| "Invalid chapter text")?;
             let document = scraper::Html::parse_document(&html);
+            crate::open_operation::check()?;
             let mut images = HashMap::new();
             let mut image_budget = 64 * 1024 * 1024;
             let mut resource_error = None;
@@ -175,6 +177,7 @@ impl ChapterStore {
             cost,
         });
         self.loads.fetch_add(1, Ordering::Relaxed);
+        crate::open_operation::check()?;
         cache.push_back((index, value.clone()));
         while cache.len() > 1
             && (cache.len() > 8
@@ -217,6 +220,7 @@ impl Probe<'_> {
 impl Write for Probe<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         for part in bytes.chunks(1024) {
+            crate::open_operation::check_io()?;
             self.bytes.extend_from_slice(part);
             if self.bytes.len() >= self.next {
                 self.inspect();
@@ -248,7 +252,9 @@ impl EpubBook {
         Self::open_chapter_backed(path.as_ref(), Some(index_dir))
     }
     fn open_chapter_backed(path: &Path, index_dir: Option<&Path>) -> Result<Self, String> {
+        crate::open_operation::check()?;
         let epub = Arc::new(RbookEpub::open(path).map_err(|e| format!("Cannot open EPUB: {e}"))?);
+        crate::open_operation::check()?;
         let title = epub
             .metadata()
             .title()
@@ -306,6 +312,7 @@ impl EpubBook {
             let mut toc = Vec::new();
             let mut pending = Vec::new();
             for entry in epub.spine().iter().filter_map(|v| v.manifest_entry()) {
+                crate::open_operation::check()?;
                 let kind = entry.kind().as_str().to_owned();
                 if !kind.starts_with("application/xhtml") && !kind.starts_with("text/html") {
                     continue;
@@ -408,6 +415,7 @@ impl EpubBook {
                 toc,
             };
             if let Some(p) = &cache_path {
+                crate::open_operation::check()?;
                 if let Some(parent) = p.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
@@ -435,6 +443,7 @@ impl EpubBook {
             })
             .collect();
         let (chapter_reviews, review_chapter_indices) = review_catalogue(&index.slots);
+        crate::open_operation::check()?;
         let resources = Arc::new(super::super::native::NativeResources::new(epub.clone()));
         Ok(Self {
             title,
@@ -582,6 +591,7 @@ pub(crate) fn read_bounded(epub: &RbookEpub, path: &str, limit: usize) -> Result
     }
     impl Write for Bytes {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            crate::open_operation::check_io()?;
             if bytes.len() > self.limit.saturating_sub(self.data.len()) {
                 self.exceeded = true;
                 return Err(std::io::Error::other(

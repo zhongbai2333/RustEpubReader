@@ -34,7 +34,7 @@ fn main() {
             &format!("{directory}/books"),
             &[],
         )?;
-        let books = reader_core::library::Library::load_from(directory).books;
+        let books = reader_core::library::Library::load_from(directory)?.books;
         assert!(!books.is_empty());
         for book in &books {
             assert!(!reader_core::epub::EpubBook::open(&book.path)?

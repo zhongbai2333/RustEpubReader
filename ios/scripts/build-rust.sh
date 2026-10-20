@@ -22,8 +22,9 @@ fi
 CARGO_PROFILE_ARGS=(--profile dev)
 CARGO_PROFILE_DIR=debug
 if [ "${CONFIGURATION:-Debug}" = Release ]; then
-    CARGO_PROFILE_ARGS=(--release)
-    CARGO_PROFILE_DIR=release
+    CARGO_PROFILE_DIR="${READER_RUST_PROFILE:-release}"
+    case "$CARGO_PROFILE_DIR" in release|release-fast) ;; *) echo "Unsupported READER_RUST_PROFILE" >&2; exit 1 ;; esac
+    CARGO_PROFILE_ARGS=(--profile "$CARGO_PROFILE_DIR")
 fi
 # Homebrew Rust includes matching std source, but only host prebuilt std. Build
 # matching iOS std locally; no global toolchain replacement. rustup users with

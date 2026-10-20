@@ -18,7 +18,12 @@ import org.json.JSONObject
 
 /** Verifies the actual JNI bridge and Android bitmap decoder on a device. */
 class IllustrationInstrumentation : Instrumentation() {
+    private var selection = false
+    private var selectionReduced = false
+    private var bookOpening = false
+    private var accessibility = false
     private var navigation = false
+    private var columns = false
     private var largePublication = false
     private var fontLibrary = false
     private var punctuation = false
@@ -33,8 +38,12 @@ class IllustrationInstrumentation : Instrumentation() {
     private var native = false
     private var curl = false
     private var bookShare = false
-    override fun onCreate(arguments: Bundle?) { navigation=arguments?.getString("check")=="navigation"; largePublication=arguments?.getString("check")=="large-publication"; fontLibrary=arguments?.getString("check")=="font-library"; punctuation=arguments?.getString("check")=="punctuation"; firstReader=arguments?.getString("check")=="first-reader"; linkage=arguments?.getString("check")=="appearance-linkage"; appearance=arguments?.getString("check") in listOf("appearance","appearance-ambient"); appearanceAmbient=arguments?.getString("check")=="appearance-ambient"; bookShare=arguments?.getString("check")=="book-share"; i18n=arguments?.getString("check")=="i18n"; bounds=arguments?.getString("check")=="bounds"; corpus=arguments?.getString("check")=="corpus"; typography = arguments?.getString("check") == "typography"; native = arguments?.getString("check") == "native"; curl = arguments?.getString("check") == "curl"; super.onCreate(arguments); start() }
+    override fun onCreate(arguments: Bundle?) { selectionReduced=arguments?.getString("check")=="selection-reduced"; selection=arguments?.getString("check") in listOf("selection","selection-reduced"); bookOpening=arguments?.getString("check")=="book-opening"; accessibility=arguments?.getString("check")=="accessibility"; columns=arguments?.getString("check")=="single-column"; navigation=arguments?.getString("check")=="navigation"; largePublication=arguments?.getString("check")=="large-publication"; fontLibrary=arguments?.getString("check")=="font-library"; punctuation=arguments?.getString("check")=="punctuation"; firstReader=arguments?.getString("check")=="first-reader"; linkage=arguments?.getString("check")=="appearance-linkage"; appearance=arguments?.getString("check") in listOf("appearance","appearance-ambient"); appearanceAmbient=arguments?.getString("check")=="appearance-ambient"; bookShare=arguments?.getString("check")=="book-share"; i18n=arguments?.getString("check")=="i18n"; bounds=arguments?.getString("check")=="bounds"; corpus=arguments?.getString("check")=="corpus"; typography = arguments?.getString("check") == "typography"; native = arguments?.getString("check") == "native"; curl = arguments?.getString("check") == "curl"; super.onCreate(arguments); start() }
     override fun onStart() {
+        if(selection) {ReaderSelectionRuntimeChecks.run(this,selectionReduced);return}
+        if(bookOpening) {BookOpeningRuntimeChecks.run(this);return}
+        if(accessibility) {ReaderAccessibilityRuntimeChecks.run(this);return}
+        if(columns) { SingleColumnRuntimeChecks.run(this); return }
         if(navigation) { ReaderNavigationRuntimeChecks.run(this); return }
         if(largePublication) { LargePublicationRuntimeChecks.run(this); return }
         if(fontLibrary) { FontLibraryRuntimeChecks.run(this); return }
@@ -184,7 +193,7 @@ class IllustrationInstrumentation : Instrumentation() {
                             androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier
                                 .requiredWidth(width.dp).wrapContentHeight(unbounded=true)
                                 .onGloballyPositioned {height.set(it.size.height)}) {
-                                for(item in content) ContentBlockView(blockIndex=item.sourceBlockIndex,block=item.block,
+                                for(item in content) ContentBlockView(chapterIndex = 0, blockIndex=item.sourceBlockIndex,block=item.block,
                                     sourceCharOffset=item.sourceCharOffset,imageMaxHeight=item.imageMaxHeight,fontSize=18f,
                                     textColor=androidx.compose.ui.graphics.Color.Black,linkColor=androidx.compose.ui.graphics.Color.Blue,
                                     fontFamily=androidx.compose.ui.text.font.FontFamily.Default,onLinkClick={},onTextTapped={},lineSpacing=1.5f,paraSpacing=0.5f)
@@ -208,35 +217,7 @@ class IllustrationInstrumentation : Instrumentation() {
         finish(if(report.optBoolean("passed"))Activity.RESULT_OK else Activity.RESULT_CANCELED,Bundle().apply {putString("stream",report.toString(2))})
     }
 
-    private fun verifyCorpus() {
-        val report=JSONObject();val results=org.json.JSONArray()
-        try {
-            val decoder=Json {ignoreUnknownKeys=true}
-            for((name,index)in listOf("pride-and-prejudice" to 1,"alice-standard" to 2,"accessible-epub-3" to 18,"hefty-water" to 0,"kusamakura" to 2,"hongloumeng" to 1,"aq" to 1,"zhaohuaxishi" to 1,"tiangongkaiwu" to 1,"pagination-stress" to 0)) {
-                val path=java.io.File(targetContext.cacheDir,"corpus/$name.epub");check(path.exists()) {"Corpus file missing: $name"}
-                val source=decoder.decodeFromString<ChapterDto>(checkNotNull(RustBridge.getChapter(path.path,index)))
-                val styles=decoder.decodeFromString<NativePresentation>(checkNotNull(RustBridge.nativePresentation(path.path,index,"mixed",false,"[]")))
-                check(styles.errors.isEmpty())
-                val blocks=source.blocks.mapIndexed {at,block->val raw=when(block){is ContentBlock.Paragraph->block.spans.joinToString(""){it.text};is ContentBlock.Heading->block.spans.joinToString(""){it.text};else->""};val style=styles.styles[at].inUtf16(raw);when(block){is ContentBlock.Paragraph->block.copy(nativeStyle=style);is ContentBlock.Heading->block.copy(nativeStyle=style);is ContentBlock.Image->block.copy(nativeStyle=style);else->block}}
-                val ch=Chapter(source.title,blocks,source.sourceHref,source.images.map {it.copy(nativeStyle=styles.styles[it.block])})
-                for(width in listOf(320,640)) {
-                    val pages=paginateContent(ch,18f,650.dp,width.dp,Density(1f),false)
-                    check(pages.isNotEmpty())
-                    for((blockIndex,block)in blocks.withIndex()) {
-                        val original=when(block){is ContentBlock.Paragraph->block.spans.joinToString(""){it.text};is ContentBlock.Heading->block.spans.joinToString(""){it.text};else->null}?:continue
-                        if(block.nativeStyle().hidden)continue
-                        val fragments=pages.flatten().filter {it.sourceBlockIndex==blockIndex&&it.block !is ContentBlock.Image}
-                        val reconstructed=fragments.joinToString(""){when(val b=it.block){is ContentBlock.Paragraph->b.spans.joinToString(""){it.text};is ContentBlock.Heading->b.spans.joinToString(""){it.text};else->""}}
-                        check(original==reconstructed){"Native pagination changed source $name:$blockIndex"}
-                    }
-                    results.put(JSONObject().put("name",name).put("chapter",index).put("width",width).put("pages",pages.size).put("stable_source",true))
-                }
-            }
-            report.put("passed",true).put("layouts",results)
-        }catch(error:Throwable){report.put("passed",false).put("error",error.toString()).put("layouts",results)}
-        java.io.File(targetContext.cacheDir,"corpus-verification.json").writeText(report.toString(2))
-        finish(if(report.optBoolean("passed"))Activity.RESULT_OK else Activity.RESULT_CANCELED,Bundle().apply {putString("stream",report.toString(2))})
-    }
+    private fun verifyCorpus() = NativeCorpusRuntimeChecks.run(this)
 
     private fun verifyTypography() {
         val report=JSONObject()

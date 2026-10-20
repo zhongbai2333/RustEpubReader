@@ -33,6 +33,7 @@ jobs:
     build-apk:
         name: Build Android APK
         runs-on: ubuntu-latest
+        timeout-minutes: 45
         env:
             ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         steps:
@@ -81,11 +82,14 @@ jobs:
                   path: |
                       ~/.cargo/registry
                       ~/.cargo/git
-                      target
-                  key: ${{ runner.os }}-cargo-android-${{ hashFiles('Cargo.lock') }}
+                      target/debug
+                      target/release
+                      target/armv7-linux-androideabi
+                      target/aarch64-linux-android
+                      target/x86_64-linux-android
+                  key: ${{ runner.os }}-cargo-android-v2-${{ hashFiles('Cargo.lock') }}
                   restore-keys: |
-                      ${{ runner.os }}-cargo-android-
-                      ${{ runner.os }}-cargo-
+                      ${{ runner.os }}-cargo-android-v2-
 
             - name: Cache Gradle
               uses: actions/cache@v4
@@ -134,9 +138,54 @@ jobs:
                   fi
                   ls -la android-assets
 
+            - name: Build isolated native runtime checks
+              working-directory: android
+              run: |
+                  ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest \
+                    -PREADER_DIAGNOSTIC_APPLICATION_ID=local.reader.columns --stacktrace
+
+            - name: Install Android emulator runtime
+              run: |
+                  sdkmanager "emulator" "system-images;android-35;google_apis;x86_64"
+                  echo no | avdmanager create avd --name ReaderRuntime --package "system-images;android-35;google_apis;x86_64"
+                  test -e /dev/kvm
+                  sudo chmod 666 /dev/kvm
+
+            - name: Run native Android tablet smoke checks
+              timeout-minutes: 8
+              shell: bash
+              run: |
+                  mkdir -p target/android-runtime-logs
+                  "$ANDROID_HOME/emulator/emulator" -avd ReaderRuntime -port 5554 \
+                    -no-window -no-audio -no-snapshot -no-boot-anim \
+                    -skin 1600x1000 -dpi-device 160 -memory 2048 -gpu swiftshader_indirect \
+                    > target/android-runtime-logs/emulator.log 2>&1 &
+                  READER_EMULATOR_PID=$!
+                  trap 'kill "$READER_EMULATOR_PID" || true' EXIT
+                  adb wait-for-device
+                  for attempt in {1..120}; do
+                    if [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; then break; fi
+                    sleep 1
+                  done
+                  test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1"
+                  python3 scripts/check-mobile-runtime.py android \
+                    --app android/app/build/outputs/apk/debug/app-x86_64-debug.apk \
+                    --tests android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+                    --output target/android-runtime --with-corpus --with-talkback --with-book-opening --with-selection
+
             - name: Upload Android artifact
               uses: actions/upload-artifact@v4
               with:
                   name: ${{ inputs.artifact-prefix }}-apk
                   path: android-assets/RustEpubReader-Android-*-${{ inputs.version }}.apk
                   if-no-files-found: error
+
+            - name: Upload native runtime reports and screenshots
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix }}-runtime
+                  path: |
+                      target/android-runtime/*
+                      target/android-runtime-logs/*
+                  if-no-files-found: ignore

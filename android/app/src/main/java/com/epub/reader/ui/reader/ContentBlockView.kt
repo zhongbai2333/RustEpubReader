@@ -114,8 +114,10 @@ internal fun mapCscCorrectionsToBlocks(
 
 @Composable
 internal fun ContentBlockView(
+    chapterIndex: Int,
     blockIndex: Int?,
     block: ContentBlock,
+    sourceText: String? = null,
     sourceCharOffset: Int = 0,
     imageMaxHeight: Dp = Dp.Unspecified,
     fontSize: Float,
@@ -145,15 +147,17 @@ internal fun ContentBlockView(
         val left=(resolve(native.insetLeft)+resolve(native.paddingLeft)).coerceAtMost(maxWidth.value*0.4f)
         val right=(resolve(native.insetRight)+resolve(native.paddingRight)).coerceAtMost(maxWidth.value*0.4f)
         androidx.compose.foundation.layout.Box(Modifier.padding(start=left.dp,end=right.dp,top=(resolve(native.marginTop)+resolve(native.paddingTop)).dp,bottom=(resolve(native.marginBottom)+resolve(native.paddingBottom)).dp)) {
-            ContentBlockViewContent(blockIndex=blockIndex,block=block,sourceCharOffset=sourceCharOffset,imageMaxHeight=imageMaxHeight,fontSize=fontSize,textColor=textColor,linkColor=linkColor,bgColor=bgColor,fontFamily=fontFamily,onLinkClick=onLinkClick,onTextTapped=onTextTapped,lineSpacing=lineSpacing,paraSpacing=paraSpacing,textIndentChars=textIndentChars,titleFontScale=titleFontScale,textSelection=textSelection,onSelectionChange=onSelectionChange,blockLayoutRegistry=blockLayoutRegistry,highlights=highlights,cscBlockCorrections=cscBlockCorrections,cscMode=cscMode,ttsCurrentBlock=ttsCurrentBlock,onCscCorrectionClick=onCscCorrectionClick)
+            ContentBlockViewContent(chapterIndex=chapterIndex,blockIndex=blockIndex,block=block,sourceText=sourceText,sourceCharOffset=sourceCharOffset,imageMaxHeight=imageMaxHeight,fontSize=fontSize,textColor=textColor,linkColor=linkColor,bgColor=bgColor,fontFamily=fontFamily,onLinkClick=onLinkClick,onTextTapped=onTextTapped,lineSpacing=lineSpacing,paraSpacing=paraSpacing,textIndentChars=textIndentChars,titleFontScale=titleFontScale,textSelection=textSelection,onSelectionChange=onSelectionChange,blockLayoutRegistry=blockLayoutRegistry,highlights=highlights,cscBlockCorrections=cscBlockCorrections,cscMode=cscMode,ttsCurrentBlock=ttsCurrentBlock,onCscCorrectionClick=onCscCorrectionClick)
         }
     }
 }
 
 @Composable
 private fun ContentBlockViewContent(
+    chapterIndex: Int,
     blockIndex: Int?,
     block: ContentBlock,
+    sourceText: String? = null,
     sourceCharOffset: Int = 0,
     imageMaxHeight: Dp = Dp.Unspecified,
     fontSize: Float,
@@ -176,6 +180,15 @@ private fun ContentBlockViewContent(
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, androidx.compose.ui.geometry.Offset) -> Unit = { _, _ -> }
 ) {
+    val fragmentText = remember(block) { readerSourceText(block) }
+    val source = sourceText ?: fragmentText
+    val fragmentLength = fragmentText.length
+    val projectedHighlights = remember(highlights, chapterIndex, blockIndex, source, sourceCharOffset, fragmentLength) {
+        if (blockIndex == null) emptyList() else highlights.mapNotNull { highlight ->
+            highlightFragmentRange(highlight, chapterIndex, blockIndex, source, sourceCharOffset, fragmentLength)
+                ?.let { it to highlight.color }
+        }
+    }
     val sourceNative=block.nativeStyle()
     val native=if((bgColor.red+bgColor.green+bgColor.blue)>1.5f)sourceNative else sourceNative.copy(inline=sourceNative.inline.map {it.copy(color=null)})
     val block=when(block){
@@ -267,17 +280,11 @@ private fun ContentBlockViewContent(
                         drawContent()
                         val lr = layoutResult ?: return@drawWithContent
                         drawPublicationRuby(lr,native,sourceCharOffset,fontSize,textColor)
-                        // 渲染已保存的高亮
-                        if (idx != null) {
-                            for (hl in highlights) {
-                                if (idx in hl.startBlock..hl.endBlock) {
-                                    val hlStart = if (idx == hl.startBlock) hl.startOffset else 0
-                                    val hlEnd = if (idx == hl.endBlock) hl.endOffset else annotated.length
-                                    if (hlStart < hlEnd && hlStart >= 0 && hlEnd <= annotated.length) {
-                                        val hlPath = lr.multiParagraph.getPathForRange(hlStart, hlEnd)
-                                        drawPath(hlPath, color = highlightColor(hl.color))
-                                    }
-                                }
+                        // Ranges are projected once from source scalars into this fragment's UTF-16 layout.
+                        for ((range, color) in projectedHighlights) {
+                            if (range.end <= annotated.length) {
+                                val hlPath = lr.multiParagraph.getPathForRange(range.start, range.end)
+                                drawPath(hlPath, color = highlightColor(color))
                             }
                         }
                         // 渲染 CSC 纠错
@@ -400,17 +407,11 @@ private fun ContentBlockViewContent(
                         drawContent()
                         val lr = layoutResult ?: return@drawWithContent
                         drawPublicationRuby(lr,native,sourceCharOffset,fontSize,textColor)
-                        // 渲染已保存的高亮
-                        if (idx != null) {
-                            for (hl in highlights) {
-                                if (idx in hl.startBlock..hl.endBlock) {
-                                    val hlStart = if (idx == hl.startBlock) hl.startOffset - sourceCharOffset else 0
-                                    val hlEnd = if (idx == hl.endBlock) hl.endOffset - sourceCharOffset else annotated.length
-                                    if (hlStart < hlEnd && hlStart >= 0 && hlEnd <= annotated.length) {
-                                        val hlPath = lr.multiParagraph.getPathForRange(hlStart, hlEnd)
-                                        drawPath(hlPath, color = highlightColor(hl.color))
-                                    }
-                                }
+                        // Ranges are projected once from source scalars into this fragment's UTF-16 layout.
+                        for ((range, color) in projectedHighlights) {
+                            if (range.end <= annotated.length) {
+                                val hlPath = lr.multiParagraph.getPathForRange(range.start, range.end)
+                                drawPath(hlPath, color = highlightColor(color))
                             }
                         }
                         // 渲染 CSC 纠错

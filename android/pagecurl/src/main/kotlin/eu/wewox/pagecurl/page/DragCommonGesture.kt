@@ -108,14 +108,20 @@ internal suspend fun PointerInputScope.detectCustomDragGestures(
 ) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        var drag: PointerInputChange?
         var overSlop = Offset.Zero
-        do {
-            drag = awaitTouchSlopOrCancellation(down.id) { change, over ->
-                change.consume()
-                overSlop = over
-            }
-        } while (drag != null && !drag.isConsumed)
+        // A held pointer belongs to the reader's long-press selection. Do not
+        // claim its first later movement as a page curl and cancel that owner.
+        val withinDragWindow = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            var candidate: PointerInputChange?
+            do {
+                candidate = awaitTouchSlopOrCancellation(down.id) { change, over ->
+                    change.consume()
+                    overSlop = over
+                }
+            } while (candidate != null && !candidate.isConsumed)
+            candidate
+        }
+        var drag = withinDragWindow
         if (drag != null) {
             if (!onDragStart.invoke(down.position, drag.position)) {
                 return@awaitEachGesture

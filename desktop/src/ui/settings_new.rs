@@ -137,6 +137,7 @@ impl ReaderApp {
                     self.reader_cjk_font_family = "Sans".into();
                     self.css_policy = reader_core::epub::native::CssPolicy::Mixed;
                     self.scroll_mode = false;
+                    self.force_single_column = false;
                     self.reader_page_animation = "Realistic".into();
                     self.line_spacing = 1.8;
                     self.para_spacing = 0.6;
@@ -629,6 +630,19 @@ impl ReaderApp {
         }
     }
     fn render_settings_layout(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .checkbox(
+                &mut self.force_single_column,
+                self.i18n.t("settings.force_single_column"),
+            )
+            .changed()
+        {
+            self.pending_restore_block = Some(self.current_block);
+            self.pages_dirty = true;
+            self.page_curl.clear();
+        }
+        ui.small(self.i18n.t("settings.force_single_column_desc"));
+        ui.add_space(8.);
         ui.add_enabled_ui(
             self.css_policy != reader_core::epub::native::CssPolicy::Publisher,
             |ui| {
@@ -927,4 +941,79 @@ fn theme_card(
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
     });
     response
+}
+
+#[cfg(test)]
+mod single_column_tests {
+    use super::*;
+
+    #[test]
+    fn single_column_switch_is_enabled_for_every_style_and_retains_reflow_anchor() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
+        app.i18n = reader_core::i18n::I18n::with_system(reader_core::i18n::Language::En, "en");
+        fn label_rect(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| label_rect(s, label)),
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.visual_bounding_rect())
+                }
+                _ => None,
+            }
+        }
+        for style in [
+            reader_core::epub::native::CssPolicy::None,
+            reader_core::epub::native::CssPolicy::Mixed,
+            reader_core::epub::native::CssPolicy::Publisher,
+        ] {
+            let ctx = egui::Context::default();
+            app.css_policy = style;
+            app.force_single_column = false;
+            app.pages_dirty = false;
+            app.current_block = 7;
+            app.current_char_offset = 123;
+            let mut frame = |events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(900., 700.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default()
+                            .show(ctx, |ui| app.render_settings_layout(ui));
+                    },
+                )
+            };
+            let output = frame(vec![]);
+            let point = output
+                .shapes
+                .iter()
+                .find_map(|s| label_rect(&s.shape, "Force single column"))
+                .unwrap()
+                .center();
+            frame(vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ]);
+            frame(vec![egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }]);
+            assert!(app.force_single_column && app.pages_dirty, "{style:?}");
+            assert_eq!(app.pending_restore_block, Some(7));
+            assert_eq!(app.current_char_offset, 123);
+        }
+    }
 }

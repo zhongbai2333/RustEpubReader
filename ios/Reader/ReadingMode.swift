@@ -29,8 +29,9 @@ enum ReadingMode: String, CaseIterable {
 
 // Both animations use the same spread boundaries and reading coordinates.
 enum ReadingSpread {
-    static func columns(width: Double, height: Double, margin: Double, fontSize: Double) -> Int {
-        width > height && width / 2 - margin * 2 >= max(280, fontSize * 12) ? 2 : 1
+    static let preferenceKey = "reader.forceSingleColumn"
+    static func columns(width: Double, height: Double, margin: Double, fontSize: Double, forceSingleColumn: Bool = false) -> Int {
+        !forceSingleColumn && width > height && width / 2 - margin * 2 >= max(280, fontSize * 12) ? 2 : 1
     }
     static func start(_ page: Int, columns: Int) -> Int { max(0, page) / columns * columns }
 }

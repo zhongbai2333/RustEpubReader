@@ -27,23 +27,10 @@ class Library(private val context: Context, loadImmediately: Boolean = true) {
     fun reload() { load() }
 
     private fun load() {
-        val payload = RustBridge.loadLibrary(dataDir)
-        books = try {
-            if (payload.isNullOrBlank()) {
-                mutableListOf()
-            } else {
-                val result = json.decodeFromString<List<BookEntry>>(payload).toMutableList()
-                result.forEach { e ->
-                    android.util.Log.d("READER-RESUME",
-                        "Library.load: title=${e.title} lastChapter=${e.lastChapter} " +
-                            "lastChapterTitle=${e.lastChapterTitle} configPath=${e.configPath}")
-                }
-                result
-            }
-        } catch (ex: Exception) {
-            android.util.Log.e("READER-RESUME", "Library.load FAILED: ${ex.message}", ex)
-            mutableListOf()
-        }
+        val payload = checkNotNull(RustBridge.loadLibrary(dataDir)) { "Unable to read library" }
+        // Parse before publishing: failed loads retain the currently displayed shelf.
+        val loaded = json.decodeFromString<List<BookEntry>>(payload).toMutableList()
+        books = loaded
     }
 
     /** Rust core 已在每次变更后持久化，保留此函数用于兼容旧调用方。 */
@@ -65,23 +52,11 @@ class Library(private val context: Context, loadImmediately: Boolean = true) {
             chapterTitle ?: ""
         )
 
-        val returnedEntry = try {
-            if (result.isNullOrBlank()) null else json.decodeFromString<BookEntry>(result)
-        } catch (_: Exception) {
-            null
-        }
-
+        val returnedEntry = json.decodeFromString<BookEntry>(
+            checkNotNull(result) { "Cannot save book" }
+        )
         load()
-
         return returnedEntry
-            ?: books.firstOrNull { it.uri == uri }
-            ?: BookEntry(
-                title = title.ifBlank { File(uri).nameWithoutExtension.ifBlank { "Untitled" } },
-                uri = uri,
-                lastChapter = chapter,
-                lastChapterTitle = chapterTitle,
-                lastOpened = System.currentTimeMillis()
-            )
     }
 
     fun rename(uri: String, title: String) {

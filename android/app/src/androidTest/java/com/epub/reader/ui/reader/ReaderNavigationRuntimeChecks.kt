@@ -21,7 +21,7 @@ import org.json.JSONObject
 internal object ReaderNavigationRuntimeChecks {
     fun run(test: Instrumentation) {
         val context = test.targetContext
-        check(context.packageName == "local.reader.navigation") { "Use the isolated navigation package" }
+        check(context.packageName in setOf("local.reader.navigation", "local.reader.columns")) { "Use the isolated navigation package" }
         val report = JSONObject()
         val preferences = context.getSharedPreferences("reader_settings", 0)
         fun await(message: String, condition: () -> Boolean) {
@@ -56,6 +56,12 @@ internal object ReaderNavigationRuntimeChecks {
             Thread.sleep(700)
             val origin = ReaderLocation(vm.currentChapter, vm.currentBlock, vm.currentCharOffset)
             check(origin == ReaderLocation(19,3,37)) { "Initial exact position lost: $origin" }
+            val committed = org.json.JSONArray(RustBridge.getSyncedProgress(context.filesDir.path))
+            val notice = (0 until committed.length()).map { committed.getJSONObject(it) }
+                .first { it.getString("path") == managedPath }
+            check(notice.getInt("chapter") == 19 && notice.getInt("char_offset") == 37) {
+                "Committed JNI progress changed the local scalar locator"
+            }
             test.runOnMainSync { vm.goToPosition(21,3,3) }
             await("Cross-chapter jump failed") { vm.currentChapter == 21 && vm.currentBlock == 3 && vm.currentCharOffset == 3 }
             Thread.sleep(500)
@@ -72,13 +78,39 @@ internal object ReaderNavigationRuntimeChecks {
             await("Sequential chapter failed") { vm.currentChapter == 20 }
             check(vm.returnHistory.isEmpty())
             // A remote position has already been accepted by sync. Applying it must not mint a local revision.
-            RustBridge.applyRemotePosition(context.filesDir.path, managedPath, 21, "第22章", 3, 3)
+            // Exercise the production JNI transport/commit/notification chain with
+            // an app-owned second peer. No real account or external device is used.
+            val peerRoot = File(context.cacheDir, "nearby-runtime-${java.util.UUID.randomUUID()}").also { it.mkdirs() }
+            val remoteBook = JSONObject(checkNotNull(RustBridge.addOrUpdateBook(peerRoot.path,
+                "Remote fixture", publication.path, 19, "第20章")))
+            RustBridge.updatePosition(peerRoot.path, remoteBook.getString("uri"), 21, "第22章", 3, 3)
+            val peerVersion = JSONObject(checkNotNull(RustBridge.getBookConfig(peerRoot.path, remoteBook.getString("id"))))
+                .getJSONObject("position_version")
+            try {
+                val server = JSONObject(checkNotNull(RustBridge.startSharingServer(peerRoot.path,
+                    File(peerRoot,"books").path, "1234")))
+                check(server.optBoolean("ok")) { server.toString() }
+                val address = "127.0.0.1:" + server.getString("addr").substringAfterLast(":")
+                val synced = JSONObject(checkNotNull(RustBridge.syncProgressWithPeer(address, "1234", "",
+                    context.filesDir.path, File(context.filesDir,"books").path)))
+                check(synced.optBoolean("ok")) { synced.toString() }
+                test.runOnMainSync { vm.refreshLibrary() }
+                await("Committed peer progress did not automatically navigate") {
+                    vm.currentChapter == 21 && vm.currentBlock == 3 && vm.currentCharOffset == 3
+                }
+            } finally {
+                RustBridge.stopSharingServer()
+                peerRoot.deleteRecursively()
+            }
             val journal = File(context.filesDir, "github-sync-local.json")
-            val remoteVersion = JSONObject(journal.readText()).getJSONObject("own").optJSONObject("progress_versions").toString()
-            test.runOnMainSync { vm.refreshLibrary() }
-            Thread.sleep(500)
-            test.runOnMainSync { vm.goToPosition(21,3,3,remote=true,scalarOffset=true) }
-            await("Remote jump failed") { vm.currentChapter == 21 && vm.currentCharOffset == 3 }
+            val remoteVersion = JSONObject(journal.readText()).getJSONObject("own").getJSONObject("progress_versions")
+            check((0 until remoteVersion.names()!!.length()).any {
+                val version = remoteVersion.getJSONObject(remoteVersion.names()!!.getString(it))
+                version.getLong("modified_ms") == peerVersion.getLong("modified_ms") &&
+                    version.getString("device") == peerVersion.getString("device") &&
+                    version.optBoolean("legacy") == peerVersion.optBoolean("legacy")
+            }) { "Receiving peer progress changed its original revision" }
+            val remoteVersionText = remoteVersion.toString()
             check(vm.returnHistory.last().location.chapter == 20)
             test.runOnMainSync { vm.persistReadingSession(); activity.finish() }
             Thread.sleep(300)
@@ -86,7 +118,7 @@ internal object ReaderNavigationRuntimeChecks {
             await("Restart did not reopen reader") { vm.currentBook != null && !vm.isLoading && vm.currentChapter == 21 }
             check(vm.currentBlock == 3 && vm.currentCharOffset == 3)
             check(vm.returnHistory.last().location.chapter == 20)
-            check(remoteVersion == JSONObject(journal.readText()).getJSONObject("own").optJSONObject("progress_versions").toString()) { "Remote position created local edit" }
+            check(remoteVersionText == JSONObject(journal.readText()).getJSONObject("own").optJSONObject("progress_versions").toString()) { "Remote position created local edit" }
             Thread.sleep(1200)
             tap(context.resources.displayMetrics.widthPixels / 2f, context.resources.displayMetrics.heightPixels / 2f)
             val returnLabel = I18n.t("reader.return_position")
@@ -114,7 +146,7 @@ internal object ReaderNavigationRuntimeChecks {
             val closed = start().second
             Thread.sleep(700)
             check(closed.currentBook == null) { "Explicit close reopened reader" }
-            report.put("passed",true).put("exact_startup_resume",true).put("cross_and_same_chapter_return",true).put("sequential_turn_has_no_history",true).put("remote_jump",true).put("restart_history",true).put("explicit_close",true).put("long_press_location",true).put("round_button_click",true).put("continuous_reader",true)
+            report.put("passed",true).put("exact_startup_resume",true).put("cross_and_same_chapter_return",true).put("sequential_turn_has_no_history",true).put("remote_jump",true).put("encrypted_peer_progress",true).put("restart_history",true).put("explicit_close",true).put("long_press_location",true).put("round_button_click",true).put("continuous_reader",true)
         } catch (failure: Throwable) { report.put("passed",false).put("error",failure.stackTraceToString()) }
         File(context.cacheDir,"navigation-verification.json").writeText(report.toString(2))
         test.finish(if(report.optBoolean("passed")) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {putString("stream",report.toString(2))})

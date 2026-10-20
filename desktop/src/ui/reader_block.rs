@@ -8,6 +8,20 @@ use reader_core::epub::{ContentBlock, InlineStyle, TextSpan};
 
 use super::reader_state::*;
 
+#[inline]
+fn record_reader_galley(_ui: &egui::Ui, galley: &egui::Galley, origin: egui::Pos2, ruby: f32) {
+    #[cfg(feature = "performance-checks")]
+    crate::native_corpus::observe_galley(_ui.ctx(), galley);
+    super::reader_pagination::record_galley(galley, origin, ruby);
+}
+
+#[inline]
+fn record_selectable_galley(_ui: &egui::Ui, entry: BlockGalleyEntry) {
+    #[cfg(feature = "performance-checks")]
+    crate::native_corpus::observe_selection(_ui.ctx(), &entry);
+    BLOCK_GALLEYS.with(|galleys| galleys.borrow_mut().push(entry));
+}
+
 pub(crate) fn family_from_name(name: &str) -> FontFamily {
     match name {
         "" => FontFamily::Name("ReaderFont".into()),
@@ -464,7 +478,7 @@ fn render_block_content(
             max_width,
         );
         let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
-        super::reader_pagination::record_galley(&galley, rect.min, 0.);
+        record_reader_galley(ui, &galley, rect.min, 0.);
         ui.painter().galley(rect.min, galley, Color32::PLACEHOLDER);
         ui.add_space(font_size * style.after.unwrap_or(para_spacing()));
         return;
@@ -508,7 +522,7 @@ fn render_block_content(
                     available,
                 );
                 let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
-                super::reader_pagination::record_galley(&galley, rect.min, 0.);
+                record_reader_galley(ui, &galley, rect.min, 0.);
                 ui.painter().galley(rect.min, galley, Color32::PLACEHOLDER);
             });
             ui.add_space(font_size * 0.3);
@@ -578,7 +592,7 @@ fn render_block_content(
                 egui::Stroke::new(0.5_f32, color.linear_multiply(0.3)),
                 egui::StrokeKind::Inside,
             );
-            super::reader_pagination::record_galley(&galley, rect.min + egui::vec2(6., 6.), 0.);
+            record_reader_galley(ui, &galley, rect.min + egui::vec2(6., 6.), 0.);
             super::reader_pagination::record_table_source(
                 &galley,
                 rect.top() + 6.,
@@ -621,7 +635,8 @@ fn render_block_content(
             }
             let is_tts_block = TTS_HIGHLIGHT_BLOCK.get() == Some(block_key);
             let galley = native_galley(ui, job, &style, max_width);
-            super::reader_pagination::record_galley(
+            record_reader_galley(
+                ui,
                 &galley,
                 ui.cursor().min,
                 if style.ruby.is_empty() {
@@ -651,16 +666,17 @@ fn render_block_content(
             );
 
             let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-            BLOCK_GALLEYS.with(|galleys| {
-                galleys.borrow_mut().push(BlockGalleyEntry {
+            record_selectable_galley(
+                ui,
+                BlockGalleyEntry {
                     key: block_key,
                     galley: galley.clone(),
                     rect,
                     clip: ui.clip_rect(),
                     text,
                     response: response.clone(),
-                });
-            });
+                },
+            );
 
             // Handle individual link clicks via pointer position matching
             if let Some(hover_pos) = ui.ctx().pointer_hover_pos() {
@@ -819,7 +835,8 @@ fn render_block_content(
 
             // Layout into Galley, allocate space, and paint manually
             let galley = native_galley(ui, job, &style, max_width);
-            super::reader_pagination::record_galley(
+            record_reader_galley(
+                ui,
                 &galley,
                 ui.cursor().min,
                 if style.ruby.is_empty() {
@@ -947,16 +964,17 @@ fn render_block_content(
             }
 
             // Push into per-frame cache for the selection state machine
-            BLOCK_GALLEYS.with(|bg| {
-                bg.borrow_mut().push(BlockGalleyEntry {
+            record_selectable_galley(
+                ui,
+                BlockGalleyEntry {
                     key: block_key,
                     galley: galley.clone(),
                     rect,
                     clip: ui.clip_rect(),
                     text: text.clone(),
                     response: response.clone(),
-                });
-            });
+                },
+            );
 
             // Handle individual link clicks via pointer position matching
             if let Some(hover_pos) = ui.ctx().pointer_hover_pos() {
@@ -1136,7 +1154,12 @@ pub(crate) fn show_selection_toolbar(
                         let btn = egui::Button::new(" ")
                             .fill(c32)
                             .min_size(egui::vec2(18.0, 18.0));
-                        if ui.add(btn).clicked() {
+                        let response = ui.add(btn);
+                        #[cfg(feature = "performance-checks")]
+                        if matches!(color, reader_core::library::HighlightColor::Yellow) {
+                            crate::native_corpus::observe_highlight(ctx, response.rect, text);
+                        }
+                        if response.clicked() {
                             result = SelToolbarResult::CreateHighlight(color);
                         }
                     }

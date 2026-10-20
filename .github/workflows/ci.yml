@@ -19,6 +19,7 @@ name: CI
             - ".github/workflows/desktop-build.yml"
             - ".github/workflows/android-build.yml"
             - ".github/workflows/ios-build.yml"
+            - ".github/workflows/performance.yml"
             - ".github/workflows/pr-review.yml"
             - ".github/workflows/release.yml"
     pull_request:
@@ -39,6 +40,7 @@ name: CI
             - ".github/workflows/desktop-build.yml"
             - ".github/workflows/android-build.yml"
             - ".github/workflows/ios-build.yml"
+            - ".github/workflows/performance.yml"
             - ".github/workflows/pr-review.yml"
             - ".github/workflows/release.yml"
     workflow_dispatch:
@@ -63,8 +65,8 @@ jobs:
               run: |
                   sudo apt-get update
                   sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-                    libxkbcommon-dev libgtk-3-dev libglib2.0-dev libatk1.0-dev \
-                    libgl1-mesa-dev libegl1-mesa-dev libasound2-dev perl
+                    libxkbcommon-dev libxkbcommon-x11-0 libgtk-3-dev libglib2.0-dev libatk1.0-dev \
+                    libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri libglx-mesa0 libasound2-dev perl
 
             - name: Install Rust
               uses: dtolnay/rust-toolchain@stable
@@ -88,6 +90,13 @@ jobs:
                   python3 scripts/check-i18n.py
                   python3 scripts/check-font-catalog.py
                   python3 scripts/test-i18n.py
+                  python3 scripts/test-mobile-runtime.py
+                  python3 scripts/test-performance.py
+                  python3 scripts/test-native-performance.py
+                  python3 scripts/test-image-bridge.py
+                  python3 scripts/test-android-native-artifacts.py
+                  python3 scripts/test-shelf-performance.py
+                  python3 scripts/test-epub-compatibility.py
                   python3 -m unittest discover -s ios/Tests -p test_unsigned_ipa.py
 
             - name: Check formatting
@@ -101,6 +110,64 @@ jobs:
 
             - name: Run tests
               run: cargo test --locked --workspace --all-features
+
+            - name: Compare eager and lazy native EPUB presentation
+              run: |
+                  python3 scripts/check-native-performance.py build \
+                    --app target/debug/examples/native_compatibility \
+                    --output "$RUNNER_TEMP/native-compatibility-build" \
+                    --command cargo build --locked -p reader_core --example native_compatibility
+                  python3 scripts/check-epub-compatibility.py \
+                    --binary target/debug/examples/native_compatibility \
+                    --build-record "$RUNNER_TEMP/native-compatibility-build/build.json" \
+                    --output "$RUNNER_TEMP/native-compatibility-report" \
+                    core/tests/fixtures/native-typography.epub \
+                    core/tests/fixtures/original-layout.epub
+
+            - name: Preserve native EPUB comparison evidence
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: native-epub-compatibility
+                  path: ${{ runner.temp }}/native-compatibility-*
+                  if-no-files-found: ignore
+
+    windows-core-safety:
+        name: Windows storage / backup / sync regressions
+        runs-on: windows-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+
+            - name: Cache core test artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-core-safety-${{ hashFiles('Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-core-safety-
+
+            # Windows packaging alone cannot exercise replacement, recovery,
+            # backup rollback or annotation tombstone semantics on NTFS.
+            - name: Run native core regressions
+              shell: bash
+              run: |
+                  set -o pipefail
+                  cargo test --locked -p reader_core --all-features --lib 2>&1 | tee windows-core-safety.log
+
+            - name: Preserve Windows test output
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: windows-core-safety
+                  path: windows-core-safety.log
+                  if-no-files-found: warn
 
     android-gradle-check:
         name: Android Gradle check

@@ -273,7 +273,8 @@ data class FullBookConfig(
     val bookmarks: List<BookmarkDto> = emptyList(),
     val highlights: List<HighlightDto> = emptyList(),
     val notes: List<NoteDto> = emptyList(),
-    val corrections: List<CorrectionDto> = emptyList()
+    val corrections: List<CorrectionDto> = emptyList(),
+    @SerialName("concurrent_notes") val concurrentNotes: Set<String> = emptySet()
 )
 
 @Serializable data class NativeDimension(val px: Float=0f,val em: Float=0f,val percent: Float=0f) { fun resolve(font: Float,extent: Float): Float=(px+em*font+(if(extent.isFinite())percent*extent else 0f)).coerceAtLeast(0f) }

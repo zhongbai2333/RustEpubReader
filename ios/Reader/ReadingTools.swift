@@ -99,7 +99,7 @@ struct ReaderNote: Decodable { let highlight_id: String; let content: String }
 struct ReaderBookmark: Decodable, Identifiable { let chapter: Int; let block: Int; var id: String { "\(chapter)-\(block)" } }
 struct ReaderCorrection: Decodable { let chapter: Int; let block_idx: Int; let char_offset: Int; let original: String; let corrected: String; let status: String }
 struct ReaderAnnotations: Decodable {
-    var highlights: [ReaderHighlight]; var notes: [ReaderNote]; var bookmarks: [ReaderBookmark]; var corrections: [ReaderCorrection]?
+    var highlights: [ReaderHighlight]; var notes: [ReaderNote]; var bookmarks: [ReaderBookmark]; var corrections: [ReaderCorrection]?; var concurrent_notes: [String]? = nil
     static var empty: Self { .init(highlights: [], notes: [], bookmarks: [], corrections: []) }
 }
 struct SelectedPassage: Identifiable { let id = UUID(); let start: ReadingAnchor; let end: ReadingAnchor; let text: String }
@@ -133,33 +133,118 @@ struct NativeDictionary: UIViewControllerRepresentable {
         }.joined(separator: "\n")
     }
 }
+struct AnnotationSyncDetails:Decodable {
+    struct Version:Decodable {
+        struct Payload:Decodable {struct Contents:Decodable {let content:String?};let kind:String;let data:Contents?}
+        let source:String?;let local:Bool;let edited_at:UInt64?;let value:Payload?
+    }
+    let key:String;let concurrent:Bool;let revisions:[Version]
+}
+struct AnnotationDetailsView:View {
+    @ObservedObject var annotations:ReadingAnnotations
+    let key:String
+    let highlightID:String?
+    @State private var details:AnnotationSyncDetails?
+    @State private var original:String?
+    @State private var draft=""
+    @State private var initialized=false
+    @State private var loadFailed=false
+    private func reload() async {
+        do {details=try await annotations.library.store.annotationDetails(id:annotations.book.id,key:key);loadFailed=false}
+        catch {loadFailed=true;annotations.library.fail(error,title:L("common.error_operation_failed"))}
+    }
+    var body:some View {
+        Form {
+            if let details {
+                if details.concurrent {Section {Text(L("annotations.concurrent_versions"))}}
+                ForEach(Array(details.revisions.enumerated()),id:\.offset) {_,version in
+                    Section {
+                        LabeledContent(L("annotations.source_device"),value:version.local ? L("annotations.local_source") : version.source.map {String($0.prefix(12))} ?? L("annotations.legacy_source"))
+                        LabeledContent(L("annotations.edited_at"),value:version.edited_at.flatMap {time in
+                            guard time>0,time<253402300800 else {return nil}
+                            return Date(timeIntervalSince1970:Double(time)).formatted(date:.abbreviated,time:.shortened)
+                        } ?? L("annotations.unknown_time"))
+                        if let content=version.value?.data?.content {Text(content).textSelection(.enabled)}
+                    }
+                }
+            } else if loadFailed {Text(L("common.error_operation_incomplete"))} else {ProgressView()}
+            if let highlightID {
+                Section(L("annotations.edit_note")) {
+                    TextEditor(text:$draft).frame(minHeight:120).disabled(annotations.busy)
+                    Button(L(details?.concurrent==true ? "annotations.save_merge" : "common.save")) {
+                        Task {
+                            if await annotations.perform(["action":"note","highlight_id":highlightID,"note":draft,"original_note":original.map {$0 as Any} ?? NSNull()]) {
+                                original=annotations.value.notes.first(where:{$0.highlight_id==highlightID})?.content;draft=original ?? "";await reload()
+                            }
+                        }
+                    }.disabled(annotations.busy || draft==(original ?? ""))
+                }
+            }
+        }.navigationTitle(L("annotations.sync_details")).navigationBarTitleDisplayMode(.inline)
+        .task {
+            if !initialized {original=annotations.value.notes.first(where:{$0.highlight_id==highlightID})?.content;draft=original ?? "";initialized=true}
+            await reload()
+        }
+        .onChange(of:annotations.revision) {_,_ in Task {await reload()}}
+    }
+}
+
 struct AnnotationsView: View {
     @ObservedObject private var readerI18n = ReaderI18n.shared
     @ObservedObject var annotations: ReadingAnnotations
     let current: ReadingAnchor
     let jump: (ReadingAnchor) -> Void
+    @State private var exporting=false
+    @State private var exportFiles:[URL]=[]
+    @State private var sharingExport=false
     var body: some View {
         List {
             Section(L("annotations.bookmarks")) {
                 Button(L("context.bookmark"), systemImage: "bookmark") { Task { await annotations.perform(["action":"bookmark", "chapter":current.chapter, "block":current.block]) } }.disabled(annotations.busy)
                 ForEach(annotations.value.bookmarks) { bookmark in
-                    Button(L("annotations.chapter", bookmark.chapter+1)) { jump(.init(chapter: bookmark.chapter, block: bookmark.block)) }
-                        .swipeActions { Button(L("library.delete"), role: .destructive) { Task { await annotations.perform(["action":"bookmark", "chapter":bookmark.chapter,"block":bookmark.block]) } } }
+                    HStack {
+                        Button(L("annotations.chapter", bookmark.chapter+1)) {jump(.init(chapter:bookmark.chapter,block:bookmark.block))}.buttonStyle(.borderless)
+                        Spacer()
+                        NavigationLink {AnnotationDetailsView(annotations:annotations,key:"b:\(bookmark.chapter):\(bookmark.block)",highlightID:nil)} label: {Image(systemName:"info.circle").accessibilityLabel(L("annotations.sync_details"))}.buttonStyle(.borderless)
+                    }.swipeActions { Button(L("library.delete"), role: .destructive) { Task { await annotations.perform(["action":"bookmark", "chapter":bookmark.chapter,"block":bookmark.block]) } } }
                 }
             }
             Section(L("reader.highlights_and_notes")) {
                 if annotations.value.highlights.isEmpty { Text(L("reader.long_press_hint")).foregroundStyle(.secondary) }
                 ForEach(annotations.value.highlights) { item in
+                    HStack {
                     Button { jump(item.start) } label: {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(annotations.excerpt(item)).lineLimit(3).foregroundStyle(.primary)
-                            if let note = annotations.value.notes.first(where: { $0.highlight_id == item.id }) { Text(note.content).font(.subheadline).foregroundStyle(.secondary) }
-                            Text(L("annotations.chapter", item.chapter+1)).font(.caption).foregroundStyle(.secondary)
+                            if annotations.value.concurrent_notes?.contains(item.id)==true {Text(L("annotations.concurrent_versions")).font(.caption).foregroundStyle(Color.accentColor)}
+                            Text(annotations.excerpt(item)).lineLimit(3).foregroundStyle(Color.primary)
+                            if let note = annotations.value.notes.first(where: { $0.highlight_id == item.id }) { Text(note.content).font(.subheadline).lineLimit(3).foregroundStyle(Color.secondary) }
+                            Text(L("annotations.chapter", item.chapter+1)).font(.caption).foregroundStyle(Color.secondary)
                         }.padding(.leading, 8).overlay(alignment: .leading) { Rectangle().fill(Color(uiColor: item.tint)).frame(width: 3) }
+                    }.buttonStyle(.borderless)
+                    Spacer()
+                    NavigationLink {AnnotationDetailsView(annotations:annotations,key:annotations.value.notes.contains(where:{$0.highlight_id==item.id}) ? "n:\(item.id)" : "h:\(item.id)",highlightID:item.id)} label: {Image(systemName:"info.circle").accessibilityLabel(L("annotations.sync_details"))}.buttonStyle(.borderless)
                     }.swipeActions { Button(L("reader.delete_highlight"), role: .destructive) { Task { await annotations.perform(["action":"delete", "highlight_id":item.id]) } } }
                 }
             }
         }.navigationTitle(L("annotations.title")).navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement:.primaryAction) {
+                if exporting {ProgressView().accessibilityLabel(L("annotations.exporting"))}
+                else {
+                    Button {
+                        exporting=true
+                        Task {
+                            defer {exporting=false}
+                            do {let url=try await annotations.library.store.exportAnnotations(id:annotations.book.id);exportFiles=[url];sharingExport=true}
+                            catch {annotations.library.fail(error,title:L("annotations.export_failed"))}
+                        }
+                    } label: {Image(systemName:"square.and.arrow.up")}
+                    .accessibilityLabel(L("annotations.export_accessibility"))
+                    .disabled(sharingExport || (annotations.value.highlights.isEmpty && annotations.value.bookmarks.isEmpty))
+                }
+            }
+        }
+        .sheet(isPresented:$sharingExport) {ShareFiles(urls:exportFiles)}
     }
 }
 struct SelectedTextView: View {
@@ -236,6 +321,7 @@ struct CorrectionView: View {
 
 struct ReaderAppearanceSettings: View {
     @ObservedObject private var readerI18n = ReaderI18n.shared
+    @AppStorage(ReadingSpread.preferenceKey) private var forceSingleColumn = false
     @Binding var fontSize: Double
     @Binding var lineHeight: Double
     @Binding var fontName: String
@@ -310,14 +396,18 @@ struct ReaderAppearanceSettings: View {
                 Text(cssPolicy.wrappedValue == "none" ? L("settings.layout_native_desc") : cssPolicy.wrappedValue == "publisher" ? L("settings.layout_classic_desc") : L("settings.layout_mixed_desc"))
             }
 
-            Section(L("settings.typography")) {
-                settingSlider(L("settings.line_height"), value: $lineHeight, range: 1.2...2.2, step: 0.05, label: String(format: L("settings.line_height_value"), locale: ReaderI18n.shared.locale, lineHeight))
-                settingSlider(L("settings.para_spacing"), value: $paragraphSpacing, range: 0...1.5, step: 0.05, label: String(format: L("settings.line_height_value"), locale: ReaderI18n.shared.locale, paragraphSpacing))
-                settingSlider(L("settings.margins"), value: $pageMargin, range: 16...48, step: 2, label: "\(Int(pageMargin)) pt").disabled(cssPolicy.wrappedValue != "none")
-                settingSlider(L("settings.text_indent"), value: $firstLineIndent, range: 0...2, step: 1, label: L("settings.margin_value", Int(firstLineIndent))).disabled(cssPolicy.wrappedValue != "none")
-                Toggle(L("settings.justify_text"), isOn: $justified).disabled(cssPolicy.wrappedValue != "none")
+            Section {
+                Toggle(L("settings.force_single_column"), isOn: $forceSingleColumn)
+                Group {
+                    settingSlider(L("settings.line_height"), value: $lineHeight, range: 1.2...2.2, step: 0.05, label: String(format: L("settings.line_height_value"), locale: ReaderI18n.shared.locale, lineHeight))
+                    settingSlider(L("settings.para_spacing"), value: $paragraphSpacing, range: 0...1.5, step: 0.05, label: String(format: L("settings.line_height_value"), locale: ReaderI18n.shared.locale, paragraphSpacing))
+                    settingSlider(L("settings.margins"), value: $pageMargin, range: 16...48, step: 2, label: "\(Int(pageMargin)) pt").disabled(cssPolicy.wrappedValue != "none")
+                    settingSlider(L("settings.text_indent"), value: $firstLineIndent, range: 0...2, step: 1, label: L("settings.margin_value", Int(firstLineIndent))).disabled(cssPolicy.wrappedValue != "none")
+                    Toggle(L("settings.justify_text"), isOn: $justified).disabled(cssPolicy.wrappedValue != "none")
+                }.disabled(cssPolicy.wrappedValue == "publisher")
+            } header: { Text(L("settings.typography")) } footer: {
+                Text(L("settings.force_single_column_desc"))
             }
-            .disabled(cssPolicy.wrappedValue == "publisher")
             Section {
                 NavigationLink(L("settings.more")) {
                     Form {
@@ -351,7 +441,7 @@ struct ReaderAppearanceSettings: View {
     private func resetDisplay() {
         appearance.wrappedValue = .init()
         fontSize = 18; lineHeight = 1.65; fontName = "PingFangSC-Regular"; latinFontName.wrappedValue = "Helvetica"; theme = "paper"; readingMode = "paging"; pageAnimation.wrappedValue = "curl"
-        backgroundHex = "F7F2E8"; textHex = "252525"; paragraphSpacing = 0.65; pageMargin = 24; firstLineIndent = 2; justified = true; cssPolicy.wrappedValue = "mixed"; backgroundImageEnabled.wrappedValue = false; backgroundImageOpacity.wrappedValue = 0.22
+        backgroundHex = "F7F2E8"; textHex = "252525"; paragraphSpacing = 0.65; pageMargin = 24; firstLineIndent = 2; justified = true; cssPolicy.wrappedValue = "mixed"; backgroundImageEnabled.wrappedValue = false; backgroundImageOpacity.wrappedValue = 0.22; forceSingleColumn = false
     }
     private func colorBinding(_ hex: Binding<String>) -> Binding<Color> {
         Binding(get: { Color(uiColor: UIColor(hex: hex.wrappedValue)) }, set: { hex.wrappedValue = UIColor($0).readerHex })

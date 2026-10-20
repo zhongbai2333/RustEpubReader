@@ -3,31 +3,15 @@ use reader_core::library::{
     BookConfig, Bookmark, CorrectionRecord, Highlight, HighlightColor, Library, Note,
 };
 use serde_json::{json, Value};
-use std::{io::Write, path::PathBuf};
+use std::path::PathBuf;
 
 fn persist(root: &str, config: &mut BookConfig) -> Result<(), String> {
     config.updated_at = reader_core::now_secs();
-    let destination = PathBuf::from(root)
-        .join("books")
-        .join(format!("{}.json", config.id));
-    let temporary = destination.with_extension("json.tmp");
-    let result = (|| {
-        let mut file = std::fs::File::create(&temporary).map_err(|_| "Cannot save annotations")?;
-        file.write_all(
-            &serde_json::to_vec_pretty(config).map_err(|_| "Cannot encode annotations")?,
-        )
-        .map_err(|_| "Cannot save annotations")?;
-        file.sync_all().map_err(|_| "Cannot save annotations")?;
-        std::fs::rename(&temporary, &destination).map_err(|_| "Cannot save annotations")
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    Ok(result?)
+    config.save(root)
 }
 pub fn dispatch(root: &str, v: &Value) -> Result<Value, String> {
     let e = entry(root, field(v, "id")?)?;
-    let mut config = Library::read_book_config(root, &e.id).ok_or("Cannot read annotations")?;
+    let mut config = Library::load_book_config(root, &e.id)?.ok_or("Cannot read annotations")?;
     let action = v["action"].as_str().unwrap_or("list");
     if action != "list" {
         match action {
@@ -72,7 +56,7 @@ pub fn dispatch(root: &str, v: &Value) -> Result<Value, String> {
                     "Pink" => HighlightColor::Pink,
                     _ => return Err("Invalid highlight color".into()),
                 };
-                let id = uuid::Uuid::new_v4().to_string();
+                let id = reader_core::annotations::new_highlight_id();
                 let now = reader_core::now_secs();
                 config.highlights.push(Highlight {
                     id: id.clone(),
@@ -130,23 +114,19 @@ pub fn dispatch(root: &str, v: &Value) -> Result<Value, String> {
                 });
             }
             "note" => {
-                let id = field(v, "highlight_id")?;
-                let content = field(v, "note")?;
-                if content.len() > 32 * 1024 || !config.highlights.iter().any(|h| h.id == id) {
-                    return Err("Invalid note".into());
-                }
-                if let Some(n) = config.notes.iter_mut().find(|n| n.highlight_id == id) {
-                    n.content = content.into();
-                    n.updated_at = reader_core::now_secs();
-                } else {
-                    let now = reader_core::now_secs();
-                    config.notes.push(Note {
-                        highlight_id: id.into(),
-                        content: content.into(),
-                        created_at: now,
-                        updated_at: now,
-                    });
-                }
+                let original = match v.get("original_note") {
+                    None => None,
+                    Some(Value::Null) => Some(None),
+                    Some(Value::String(text)) => Some(Some(text.as_str())),
+                    _ => return Err("Invalid original note".into()),
+                };
+                config = reader_core::annotations::save_note(
+                    root,
+                    &e.id,
+                    field(v, "highlight_id")?,
+                    field(v, "note")?,
+                    original,
+                )?;
             }
             "delete" => {
                 let id = field(v, "highlight_id")?;
@@ -155,18 +135,18 @@ pub fn dispatch(root: &str, v: &Value) -> Result<Value, String> {
             }
             _ => return Err("Unknown annotation operation".into()),
         }
-        persist(root, &mut config)?;
+        if action != "note" {
+            persist(root, &mut config)?;
+        }
     }
-    Ok(
-        json!({"highlights":config.highlights,"notes":config.notes,"bookmarks":config.bookmarks,"corrections":config.corrections}),
-    )
+    Ok(reader_core::annotations::view(&config))
 }
 pub fn remove(root: &str, v: &Value) -> Result<Value, String> {
     let ids = v["ids"].as_array().ok_or("Missing book selection")?;
     if ids.is_empty() || ids.len() > 1000 {
         return Err("Invalid book selection".into());
     }
-    let mut lib = Library::load_from(root);
+    let mut lib = Library::load_from(root)?;
     let directory = PathBuf::from(root)
         .join("books")
         .canonicalize()
@@ -218,10 +198,10 @@ pub fn remove(root: &str, v: &Value) -> Result<Value, String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err("Cannot delete local book".into()),
         }
-        lib.remove_by_path(root, path);
+        lib.remove_by_path(root, path)?;
         let _ = std::fs::remove_file(directory.join(format!("{id}.cover")));
     }
-    let stored = Library::load_from(root);
+    let stored = Library::load_from(root)?;
     if stored
         .books
         .iter()

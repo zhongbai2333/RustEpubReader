@@ -5,6 +5,8 @@ object RustBridge {
     external fun githubSyncStatus(dataDir: String): String?
     external fun bookShare(dataDir: String, request: String): String?
     external fun renameBook(dataDir: String, path: String, title: String): String?
+    external fun annotationTools(dataDir: String, request: String): String?
+    external fun backupTools(dataDir: String, request: String): String?
     external fun prepareBookExports(dataDir: String, paths: String, directory: String): String?
     init {
         try {
@@ -16,8 +18,15 @@ object RustBridge {
 
     external fun chapterCacheStats(path: String): String?
     external fun openBook(path: String): String?
+    external fun beginBookOpen(): Long
+    external fun cancelBookOpen(id: Long)
+    external fun finishBookOpen(id: Long)
+    external fun openBookCancellable(path: String, id: Long, chapter: Int): String?
     external fun recordBookOpened(dataDir: String, path: String)
     external fun getChapter(path: String, chapterIndex: Int): String?
+    // Explicit diagnostic A/B only: normal reader DTOs remain Base64.
+    external fun imageTransport(path: String, request: String): String?
+    external fun imageBytes(path: String, reference: String): ByteArray?
     external fun nativeNote(path: String, chapter: Int, href: String): String?
     external fun nativePresentation(path: String, chapter: Int, policy: String, scripts: Boolean, events: String): String?
     external fun getCover(path: String): String?

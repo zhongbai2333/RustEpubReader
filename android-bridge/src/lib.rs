@@ -54,12 +54,27 @@ macro_rules! lock_or_return {
     };
 }
 use reader_core::library::Library;
+// Propagate IO failures as Java exceptions; never report a successful mutation.
+macro_rules! checked_storage {
+    ($env:expr, $result:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = $env.throw_new("java/io/IOException", error);
+                return Default::default();
+            }
+        }
+    };
+}
+
+mod image_transport;
+
+use reader_core::base64_encode;
 use reader_core::sharing::protocol::Message;
 use reader_core::sharing::{
     auto_sync_session, connect_to_peer, handle_client, resolve_broadcast_addr, start_broadcast,
     start_listener, start_server, DiscoveredPeer, DiscoveryAnnouncement, PeerStore,
 };
-use reader_core::{base64_encode, now_secs};
 
 use lru::LruCache;
 use once_cell::sync::Lazy;
@@ -91,6 +106,7 @@ fn get_book(path: &str) -> std::result::Result<Arc<EpubBook>, String> {
             .join(".chapter-index"),
     ) {
         Ok(book) => {
+            reader_core::open_operation::check()?;
             let arc_book = Arc::new(book);
             cache.put(path.to_string(), arc_book.clone());
             Ok(arc_book)
@@ -137,6 +153,56 @@ fn book_entry_to_android_json(
     })
 }
 
+static OPEN_OPERATIONS: Lazy<reader_core::open_operation::Registry> = Lazy::new(Default::default);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_beginBookOpen(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jlong {
+    checked_storage!(env, OPEN_OPERATIONS.begin()) as jni::sys::jlong
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_cancelBookOpen(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jni::sys::jlong,
+) {
+    OPEN_OPERATIONS.cancel(id as u64);
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_finishBookOpen(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jni::sys::jlong,
+) {
+    OPEN_OPERATIONS.finish(id as u64);
+}
+/// Only opening work holds this scope. Cached books never retain its token.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_openBookCancellable(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+    id: jni::sys::jlong,
+    chapter: jni::sys::jint,
+) -> jstring {
+    let path: String = match env.get_string(&path) {
+        Ok(value) => value.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let token = checked_storage!(env, OPEN_OPERATIONS.token(id as u64));
+    let result = token.run(|| {
+        let book = get_book(&path)?;
+        if !book.chapters.is_empty() {
+            let _ = book.chapter((chapter.max(0) as usize).min(book.chapters.len() - 1))?;
+        }
+        Ok(book_metadata(&book))
+    });
+    let json = checked_storage!(env, result);
+    jni_string_or_null!(env, json)
+}
+
 /// Open an EPUB file and return its metadata as JSON.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_openBook(
@@ -154,6 +220,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_openBook(
         Err(_) => return std::ptr::null_mut(),
     };
 
+    jni_string_or_null!(env, book_metadata(&book))
+}
+
+fn book_metadata(book: &EpubBook) -> String {
     let chapter_reviews: Vec<serde_json::Value> = book
         .chapter_reviews
         .iter()
@@ -177,7 +247,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_openBook(
         "reviewChapterIndices": review_chapter_indices,
     });
 
-    jni_string_or_null!(env, json.to_string())
+    json.to_string()
 }
 
 /// Get chapter content as JSON array of content blocks.
@@ -198,75 +268,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getChapter(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let idx = chapter_index as usize;
-    if idx >= book.chapters.len() {
-        return std::ptr::null_mut();
-    }
-
-    let loaded = match book.loaded_chapter(idx) {
-        Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let chapter = &loaded.chapter;
-    let blocks: Vec<serde_json::Value> = chapter
-        .blocks
-        .iter()
-        .map(|block| match block {
-            reader_core::epub::ContentBlock::Paragraph {
-                spans, anchor_id, ..
-            } => {
-                serde_json::json!({
-                    "type": "paragraph",
-                    "spans": spans.iter().map(|s| serde_json::json!({
-                        "text": s.text,
-                        "style": format!("{:?}", s.style),
-                        "linkUrl": s.link_url,
-                    })).collect::<Vec<_>>(),
-                    "anchor_id": anchor_id,
-                })
-            }
-            reader_core::epub::ContentBlock::Heading {
-                level,
-                spans,
-                anchor_id,
-                ..
-            } => {
-                serde_json::json!({
-                    "type": "heading",
-                    "level": level,
-                    "spans": spans.iter().map(|s| serde_json::json!({
-                        "text": s.text,
-                        "style": format!("{:?}", s.style),
-                        "linkUrl": s.link_url,
-                    })).collect::<Vec<_>>(),
-                    "anchor_id": anchor_id,
-                })
-            }
-            reader_core::epub::ContentBlock::Separator => {
-                serde_json::json!({ "type": "separator" })
-            }
-            reader_core::epub::ContentBlock::BlankLine => {
-                serde_json::json!({ "type": "blankLine" })
-            }
-            reader_core::epub::ContentBlock::Image { data, alt, .. } => {
-                serde_json::json!({
-                    "type": "image",
-                    "data": base64_encode(data),
-                    "alt": alt,
-                })
-            }
-        })
-        .collect();
-
-    let json = serde_json::json!({
-        "title": chapter.title,
-        "sourceHref": chapter.source_href,
-        "blocks": blocks,
-        "images": loaded.images.iter().map(|image| serde_json::json!({
-            "block": image.block, "after": image.after, "data": base64_encode(&image.data), "alt": image.alt
-        })).collect::<Vec<_>>(),
-    });
-
+    let json = checked_storage!(
+        env,
+        image_transport::chapter(&book, chapter_index as usize, None)
+    );
     jni_string_or_null!(env, json.to_string())
 }
 
@@ -326,7 +331,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_loadLibrary(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let library = Library::load_from(&data_dir);
+    let library = checked_storage!(env, Library::load_from(&data_dir));
     let entries: Vec<serde_json::Value> = library
         .books
         .iter()
@@ -353,7 +358,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_renameBook(
         let data_dir: String = env.get_string(&data_dir).map_err(|e| e.to_string())?.into();
         let path: String = env.get_string(&path).map_err(|e| e.to_string())?.into();
         let title: String = env.get_string(&title).map_err(|e| e.to_string())?.into();
-        let mut library = Library::load_from(&data_dir);
+        let mut library = Library::load_from(&data_dir)?;
         let id = library
             .books
             .iter()
@@ -390,7 +395,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_prepareBookExports
         if paths.is_empty() {
             return Err("No books selected".into());
         }
-        let library = Library::load_from(&data_dir);
+        let library = Library::load_from(&data_dir)?;
         let books = paths
             .iter()
             .map(|path| {
@@ -472,8 +477,11 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_addOrUpdateBook(
     };
 
     github_sync::seed_local(&data_dir, &path);
-    let mut library = Library::load_from(&data_dir);
-    let entry = library.add_or_update(&data_dir, title, path, chapter as usize, chapter_title_opt);
+    let mut library = checked_storage!(env, Library::load_from(&data_dir));
+    let entry = checked_storage!(
+        env,
+        library.add_or_update(&data_dir, title, path, chapter as usize, chapter_title_opt)
+    );
     let json_str = book_entry_to_android_json(&data_dir, &entry).to_string();
     jni_string_or_null!(env, json_str)
 }
@@ -506,55 +514,29 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updateChapter(
         Some(chapter_title)
     };
 
-    let mut library = Library::load_from(&data_dir);
-    library.update_chapter(
-        &data_dir,
-        &path,
-        chapter as usize,
-        chapter_title_opt.clone(),
-    );
-
-    // Keep sharing progress in PeerStore in sync with local reading progress,
-    // so subsequent auto_sync_session uploads latest chapter/chapter_title.
-    if let Ok(book_hash) = EpubBook::file_hash(&path) {
-        let title = library
-            .books
-            .iter()
-            .find(|b| b.path == path)
-            .map(|b| b.title.clone())
-            .unwrap_or_else(|| {
-                std::path::Path::new(&path)
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            });
-
-        let store = get_peer_store(&data_dir);
-        let mut s = store.lock().unwrap_or_else(|e| {
-            dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-            e.into_inner()
-        });
-        let ts = now_secs();
-        if let Some(local) = s.progress.iter_mut().find(|p| p.book_hash == book_hash) {
-            local.title = title;
-            local.chapter = chapter as usize;
-            local.block = 0;
-            local.char_offset = 0;
-            local.chapter_title = chapter_title_opt;
-            local.timestamp = ts;
-        } else {
-            s.progress.push(reader_core::sharing::ProgressEntry {
-                book_hash,
-                title,
-                chapter: chapter as usize,
-                block: 0,
-                char_offset: 0,
-                chapter_title: chapter_title_opt,
-                timestamp: ts,
-            });
-        }
-        s.save(&data_dir);
+    let store = get_peer_store(&data_dir);
+    let device = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .device_id
+        .clone();
+    if let Some(record) = checked_storage!(
+        env,
+        github_sync::commit_local(
+            &data_dir,
+            &device,
+            &path,
+            chapter.max(0) as usize,
+            chapter_title_opt,
+            0,
+            0
+        )
+    ) {
+        let mut live = store.lock().unwrap_or_else(|e| e.into_inner());
+        let versions =
+            std::iter::once((record.progress.book_hash.clone(), record.version)).collect();
+        live.merge_progress_versioned(&[record.progress], &versions);
+        live.save(&data_dir);
     }
 }
 
@@ -581,13 +563,16 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_applyRemotePositio
         .get_string(&chapter_title)
         .map(String::from)
         .unwrap_or_default();
-    Library::load_from(&data_dir).apply_position(
-        &data_dir,
-        &path,
-        chapter.max(0) as usize,
-        (!title.is_empty()).then_some(title),
-        block.max(0) as usize,
-        char_offset.max(0) as usize,
+    checked_storage!(
+        env,
+        checked_storage!(env, Library::load_from(&data_dir)).apply_position(
+            &data_dir,
+            &path,
+            chapter.max(0) as usize,
+            (!title.is_empty()).then_some(title),
+            block.max(0) as usize,
+            char_offset.max(0) as usize,
+        )
     );
 }
 
@@ -619,72 +604,29 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_updatePosition(
     let block = block.max(0) as usize;
     let char_offset = char_offset.max(0) as usize;
 
-    let mut library = Library::load_from(&data_dir);
-    let changed = library
-        .books
-        .iter()
-        .find(|e| e.path == path)
-        .is_some_and(|e| {
-            (e.last_chapter, e.last_block, e.last_char_offset) != (chapter, block, char_offset)
-        });
-    library.update_position(
-        &data_dir,
-        &path,
-        chapter,
-        chapter_title.clone(),
-        block,
-        char_offset,
-    );
-
-    if !changed {
-        return;
-    }
-    if let Some(book_hash) = library
-        .books
-        .iter()
-        .find(|e| e.path == path)
-        .and_then(|e| Library::read_book_config(&data_dir, &e.id))
-        .and_then(|c| c.file_hash)
-        .or_else(|| EpubBook::file_hash(&path).ok())
-    {
-        let title = library
-            .books
-            .iter()
-            .find(|b| b.path == path)
-            .map(|b| b.title.clone())
-            .unwrap_or_default();
-        let store = get_peer_store(&data_dir);
-        let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
-        let timestamp = now_secs();
-        if let Some(local) = store.progress.iter_mut().find(|p| p.book_hash == book_hash) {
-            local.title = title;
-            local.chapter = chapter;
-            local.block = block;
-            local.char_offset = char_offset;
-            local.chapter_title = chapter_title;
-            local.timestamp = timestamp;
-        } else {
-            store.progress.push(reader_core::sharing::ProgressEntry {
-                book_hash: book_hash.clone(),
-                title,
-                chapter,
-                block,
-                char_offset,
-                chapter_title,
-                timestamp,
-            });
-        }
-        let cloud_progress = store
-            .progress
-            .iter()
-            .find(|p| p.book_hash == book_hash)
-            .cloned();
-        let device_id = store.device_id.clone();
-        store.save(&data_dir);
-        drop(store);
-        if let Some(progress) = cloud_progress {
-            github_sync::record_local(&data_dir, &device_id, progress);
-        }
+    let store = get_peer_store(&data_dir);
+    let device = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .device_id
+        .clone();
+    if let Some(record) = checked_storage!(
+        env,
+        github_sync::commit_local(
+            &data_dir,
+            &device,
+            &path,
+            chapter,
+            chapter_title,
+            block,
+            char_offset
+        )
+    ) {
+        let mut live = store.lock().unwrap_or_else(|e| e.into_inner());
+        let versions =
+            std::iter::once((record.progress.book_hash.clone(), record.version)).collect();
+        live.merge_progress_versioned(&[record.progress], &versions);
+        live.save(&data_dir);
     }
 }
 
@@ -701,8 +643,8 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_removeBook(
         Err(_) => return,
     };
 
-    let mut library = Library::load_from(&data_dir);
-    library.remove(&data_dir, index as usize);
+    let mut library = checked_storage!(env, Library::load_from(&data_dir));
+    checked_storage!(env, library.remove(&data_dir, index as usize));
 }
 
 /// Remove a book from the library by absolute path.
@@ -722,7 +664,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_removeBookByPath(
         Err(_) => return 0,
     };
 
-    let mut library = Library::load_from(&data_dir);
+    let mut library = checked_storage!(env, Library::load_from(&data_dir));
     let before = library.books.len();
     if reader_core::library::archive::ArchiveStore::archive(&data_dir, &mut library, &[path])
         .is_err()
@@ -811,8 +753,8 @@ fn get_peer_store(data_dir: &str) -> Arc<Mutex<PeerStore>> {
 /// Collect all existing book file paths from library.json for sharing fallback.
 /// This is important when some books are not physically under books_dir yet
 /// (e.g. during migration / mixed historical data).
-fn collect_library_book_paths(data_dir: &str) -> Vec<String> {
-    let library = Library::load_from(data_dir);
+fn collect_library_book_paths(data_dir: &str) -> Result<Vec<String>, String> {
+    let library = Library::load_from(data_dir)?;
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
 
@@ -828,7 +770,7 @@ fn collect_library_book_paths(data_dir: &str) -> Vec<String> {
         }
     }
 
-    paths
+    Ok(paths)
 }
 
 // ── Discovery global state ──
@@ -884,7 +826,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_startSharingServer
         books_dir,
         pin
     );
-    let initial_extra_paths = collect_library_book_paths(&data_dir);
+    let initial_extra_paths = checked_storage!(env, collect_library_book_paths(&data_dir));
     dbg_log!(
         "JNI startSharingServer: initial library fallback paths={} ",
         initial_extra_paths.len()
@@ -959,7 +901,13 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_startSharingServer
                         let p = pin.clone();
                         let s = store.clone();
                         std::thread::spawn(move || {
-                            let extra_paths = collect_library_book_paths(&dd);
+                            let extra_paths = match collect_library_book_paths(&dd) {
+                                Ok(paths) => paths,
+                                Err(error) => {
+                                    dbg_log!("Cannot load sharing library: {}", error);
+                                    return;
+                                }
+                            };
                             dbg_log!(
                                 "JNI startSharingServer: handle_client fallback paths={}",
                                 extra_paths.len()
@@ -1031,7 +979,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
         Ok(s) => s.into(),
         Err(_) => return std::ptr::null_mut(),
     };
-    let extra_book_paths = collect_library_book_paths(&data_dir);
+    let extra_book_paths = checked_storage!(env, collect_library_book_paths(&data_dir));
 
     let store_arc = get_peer_store(&data_dir);
     let mut store = store_arc
@@ -1061,10 +1009,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
     match connect_to_peer(&addr, &mut store, &data_dir, dev_id_opt, pin_opt) {
         Ok((mut stream, aes_key, mut send_ctr, mut recv_ctr)) => {
             dbg_log!("JNI connectAndListBooks: connect_to_peer OK, starting sync...");
-            *store_arc.lock().unwrap_or_else(|e| {
-                dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                e.into_inner()
-            }) = store.clone();
+            store_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .merge_session(&store, &data_dir);
             match auto_sync_session(
                 &mut stream,
                 &aes_key,
@@ -1081,10 +1029,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
                         fetched_books.len()
                     );
                     // Keep in-memory global store in sync with the latest merged progress/pairing state.
-                    *store_arc.lock().unwrap_or_else(|e| {
-                        dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                        e.into_inner()
-                    }) = store.clone();
+                    store_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .merge_session(&store, &data_dir);
                     let json =
                         serde_json::to_string(&fetched_books).unwrap_or_else(|_| "[]".into());
                     jni_string_or_null!(env, &json)
@@ -1092,10 +1040,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
                 Err(e) => {
                     dbg_log!("JNI connectAndListBooks: sync error: {}", e);
                     // Even on error, store may have partial updates; keep global cache consistent.
-                    *store_arc.lock().unwrap_or_else(|e| {
-                        dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                        e.into_inner()
-                    }) = store.clone();
+                    store_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .merge_session(&store, &data_dir);
                     let json = serde_json::json!({"error": e, "phase": "sync"});
                     jni_string_or_null!(env, json.to_string())
                 }
@@ -1169,10 +1117,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_requestBookFromPee
 
     match connect_to_peer(&addr, &mut store, &data_dir, dev_id_opt, pin_opt) {
         Ok((mut stream, aes_key, mut send_ctr, mut recv_ctr)) => {
-            *store_arc.lock().unwrap_or_else(|e| {
-                dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                e.into_inner()
-            }) = store.clone();
+            store_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .merge_session(&store, &data_dir);
             use reader_core::sharing::crypto;
             if crypto::write_encrypted_message(
                 &mut stream,
@@ -1187,13 +1135,16 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_requestBookFromPee
                         if let Ok(data) =
                             crypto::read_encrypted_raw(&mut stream, &aes_key, &mut recv_ctr)
                         {
-                            let mut library = Library::load_from(&data_dir);
-                            let entry = library.add_or_update_from_bytes(
-                                &data_dir,
-                                title.clone(),
-                                &data,
-                                0,
-                                None,
+                            let mut library = checked_storage!(env, Library::load_from(&data_dir));
+                            let entry = checked_storage!(
+                                env,
+                                library.add_or_update_from_bytes(
+                                    &data_dir,
+                                    title.clone(),
+                                    &data,
+                                    0,
+                                    None,
+                                )
                             );
                             let json = serde_json::json!({
                                 "ok": true,
@@ -1252,7 +1203,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
         Ok(s) => s.into(),
         Err(_) => return std::ptr::null_mut(),
     };
-    let extra_book_paths = collect_library_book_paths(&data_dir);
+    let extra_book_paths = checked_storage!(env, collect_library_book_paths(&data_dir));
 
     let store_arc = get_peer_store(&data_dir);
     let mut store = store_arc
@@ -1275,10 +1226,10 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
 
     match connect_to_peer(&addr, &mut store, &data_dir, dev_id_opt, pin_opt) {
         Ok((mut stream, aes_key, mut send_ctr, mut recv_ctr)) => {
-            *store_arc.lock().unwrap_or_else(|e| {
-                dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                e.into_inner()
-            }) = store.clone();
+            store_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .merge_session(&store, &data_dir);
             match auto_sync_session(
                 &mut stream,
                 &aes_key,
@@ -1291,29 +1242,29 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
             ) {
                 Ok(_) => {
                     // Keep in-memory global store in sync with latest merged progress.
-                    *store_arc.lock().unwrap_or_else(|e| {
-                        dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                        e.into_inner()
-                    }) = store.clone();
+                    store_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .merge_session(&store, &data_dir);
                     let json = serde_json::json!({"ok": true});
                     jni_string_or_null!(env, json.to_string())
                 }
                 Err(e) => {
                     // Even on error, store may have partial updates; keep global cache consistent.
-                    *store_arc.lock().unwrap_or_else(|e| {
-                        dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                        e.into_inner()
-                    }) = store.clone();
+                    store_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .merge_session(&store, &data_dir);
                     let json = serde_json::json!({"ok": false, "error": e, "phase": "sync"});
                     jni_string_or_null!(env, json.to_string())
                 }
             }
         }
         Err(e) => {
-            *store_arc.lock().unwrap_or_else(|e| {
-                dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-                e.into_inner()
-            }) = store.clone();
+            store_arc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .merge_session(&store, &data_dir);
             let json = serde_json::json!({"ok": false, "error": e, "phase": "connect"});
             jni_string_or_null!(env, json.to_string())
         }
@@ -1478,14 +1429,23 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getSyncedProgress(
         Err(_) => return std::ptr::null_mut(),
     };
     let store = get_peer_store(&data_dir);
-    let progress = store
-        .lock()
-        .unwrap_or_else(|e| {
-            dbg_log!("PeerStore lock poisoned, recovering: {}", e);
-            e.into_inner()
+    let snapshot = store.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let committed = checked_storage!(
+        env,
+        reader_core::sharing::apply_received_progress(&data_dir, &snapshot)
+    );
+    checked_storage!(
+        env,
+        github_sync::accept_committed(&data_dir, &snapshot.device_id, &committed)
+    );
+    let progress: Vec<_> = committed
+        .into_iter()
+        .map(|notice| {
+            let mut value = serde_json::to_value(notice.record.progress).unwrap();
+            value["path"] = serde_json::json!(notice.path);
+            value
         })
-        .progress
-        .clone();
+        .collect();
     let json = serde_json::to_string(&progress).unwrap_or_else(|_| "[]".into());
     jni_string_or_null!(env, &json)
 }
@@ -1733,6 +1693,59 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_readingActivity(
     jni_string_or_null!(env, envelope.to_string())
 }
 
+/// Annotation tools, shared with the iOS and desktop adapters.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_annotationTools(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    request: JString,
+) -> jstring {
+    let root: String = match env.get_string(&data_dir) {
+        Ok(value) => value.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let request: String = match env.get_string(&request) {
+        Ok(value) => value.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let result = serde_json::from_str(&request)
+        .map_err(|_| "Invalid annotation tools request".into())
+        .and_then(|request| reader_core::annotations::command(&root, &request));
+    let envelope = match result {
+        Ok(value) => serde_json::json!({"ok":true,"result":value}),
+        Err(error) => serde_json::json!({"ok":false,"error":error}),
+    };
+    jni_string_or_null!(env, envelope.to_string())
+}
+
+/// Versioned backup commands; status polling never waits for a storage lease.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_backupTools(
+    mut env: JNIEnv,
+    _class: JClass,
+    data_dir: JString,
+    request: JString,
+) -> jstring {
+    let result = (|| -> Result<serde_json::Value, String> {
+        let root: String = env
+            .get_string(&data_dir)
+            .map_err(|_| "Invalid backup storage")?
+            .into();
+        let request: String = env
+            .get_string(&request)
+            .map_err(|_| "Invalid backup request")?
+            .into();
+        let request = serde_json::from_str(&request).map_err(|_| "Invalid backup request")?;
+        reader_core::backup::command(&root, &request)
+    })();
+    let envelope = match result {
+        Ok(value) => serde_json::json!({"ok":true,"result":value}),
+        Err(error) => serde_json::json!({"ok":false,"error":error}),
+    };
+    jni_string_or_null!(env, envelope.to_string())
+}
+
 /// Return full BookConfig JSON for a given book ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getBookConfig(
@@ -1749,11 +1762,14 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getBookConfig(
         Ok(s) => s.into(),
         Err(_) => return std::ptr::null_mut(),
     };
-    let cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return std::ptr::null_mut(),
     };
-    jni_string_or_null!(env, serde_json::to_string(&cfg).unwrap_or_default())
+    let mut payload = serde_json::to_value(&cfg).expect("BookConfig serialization is infallible");
+    payload["concurrent_notes"] =
+        serde_json::json!(reader_core::annotations::concurrent_note_ids(&cfg));
+    jni_string_or_null!(env, payload.to_string())
 }
 
 /// Toggle bookmark for a chapter: add if not present, remove if present.
@@ -1776,7 +1792,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_toggleBookmark(
     };
     let chapter = chapter as usize;
 
-    let mut cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let mut cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return std::ptr::null_mut(),
     };
@@ -1791,7 +1807,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_toggleBookmark(
             created_at: reader_core::now_secs(),
         });
     }
-    cfg.save(&data_dir);
+    checked_storage!(env, cfg.save(&data_dir));
 
     jni_string_or_null!(env, if had { "removed" } else { "added" })
 }
@@ -1818,7 +1834,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_addHighlight(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let mut cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let mut cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return std::ptr::null_mut(),
     };
@@ -1846,7 +1862,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_addHighlight(
         _ => reader_core::library::HighlightColor::Yellow,
     };
 
-    let id = format!("{}-{}", reader_core::now_secs(), cfg.highlights.len());
+    let id = reader_core::annotations::new_highlight_id();
     cfg.highlights.push(reader_core::library::Highlight {
         id: id.clone(),
         chapter: input.chapter,
@@ -1857,7 +1873,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_addHighlight(
         color,
         created_at: reader_core::now_secs(),
     });
-    cfg.save(&data_dir);
+    checked_storage!(env, cfg.save(&data_dir));
 
     jni_string_or_null!(env, id)
 }
@@ -1884,14 +1900,14 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_removeHighlight(
         Err(_) => return,
     };
 
-    let mut cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let mut cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return,
     };
     cfg.highlights.retain(|h| h.id != hl_id);
     // Also remove notes attached to this highlight
     cfg.notes.retain(|n| n.highlight_id != hl_id);
-    cfg.save(&data_dir);
+    checked_storage!(env, cfg.save(&data_dir));
 }
 
 /// Save or update a note for a highlight.
@@ -1921,7 +1937,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_saveNote(
         Err(_) => return,
     };
 
-    let mut cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let mut cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return,
     };
@@ -1938,7 +1954,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_saveNote(
             updated_at: now,
         });
     }
-    cfg.save(&data_dir);
+    checked_storage!(env, cfg.save(&data_dir));
 }
 
 // ── CSC Contribution ──
@@ -1960,7 +1976,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_getCscCorrectionCo
         Err(_) => return 0,
     };
 
-    let cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return 0,
     };
@@ -1996,7 +2012,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_collectCscSamples(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return std::ptr::null_mut(),
     };
@@ -2095,7 +2111,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_upsertCorrection(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let mut cfg = match Library::read_book_config(&data_dir, &book_id) {
+    let mut cfg = match checked_storage!(env, Library::load_book_config(&data_dir, &book_id)) {
         Some(c) => c,
         None => return std::ptr::null_mut(),
     };
@@ -2133,7 +2149,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_upsertCorrection(
             });
     }
 
-    cfg.save(&data_dir);
+    checked_storage!(env, cfg.save(&data_dir));
 
     jni_string_or_null!(env, input.status)
 }
@@ -2275,5 +2291,5 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_recordBookOpened(
         return;
     };
     let path: String = path.into();
-    github_sync::opened(&root, &path);
+    checked_storage!(env, github_sync::opened(&root, &path));
 }

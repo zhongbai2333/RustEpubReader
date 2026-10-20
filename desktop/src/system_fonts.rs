@@ -231,6 +231,68 @@ pub(crate) fn mac_default(bold: bool, serif: bool) -> Option<Arc<FontData>> {
     fonts.get(name).or_else(|| fonts.get("苹方-简"))?.load()
 }
 
+/// Append a bounded pair of installed outline fonts for missing script glyphs.
+/// Existing user/EPUB/CJK choices retain priority; no OS font is redistributed.
+pub(crate) fn register_fallbacks(fonts: &mut eframe::egui::FontDefinitions) {
+    use eframe::egui::FontFamily;
+    #[cfg(target_os = "macos")]
+    let candidates: [&[&str]; 2] = [
+        &["/System/Library/Fonts/Supplemental/Arial.ttf"],
+        &["/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
+    ];
+    #[cfg(target_os = "windows")]
+    let candidates: [&[&str]; 2] = [
+        &[
+            r"C:\Windows\Fonts\arial.ttf",
+            r"C:\Windows\Fonts\segoeui.ttf",
+        ],
+        &[
+            r"C:\Windows\Fonts\arialbd.ttf",
+            r"C:\Windows\Fonts\segoeuib.ttf",
+        ],
+    ];
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let candidates: [&[&str]; 2] = [
+        &[
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        ],
+        &[
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        ],
+    ];
+    let keys = [
+        "reader_system_fallback_regular",
+        "reader_system_fallback_bold",
+    ];
+    let mut available = [false; 2];
+    for (index, paths) in candidates.iter().enumerate() {
+        if let Some(data) = paths.iter().find_map(|path| load_path(path)) {
+            fonts.font_data.insert(keys[index].into(), data);
+            available[index] = true;
+        }
+    }
+    for (family, chain) in &mut fonts.families {
+        let preferred =
+            usize::from(matches!(family,FontFamily::Name(name) if name.as_ref()=="Bold"));
+        chain.retain(|name| !keys.contains(&name.as_str()));
+        // Named publication families can replace the default proportional chain.
+        // Keep the bundled outline emoji faces reachable there as well; system
+        // color fonts may contain bitmap-only glyphs our rasterizer cannot draw.
+        for name in ["NotoEmoji-Regular", "emoji-icon-font"] {
+            if fonts.font_data.contains_key(name) && !chain.iter().any(|item| item == name) {
+                chain.push(name.into());
+            }
+        }
+        for index in [preferred, 1 - preferred] {
+            if available[index] && !chain.iter().any(|name| name == keys[index]) {
+                chain.push(keys[index].into());
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn register_defaults(fonts: &mut eframe::egui::FontDefinitions) {
     use eframe::egui::FontFamily;
@@ -259,12 +321,40 @@ pub(crate) fn register_defaults(fonts: &mut eframe::egui::FontDefinitions) {
             vec!["serif_font".into(), "cjk_font".into()],
         );
     }
+    register_fallbacks(fonts);
 }
 
 #[cfg(test)]
 #[cfg(target_os = "macos")]
 mod tests {
     use super::*;
+    #[test]
+    fn native_default_fallbacks_cover_the_real_corpus_hebrew_and_greek() {
+        use eframe::egui::{FontDefinitions, FontFamily};
+        let mut definitions = FontDefinitions::default();
+        register_defaults(&mut definitions);
+        let before = definitions.families.clone();
+        register_fallbacks(&mut definitions);
+        assert_eq!(before, definitions.families);
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Name("Bold".into()),
+            FontFamily::Name("Serif".into()),
+        ] {
+            for ch in "חוϰητος😀".chars() {
+                assert!(
+                    definitions.families[&family]
+                        .iter()
+                        .filter_map(|name| definitions.font_data.get(name))
+                        .any(|data| ttf_parser::Face::parse(&data.font, data.index)
+                            .ok()
+                            .and_then(|face| face.glyph_index(ch))
+                            .is_some_and(|glyph| glyph.0 != 0)),
+                    "Missing corpus glyph {ch:?} in {family:?}"
+                );
+            }
+        }
+    }
     #[test]
     fn installed_chinese_faces_load_with_correct_collection_index() {
         let fonts = discover();

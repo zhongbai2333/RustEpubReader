@@ -47,6 +47,19 @@ import Foundation
   precondition(ReadingSpread.columns(width:402,height:874,margin:24,fontSize:18)==1)
   precondition(ReadingSpread.columns(width:640,height:360,margin:24,fontSize:28)==1)
   precondition(ReadingSpread.start(5,columns:2)==4)
+  for (width,height) in [(1366.0,1024.0),(874,402),(402,874)] {
+   precondition(ReadingSpread.columns(width:width,height:height,margin:24,fontSize:18,forceSingleColumn:true)==1)
+  }
+  let columnsSuite="reader-columns-"+UUID().uuidString
+  let columnDefaults=UserDefaults(suiteName:columnsSuite)!
+  precondition(!columnDefaults.bool(forKey:ReadingSpread.preferenceKey))
+  columnDefaults.set(true,forKey:ReadingSpread.preferenceKey)
+  ReadingMode.migrate(columnDefaults)
+  precondition(UserDefaults(suiteName:columnsSuite)!.bool(forKey:ReadingSpread.preferenceKey))
+  precondition(ReadingSpread.columns(width:1366,height:1024,margin:24,fontSize:18,forceSingleColumn:columnDefaults.bool(forKey:ReadingSpread.preferenceKey))==1)
+  columnDefaults.set(false,forKey:ReadingSpread.preferenceKey)
+  precondition(ReadingSpread.columns(width:1366,height:1024,margin:24,fontSize:18,forceSingleColumn:columnDefaults.bool(forKey:ReadingSpread.preferenceKey))==2)
+  columnDefaults.removePersistentDomain(forName:columnsSuite)
   print("PASS: preference migration, choice persistence, phone landscape spread, portrait and large-font fallback")
  }
 }

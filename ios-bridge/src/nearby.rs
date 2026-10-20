@@ -1,6 +1,6 @@
 //! Foreground PIN adapter. Network sessions work in isolated snapshots; only a
 //! live generation may apply validated books/progress to the actual library.
-use super::{book, validate_position, DATA_LOCK};
+use super::DATA_LOCK;
 use reader_core::{cloud_sync::SyncJournal, epub::EpubBook, library::Library, sharing::*};
 use serde_json::{json, Value};
 use std::{
@@ -91,7 +91,8 @@ fn merge_activity(
 fn snapshot(root: &str, device: &str) -> Result<Snapshot, String> {
     let _guard = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut store = identity(root)?;
-    let library = Library::load_from(root);
+    let library = Library::load_from(root)?;
+    store.seed_progress(root)?;
     let stage = PathBuf::from(root)
         .join("pin-staging")
         .join(uuid::Uuid::new_v4().to_string());
@@ -112,20 +113,6 @@ fn snapshot(root: &str, device: &str) -> Result<Snapshot, String> {
         let target = stage.join("books").join(format!("{}.epub", entry.id));
         // Copy files; snapshots cannot mutate the live reader's files/configuration.
         std::fs::copy(&entry.path, target).map_err(|_| "Cannot prepare nearby sync")?;
-        let progress = ProgressEntry {
-            book_hash: hash,
-            title: entry.title.clone(),
-            chapter: entry.last_chapter,
-            block: entry.last_block,
-            char_offset: entry.last_char_offset,
-            chapter_title: entry.last_chapter_title.clone(),
-            timestamp: if entry.last_opened >= 100_000_000_000 {
-                entry.last_opened / 1000
-            } else {
-                entry.last_opened
-            },
-        };
-        store.merge_progress(&[progress]);
     }
     let mut staged = library.clone();
     for entry in &mut staged.books {
@@ -135,7 +122,7 @@ fn snapshot(root: &str, device: &str) -> Result<Snapshot, String> {
             .to_string_lossy()
             .into_owned();
     }
-    staged.save_to(stage.to_str().ok_or("Invalid nearby storage")?);
+    staged.save_to(stage.to_str().ok_or("Invalid nearby storage")?)?;
     store.save(stage.to_str().unwrap());
     result.store = store;
     Ok(result)
@@ -159,9 +146,9 @@ fn apply(
         return Err("Nearby sync cancelled".into());
     }
     let _guard = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut library = Library::load_from(root);
+    let mut library = Library::load_from(root)?;
     let mut downloaded = 0;
-    let staged = Library::load_from(snapshot.root.to_str().unwrap());
+    let staged = Library::load_from(snapshot.root.to_str().unwrap())?;
     for entry in staged.books {
         let hash = EpubBook::file_hash(&entry.path)?;
         // Deleted during a transfer must remain deleted.
@@ -177,7 +164,7 @@ fn apply(
         if parsed.chapters.is_empty() {
             return Err("EPUB has no readable chapters".into());
         }
-        let added = library.add_or_update(root, parsed.title, entry.path.clone(), 0, None);
+        let added = library.add_or_update(root, parsed.title, entry.path.clone(), 0, None)?;
         if EpubBook::file_hash(&added.path).ok().as_ref() != Some(&hash) {
             return Err("Cannot save downloaded book".into());
         }
@@ -201,42 +188,14 @@ fn apply(
     }
     let mut journal = SyncJournal::load(root, device);
     let mut offer = None;
-    for progress in &store.progress {
-        let matched = library
-            .books
-            .iter()
-            .find(|e| EpubBook::file_hash(&e.path).ok().as_ref() == Some(&progress.book_hash))
-            .cloned();
-        let Some(entry) = matched else { continue };
-        if reader_core::cloud_recent::timestamp_millis(progress.timestamp) <= entry.last_opened {
-            continue;
+    let notices = reader_core::sharing::apply_received_progress(root, store)?;
+    for notice in notices {
+        if notice.path == open_path {
+            offer = Some(notice.record.progress.clone());
         }
-        let parsed = book(root, &entry)?;
-        if validate_position(
-            &parsed,
-            progress.chapter,
-            progress.block,
-            progress.char_offset,
-        )
-        .is_err()
-        {
-            continue;
-        }
-        if entry.path == open_path {
-            offer = Some(progress.clone());
-            continue;
-        }
-        library.apply_position(
-            root,
-            &entry.path,
-            progress.chapter,
-            progress.chapter_title.clone(),
-            progress.block,
-            progress.char_offset,
-        );
-        journal.record(progress.clone());
+        journal.accept(&notice.record);
     }
-    live.merge_progress(&store.progress);
+    live.merge_progress_versioned(&store.progress, &store.progress_versions);
     live.save(root);
     journal.save(root)?;
     Ok(json!({"uploaded":0,"downloaded":downloaded,"skipped":0,"offer":offer}))
@@ -441,14 +400,16 @@ mod activity_tests {
         let staging = stage.path().to_str().unwrap();
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../core/tests/fixtures/illustrations.epub");
-        let mut library = Library::load_from(root);
-        let entry = library.add_or_update(
-            root,
-            "Book".into(),
-            fixture.to_string_lossy().into_owned(),
-            0,
-            None,
-        );
+        let mut library = Library::load_from(root).unwrap();
+        let entry = library
+            .add_or_update(
+                root,
+                "Book".into(),
+                fixture.to_string_lossy().into_owned(),
+                0,
+                None,
+            )
+            .unwrap();
         let now = 1_700_000_120u64;
         let today = reader_core::reading_activity::date_from_days((now / 86400) as i64);
         reader_core::reading_activity::checkpoint(

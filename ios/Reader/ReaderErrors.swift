@@ -8,6 +8,8 @@ enum ReaderErrors {
         if raw.contains("rendered content exceeds") { return L("reader.error_content_too_large") }
         if raw == "Cannot copy EPUB into library storage" || raw == "Cannot save downloaded book" { return L("reader.error_save_book_failed") }
         if raw == "Book is no longer in the library" { return L("reader.error_book_not_in_library") }
+        if raw.hasPrefix("Cannot save ") || raw.hasPrefix("Cannot create storage") { return L("reader.error_save_book_failed") }
+        if raw.hasPrefix("Invalid stored data:") || raw.hasPrefix("Cannot read ") { return L("library.error_read_failed") }
         if raw.hasPrefix("Reading ") { return L("reader.error_invalid_position") }
         if raw.contains("login expired") { return L("sync.error_github_session_expired") }
         if raw.hasPrefix("REAUTHORIZE:") { return L("sync.error_github_insufficient_permissions_retry") }

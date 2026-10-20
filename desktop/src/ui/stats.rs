@@ -155,6 +155,14 @@ impl ReaderApp {
             }
         }
     }
+    pub(crate) fn quiesce_activity_for_backup(&mut self) -> Result<(), String> {
+        self.tts_stop_playback();
+        self.activity.error = None;
+        self.flush_reading_stats();
+        self.activity.mode = None;
+        self.activity.last = Instant::now();
+        self.activity.error.clone().map_or(Ok(()), Err)
+    }
     pub fn open_reading_stats(&mut self, current_book: bool) {
         self.flush_reading_stats();
         self.activity.current_book = current_book;

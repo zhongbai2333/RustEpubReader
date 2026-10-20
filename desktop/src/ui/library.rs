@@ -427,7 +427,18 @@ impl ReaderApp {
                     design::block_gap(ui);
                 }
                 let mut content_clip = ui.clip_rect();
-                let scroll = egui::ScrollArea::vertical().show(ui, |ui| {
+                let area = egui::ScrollArea::vertical();
+                #[cfg(feature = "performance-checks")]
+                let area = if let Some(offset) = self
+                    .shelf_performance
+                    .as_mut()
+                    .and_then(|probe| probe.take_offset())
+                {
+                    area.vertical_scroll_offset(offset)
+                } else {
+                    area
+                };
+                let scroll = area.show(ui, |ui| {
                     content_clip = ui.clip_rect();
                     if self.library_query.is_empty() && !self.library_manage {
                         if let Some(idx) = recent {
@@ -827,6 +838,14 @@ impl ReaderApp {
                         }
                     }
                 });
+                #[cfg(feature = "performance-checks")]
+                if let Some(probe) = &mut self.shelf_performance {
+                    probe.observe(
+                        scroll.inner_rect,
+                        scroll.content_size.y,
+                        scroll.state.offset.y,
+                    );
+                }
                 design::scroll_edge_fades(
                     ui.painter(),
                     // ScrollArea expands its content clip to allow widget strokes.
@@ -958,7 +977,7 @@ impl ReaderApp {
                     state,
                 ) {
                     Ok(()) => {
-                        self.library = reader_core::library::Library::load_from(&self.data_dir);
+                        self.reload_library();
                         self.cloud_sync.stop();
                     }
                     Err(error) => self.error_msg = Some(error),

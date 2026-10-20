@@ -85,12 +85,16 @@ pub enum Message {
     /// Sync reading progress
     SyncProgress {
         entries: Vec<ProgressEntry>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        versions: std::collections::BTreeMap<String, crate::cloud_progress::ProgressVersion>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         activity: Vec<crate::cloud_sync::DeviceSnapshot>,
     },
     /// Response with merged progress
     ProgressResponse {
         entries: Vec<ProgressEntry>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        versions: std::collections::BTreeMap<String, crate::cloud_progress::ProgressVersion>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         activity: Vec<crate::cloud_sync::DeviceSnapshot>,
     },

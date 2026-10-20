@@ -80,6 +80,8 @@ internal fun ReaderSettingsSheet(
     onClearBackgroundImage: () -> Unit,
     // 排版
     lineSpacing: Float = 1.5f,
+    forceSingleColumn: Boolean = false,
+    onForceSingleColumnChange: (Boolean) -> Unit = {},
     paraSpacing: Float = 0.5f,
     textIndent: Int = 2,
     titleFontScale: Float = 1.5f,
@@ -276,6 +278,13 @@ internal fun ReaderSettingsSheet(
                         Text(when(cssPolicy) { "none" -> I18n.t("settings.layout_native_desc"); "publisher" -> I18n.t("settings.layout_classic_desc_short"); else -> I18n.t("settings.layout_mixed_desc_short") }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     SettingsGroup(I18n.t("settings.layout_group")) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(I18n.t("settings.force_single_column"))
+                                Text(I18n.t("settings.force_single_column_desc"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = forceSingleColumn, onCheckedChange = onForceSingleColumnChange)
+                        }
                         SettingValueSlider(I18n.t("settings.line_spacing"), "%.1f".format(I18n.locale, lineSpacing), lineSpacing, 1f..3f, manualTypography, onLineSpacingChange)
                         SettingValueSlider(I18n.t("settings.para_spacing"), "%.1f".format(I18n.locale, paraSpacing), paraSpacing, 0f..2f, manualTypography, onParaSpacingChange)
                         SettingValueSlider(I18n.t("settings.text_indent"), "$textIndent ${I18n.t("settings.chars")}", textIndent.toFloat(), 0f..4f, cssPolicy == "none") { onTextIndentChange(it.toInt()) }
@@ -297,7 +306,7 @@ internal fun ReaderSettingsSheet(
         title={Text(I18n.t("settings.reset_title"))},
         text={Text(I18n.t("settings.reset_message"))},
         confirmButton={TextButton(onClick={
-                        onFontSizeChange(18f); onFontFamilyChange("Sans"); onCssPolicyChange("mixed"); onScrollModeChange(false); onPageAnimationChange("Realistic")
+                        onFontSizeChange(18f); onFontFamilyChange("Sans"); onCssPolicyChange("mixed"); onScrollModeChange(false); onPageAnimationChange("Realistic"); onForceSingleColumnChange(false)
                         onAppearanceChange(com.zhongbai233.epub.reader.model.ReadingAppearance()); onBgColorChange(0); onFontColorChange(0); onLineSpacingChange(1.5f); onParaSpacingChange(0.5f); onTextIndentChange(2); onTitleFontScaleChange(1.5f); onClearBackgroundImage()
             confirmReset=false
         }) {Text(I18n.t("settings.reset_confirm"))}},

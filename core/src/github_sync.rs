@@ -17,6 +17,8 @@ use std::{
     },
     time::Duration,
 };
+mod annotations;
+pub use annotations::apply_cached_annotations;
 mod chunks;
 mod meter;
 mod staged;
@@ -50,6 +52,7 @@ impl DownloadedBook {
     }
 }
 pub struct SyncResult {
+    pub annotation_error: Option<String>,
     pub snapshots: Vec<DeviceSnapshot>,
     pub confirmed_archives: std::collections::BTreeSet<String>,
     pub own: DeviceSnapshot,
@@ -482,6 +485,7 @@ fn run(api: &Api, own: &mut DeviceSnapshot, books: Vec<LocalBook>) -> Result<Syn
         });
     }
     Ok(SyncResult {
+        annotation_error: None,
         confirmed_archives: Default::default(),
         snapshots,
         own: own.clone(),
@@ -496,6 +500,7 @@ fn run(api: &Api, own: &mut DeviceSnapshot, books: Vec<LocalBook>) -> Result<Syn
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod annotations;
     mod chunks;
     mod stages;
     #[test]

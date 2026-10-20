@@ -129,11 +129,17 @@ impl ReaderApp {
         });
     }
     pub(crate) fn close_book_presentation(&mut self) {
+        if let Err(error) = self.flush_reading_position_for_backup() {
+            self.error_msg = Some(error);
+        }
         self.clear_reader_navigation();
         if matches!(self.book_presentation.phase, Some(Phase::Closing { .. })) {
             return;
         }
         self.pending_book_open = None;
+        if let Some(cancel) = self.pending_open_cancel.take() {
+            cancel.cancel();
+        }
         let (from, covering_reader) = match &self.book_presentation.phase {
             Some(Phase::Opening { started, .. }) => {
                 (ease((started.elapsed().as_secs_f32() - 0.10) / 0.38), false)

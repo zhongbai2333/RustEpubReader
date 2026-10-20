@@ -68,7 +68,8 @@ struct ReadingSpeechPanel: View {
                     } else {
                         ForEach(speech.systemVoices, id: \.identifier) { voice in Text("\(voice.name) · \(voice.language)").tag(voice.identifier) }
                     }
-                }
+                }.disabled(speech.source == .system && speech.systemVoicesLoading)
+                if speech.source == .system && speech.systemVoicesLoading { ProgressView(L("tts.preparing_voice")) }
             } footer: {
                 Text(speech.source == .online ? L("tts.online_voice_requires_network") : L("tts.system_voice_uses_device_voices"))
             }
@@ -87,6 +88,7 @@ struct ReadingSpeechPanel: View {
         }
         .navigationTitle(L("toolbar.tts")).navigationBarTitleDisplayMode(.inline)
         .onAppear { speed = speech.rate }
+        .task(id: speech.source) { if speech.source == .system { await speech.prepareSystemVoices() } }
         .onChange(of: speech.rate) { _, value in speed = value }
     }
 }

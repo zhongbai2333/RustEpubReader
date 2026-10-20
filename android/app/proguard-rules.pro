@@ -21,3 +21,8 @@
 -keepclasseswithmembers class com.zhongbai233.epub.reader.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# Optional performance source set: the shipping build never attaches this hook.
+-keep class com.zhongbai233.epub.reader.ui.reader.ShelfPerformanceHooks {
+    public static void attach(com.zhongbai233.epub.reader.MainActivity, com.zhongbai233.epub.reader.viewmodel.ReaderViewModel);
+}

@@ -24,6 +24,10 @@ internal fun Modifier.tapGesture(
         val down = awaitFirstDown().also { it.consume() }
         val up = waitForUpOrCancellation() ?: return@awaitEachGesture
 
+        if (up.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis) {
+            return@awaitEachGesture
+        }
+
         if ((down.position - up.position).getDistance() > viewConfiguration.touchSlop) {
             return@awaitEachGesture
         }

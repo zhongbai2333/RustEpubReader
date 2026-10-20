@@ -65,6 +65,8 @@ struct ActivityStore {
     checkpoints: BTreeMap<String, u64>,
     #[serde(default)]
     migrated: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    legacy_restored: std::collections::BTreeSet<String>,
 }
 impl Default for ActivityStore {
     fn default() -> Self {
@@ -73,6 +75,7 @@ impl Default for ActivityStore {
             books: Default::default(),
             checkpoints: Default::default(),
             migrated: Default::default(),
+            legacy_restored: Default::default(),
         }
     }
 }
@@ -105,17 +108,14 @@ impl ActivityStore {
     }
     fn save(&self, root: &str) -> Result<(), String> {
         let path = Path::new(root).join("reading-activity.json");
-        let temporary = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec(self).map_err(|_| "Cannot encode reading activity")?;
-        std::fs::write(&temporary, bytes)
-            .and_then(|_| std::fs::rename(temporary, path))
-            .map_err(|_| "Cannot save reading activity".into())
+        crate::storage::replace(&path, &bytes)
     }
-    fn migrate(&mut self, root: &str, device: &str) {
+    fn migrate(&mut self, root: &str, device: &str) -> Result<(), String> {
         if self.migrated.contains(device) {
-            return;
+            return Ok(());
         }
-        for entry in Library::load_from(root).books {
+        for entry in Library::load_from(root)?.books {
             let Some(config) = Library::read_book_config(root, &entry.id) else {
                 continue;
             };
@@ -128,6 +128,9 @@ impl ActivityStore {
             else {
                 continue;
             };
+            if self.legacy_restored.contains(&hash) {
+                continue;
+            }
             let mut legacy = DeviceActivity {
                 title: bounded_title(&entry.title),
                 ..Default::default()
@@ -144,7 +147,78 @@ impl ActivityStore {
                 .merge(&legacy);
         }
         self.migrated.insert(device.into());
+        Ok(())
     }
+}
+
+pub(crate) type PortableActivity = BTreeMap<String, BTreeMap<String, DeviceActivity>>;
+pub(crate) fn validate_portable(activity: &PortableActivity) -> Result<(), String> {
+    if activity.len() > 5000
+        || activity.iter().any(|(hash, sources)| {
+            !valid_hash(hash)
+                || sources.len() > 128
+                || sources.iter().any(|(source, value)| {
+                    !crate::cloud_sync::valid_device_id(
+                        source.strip_prefix("legacy_").unwrap_or(source),
+                    ) || !value.validate()
+                })
+        })
+    {
+        return Err("Invalid portable reading activity".into());
+    }
+    Ok(())
+}
+pub(crate) fn portable<'a>(
+    root: &str,
+    configs: impl IntoIterator<Item = &'a crate::library::BookConfig>,
+) -> Result<PortableActivity, String> {
+    let _access = crate::library::access::lock(root)?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if std::fs::metadata(Path::new(root).join("reading-activity.json"))
+        .is_ok_and(|m| m.len() > 64 * 1024 * 1024)
+    {
+        return Err("Reading activity exceeds backup metadata limit".into());
+    }
+    let mut activity = ActivityStore::load(root)?.books;
+    // Capture old per-book timers even if the statistics screen has never run.
+    for config in configs {
+        if let (Some(hash), Some(stats)) = (&config.file_hash, &config.reading_stats) {
+            let sources = activity.entry(hash.clone()).or_default();
+            if !sources.keys().any(|source| source.starts_with("legacy_")) {
+                sources.insert(
+                    format!("legacy_{hash}"),
+                    DeviceActivity {
+                        title: bounded_title(&config.title),
+                        undated: stats.total_seconds,
+                        days: Default::default(),
+                    },
+                );
+            }
+        }
+    }
+    validate_portable(&activity)?;
+    Ok(activity)
+}
+/// Prepare the exact transaction payload; no counter/heartbeat identity is imported.
+pub(crate) fn merged_portable(root: &str, incoming: &PortableActivity) -> Result<Vec<u8>, String> {
+    let _access = crate::library::access::lock(root)?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    validate_portable(incoming)?;
+    let mut store = ActivityStore::load(root)?;
+    for (hash, sources) in incoming {
+        for (source, value) in sources {
+            store
+                .books
+                .entry(hash.clone())
+                .or_default()
+                .entry(source.clone())
+                .or_default()
+                .merge(value);
+        }
+        store.legacy_restored.insert(hash.clone());
+    }
+    validate_portable(&store.books)?;
+    serde_json::to_vec(&store).map_err(|_| "Cannot encode restored reading activity".into())
 }
 
 /// Idempotent heartbeat. `elapsed` is cumulative active seconds for a random session.
@@ -175,10 +249,11 @@ pub fn checkpoint(
     if !(0..=last_supported_day).contains(&local) {
         return Err("Invalid reading activity date".into());
     }
+    let _access = crate::library::access::lock(root)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut store = ActivityStore::load(root)?;
-    store.migrate(root, device);
-    if !Library::load_from(root)
+    store.migrate(root, device)?;
+    if !Library::load_from(root)?
         .books
         .iter()
         .any(|b| b.id == book_id)
@@ -222,9 +297,10 @@ pub fn checkpoint(
 
 /// Export includes legacy records; their distinct source identities remain stable.
 pub fn export(root: &str, device: &str) -> Result<BTreeMap<String, DeviceActivity>, String> {
+    let _access = crate::library::access::lock(root)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut store = ActivityStore::load(root)?;
-    store.migrate(root, device);
+    store.migrate(root, device)?;
     store.save(root)?;
     Ok(store
         .books
@@ -248,6 +324,7 @@ pub fn import(
     device: &str,
     snapshots: &[crate::cloud_sync::DeviceSnapshot],
 ) -> Result<(), String> {
+    let _access = crate::library::access::lock(root)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut store = ActivityStore::load(root)?;
     for snapshot in snapshots {
@@ -274,6 +351,7 @@ pub fn snapshots(
     device: &str,
 ) -> Result<Vec<crate::cloud_sync::DeviceSnapshot>, String> {
     let own = export(root, device)?;
+    let _access = crate::library::access::lock(root)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let store = ActivityStore::load(root)?;
     let mut snapshots = BTreeMap::<String, crate::cloud_sync::DeviceSnapshot>::new();
@@ -333,9 +411,10 @@ pub fn report(
     if filter.is_some_and(|h| !valid_hash(h)) {
         return Err("Invalid book hash".into());
     }
+    let _access = crate::library::access::lock(root)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut store = ActivityStore::load(root)?;
-    store.migrate(root, device);
+    store.migrate(root, device)?;
     let mut days = BTreeMap::<String, DayActivity>::new();
     let mut books = Vec::new();
     let mut devices = std::collections::BTreeSet::new();
@@ -482,7 +561,7 @@ pub fn dispatch(
         Ok(serde_json::json!({"saved":true}))
     } else {
         let hash = if let Some(id) = request["id"].as_str() {
-            let e = Library::load_from(root)
+            let e = Library::load_from(root)?
                 .books
                 .into_iter()
                 .find(|b| b.id == id)
@@ -506,16 +585,18 @@ mod tests {
     use super::*;
     fn setup() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
-        let mut lib = Library::load_from(dir.path().to_str().unwrap());
+        let mut lib = Library::load_from(dir.path().to_str().unwrap()).unwrap();
         let fixture =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/illustrations.epub");
-        let e = lib.add_or_update(
-            dir.path().to_str().unwrap(),
-            "Book".into(),
-            fixture.to_string_lossy().into_owned(),
-            0,
-            None,
-        );
+        let e = lib
+            .add_or_update(
+                dir.path().to_str().unwrap(),
+                "Book".into(),
+                fixture.to_string_lossy().into_owned(),
+                0,
+                None,
+            )
+            .unwrap();
         (dir, e.id)
     }
     #[test]
@@ -612,7 +693,7 @@ mod tests {
                 seconds: 3600,
             }],
         });
-        config.save(root);
+        config.save(root).unwrap();
         export(root, "phone").unwrap();
         export(root, "phone").unwrap();
         let report = report(root, "phone", "2026-10-14", None).unwrap();
@@ -681,6 +762,7 @@ mod tests {
         );
         import(root, "phone", &[remote]).unwrap();
         let message = crate::sharing::protocol::Message::SyncProgress {
+            versions: Default::default(),
             entries: vec![],
             activity: snapshots(root, "phone").unwrap(),
         };

@@ -993,5 +993,10 @@
     "path": "desktop/src/ui/book_share.rs",
     "text": "城市漫游：街巷里的故事",
     "reason": "Debug-only generated book title fixture, not an application UI label."
+  },
+  {
+    "path": "desktop/src/native_corpus.rs",
+    "text": "文字 😀 中文",
+    "reason": "Exact canonical EPUB selection fixture excerpt in the opt-in diagnostic harness, not application interface copy."
   }
 ]

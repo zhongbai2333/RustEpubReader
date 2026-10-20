@@ -61,7 +61,7 @@ class CurlImageCheckActivity : ComponentActivity() {
                 Row(Modifier.fillMaxSize().background(Color.White)) {
                     repeat(if (spread) 2 else 1) {
                         Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                            ContentBlockView(blockIndex = 0, block = ContentBlock.Image(data = data, alt = "curl illustration"),
+                            ContentBlockView(chapterIndex = 0, blockIndex = 0, block = ContentBlock.Image(data = data, alt = "curl illustration"),
                                 imageMaxHeight = 300.dp, fontSize = 18f, textColor = Color.Black, linkColor = Color.Blue,
                                 fontFamily = FontFamily.Default, onLinkClick = {}, onTextTapped = {})
                         }

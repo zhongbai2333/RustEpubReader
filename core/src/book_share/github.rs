@@ -486,13 +486,16 @@ mod tests {
         )
         .unwrap()
         .epub_path;
-        let entry = crate::library::Library::load_from(root).add_or_update(
-            root,
-            "Private book title".into(),
-            epub.to_string_lossy().into_owned(),
-            0,
-            None,
-        );
+        let entry = crate::library::Library::load_from(root)
+            .unwrap()
+            .add_or_update(
+                root,
+                "Private book title".into(),
+                epub.to_string_lossy().into_owned(),
+                0,
+                None,
+            )
+            .unwrap();
         package::prepare(root, &[entry.id], &Work::new()).unwrap()
     }
     #[test]

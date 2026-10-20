@@ -161,7 +161,7 @@ impl ReaderApp {
             match event.result {
                 Ok(value) => {
                     if event.op == "accept" {
-                        self.library = reader_core::library::Library::load_from(&self.data_dir);
+                        self.reload_library();
                         self.book_share.result = Some((
                             value["imported"].as_u64().unwrap_or(0),
                             value["skipped"].as_u64().unwrap_or(0),

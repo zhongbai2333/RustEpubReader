@@ -1,6 +1,10 @@
 import SwiftUI
 import UIKit
 
+extension Color {
+    static let readerAppTint = Color(red: 0.18, green: 0.39, blue: 0.75)
+}
+
 extension View {
     @ViewBuilder func readerChromeTitleGlass(namespace: Namespace.ID) -> some View {
         if #available(iOS 26.0, *) {

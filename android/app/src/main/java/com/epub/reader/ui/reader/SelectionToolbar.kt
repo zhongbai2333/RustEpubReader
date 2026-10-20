@@ -20,6 +20,9 @@ import androidx.compose.ui.platform.TextToolbarStatus
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import com.zhongbai233.epub.reader.i18n.I18n
 import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
 
@@ -124,16 +127,16 @@ fun SelectionFloatingMenu(
                                     tint = iconClr,
                                 )
                             }
-                            ColorBubble(color = Color(0xFFFFC107)) {
+                            ColorBubble(color = Color(0xFFFFC107), label = I18n.t("common.color_yellow")) {
                                 onAction(SelectionAction.HIGHLIGHT, "Yellow")
                             }
-                            ColorBubble(color = Color(0xFF66BB6A)) {
+                            ColorBubble(color = Color(0xFF66BB6A), label = I18n.t("common.color_green")) {
                                 onAction(SelectionAction.HIGHLIGHT, "Green")
                             }
-                            ColorBubble(color = Color(0xFF42A5F5)) {
+                            ColorBubble(color = Color(0xFF42A5F5), label = I18n.t("common.color_blue")) {
                                 onAction(SelectionAction.HIGHLIGHT, "Blue")
                             }
-                            ColorBubble(color = Color(0xFFEF5350)) {
+                            ColorBubble(color = Color(0xFFEF5350), label = I18n.t("common.color_pink")) {
                                 onAction(SelectionAction.HIGHLIGHT, "Pink")
                             }
                         }
@@ -223,11 +226,12 @@ private fun SelectionMenuItem(
 }
 
 @Composable
-private fun ColorBubble(color: Color, onClick: () -> Unit) {
+private fun ColorBubble(color: Color, label: String, onClick: () -> Unit) {
     Box(
         modifier =
             Modifier.size(32.dp)
                 .background(color, androidx.compose.foundation.shape.CircleShape)
-                .clickable(onClick = onClick)
+                .semantics { contentDescription = label }
+                .clickable(role = Role.Button, onClick = onClick)
     )
 }

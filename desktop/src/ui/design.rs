@@ -542,6 +542,8 @@ pub enum Icon {
     Bookmark,
     More,
     Correction,
+    Export,
+    Import,
     Sun,
     Moon,
 }
@@ -556,6 +558,16 @@ pub fn paint_icon(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color3
         ));
     };
     match icon {
+        Icon::Export | Icon::Import => {
+            line(&[(-8., 1.), (-8., 8.), (8., 8.), (8., 1.)]);
+            if matches!(icon, Icon::Export) {
+                line(&[(0., 3.), (0., -9.)]);
+                line(&[(-4., -5.), (0., -9.), (4., -5.)]);
+            } else {
+                line(&[(0., -9.), (0., 3.)]);
+                line(&[(-4., -1.), (0., 3.), (4., -1.)]);
+            }
+        }
         Icon::Book => {
             line(&[
                 (-8., -8.),

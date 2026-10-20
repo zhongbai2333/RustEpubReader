@@ -86,4 +86,31 @@ class PaginationPositionTest {
             )
         }
     }
+
+    @Test
+    fun forcingSingleColumnReflowsWithoutLosingTextOrCanonicalResumePositions() {
+        val chapter = Chapter("Column reflow", paragraphs)
+        val block = 3
+        val offset = 417
+        val pageCounts = mutableListOf<Int>()
+        for (forced in listOf(false, true, false)) {
+            val columns = readerColumnCount(1280f, forced)
+            assertEquals(if (forced) 1 else 2, columns)
+            val padding = 1280f * 0.065f
+            val width = if (columns == 2) (1280f - padding * 3) / 2 else 1280f - padding * 2
+            val pages = paginateContent(chapter, 18f, 650.dp, width.dp, Density(1f), false, titleLineBreaks = ::titleLineBreaks)
+            verifySourcePositions(pages, chapter)
+            val page = pages.indexOfLast { leaf -> leaf.any { it.sourceBlockIndex == block && it.sourceCharOffset <= offset } }
+            assertTrue(page >= 0)
+            val fragment = pages[page].last { it.sourceBlockIndex == block && it.sourceCharOffset <= offset }
+            val length = (fragment.block as ContentBlock.Paragraph).spans.sumOf { it.text.length }
+            assertTrue(offset in fragment.sourceCharOffset until fragment.sourceCharOffset + length)
+            pageCounts += pages.size
+        }
+        assertTrue(pageCounts[1] < pageCounts[0])
+        assertEquals(pageCounts[0], pageCounts[2])
+        assertEquals(1, readerColumnCount(412f, false))
+        assertEquals(1, readerColumnCount(600f, false))
+        assertEquals(1, readerColumnCount(2560f, true))
+    }
 }

@@ -579,6 +579,27 @@ pub(crate) fn block_media_height(
         .sum::<f32>()
 }
 
+#[cfg(feature = "performance-checks")]
+pub(crate) fn diagnostic_visible(ctx: &egui::Context) -> (usize, usize, Vec<usize>) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|store| store.get_temp::<ImageCache>(egui::Id::new("epub_illustrations")))
+        .map_or((0, 0, vec![]), |cache| {
+            let mut pending = 0;
+            let mut failed = 0;
+            let mut ready = vec![];
+            for (key, image) in cache.entries {
+                if image.visible_pass == Some(pass) {
+                    pending += usize::from(image.pending.is_some() || image.texture.is_none());
+                    failed += usize::from(image.failed);
+                    if image.texture.is_some() {
+                        ready.push(key);
+                    }
+                }
+            }
+            (pending, failed, ready)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{

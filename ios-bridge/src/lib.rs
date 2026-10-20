@@ -1,5 +1,6 @@
-//! Owned JSON C ABI for Swift. No Rust references or tokens cross the boundary.
+//! Owned JSON C ABI for Swift. Only owned values and opaque operation IDs cross it.
 mod annotations;
+mod image_transport;
 mod nearby;
 mod sync;
 use reader_core::{
@@ -74,7 +75,7 @@ fn number(v: &Value, key: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("Invalid {key}"))
 }
 fn entry(root: &str, id: &str) -> Result<BookEntry, String> {
-    Library::load_from(root)
+    Library::load_from(root)?
         .books
         .into_iter()
         .find(|b| b.id == id)
@@ -103,6 +104,7 @@ fn book(root: &str, entry: &BookEntry) -> Result<Arc<EpubBook>, String> {
         &entry.path,
         &PathBuf::from(root).join(".cache/chapter-index"),
     )?;
+    reader_core::open_operation::check()?;
     if parsed.chapters.is_empty() {
         return Err("EPUB has no readable chapters".into());
     }
@@ -135,7 +137,39 @@ fn validate_position(
     }
     Ok(())
 }
+static OPEN_OPERATIONS: std::sync::LazyLock<reader_core::open_operation::Registry> =
+    std::sync::LazyLock::new(Default::default);
+
 fn dispatch(v: Value) -> Result<Value, String> {
+    // Control messages validate their namespace without doing disk IO or
+    // acquiring the mutation lock held by the worker they may cancel.
+    if !PathBuf::from(field(&v, "root")?).is_absolute() || !valid_device_id(field(&v, "device")?) {
+        return Err("Invalid storage or device identifier".into());
+    }
+    match v["op"].as_str() {
+        Some("image_transport") => image_transport::command(&v),
+        // These never queue behind DATA_LOCK, BOOK, or a chapter's decode lock.
+        Some("begin_open") => Ok(json!(OPEN_OPERATIONS.begin()?)),
+        Some("cancel_open") => {
+            OPEN_OPERATIONS.cancel(v["token"].as_u64().ok_or("Invalid opening identifier")?);
+            Ok(json!(true))
+        }
+        Some("finish_open") => {
+            OPEN_OPERATIONS.finish(v["token"].as_u64().ok_or("Invalid opening identifier")?);
+            Ok(json!(true))
+        }
+        Some("open" | "chapter") if v.get("open_token").is_some() => {
+            let token = OPEN_OPERATIONS.token(
+                v["open_token"]
+                    .as_u64()
+                    .ok_or("Invalid opening identifier")?,
+            )?;
+            token.run(|| dispatch_inner(v))
+        }
+        _ => dispatch_inner(v),
+    }
+}
+fn dispatch_inner(v: Value) -> Result<Value, String> {
     let root = field(&v, "root")?;
     let device = field(&v, "device")?;
     if !PathBuf::from(root).is_absolute() || !valid_device_id(device) {
@@ -143,6 +177,9 @@ fn dispatch(v: Value) -> Result<Value, String> {
     }
     std::fs::create_dir_all(root).map_err(|_| "Cannot create library storage")?;
     match field(&v, "op")? {
+        "backup" if v["action"].as_str() == Some("status") => {
+            reader_core::backup::command(root, &v)
+        }
         "shelf_cover" => {
             let id = field(&v, "id")?;
             // Snapshot lookup is brief. Cover decompression must not hold the
@@ -255,13 +292,15 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     Ok(json!({"ok":true}))
                 }
                 "annotations" => annotations::dispatch(root, &v),
+                "annotation_tools" => reader_core::annotations::command(root, &v),
+                "backup" => reader_core::backup::command(root, &v),
                 "activity_checkpoint" | "activity_report" => {
                     reader_core::reading_activity::dispatch(root, device, &v)
                 }
                 "remove" => annotations::remove(root, &v),
                 "archive" => reader_core::library::archive::dispatch(root, &v),
                 "rename" => {
-                    let mut library = Library::load_from(root);
+                    let mut library = Library::load_from(root)?;
                     let renamed =
                         library.rename_book(root, field(&v, "id")?, field(&v, "title")?)?;
                     Ok(entry_value(root, &renamed))
@@ -282,7 +321,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     let paths = reader_core::export::export_originals(&books, &directory)?;
                     Ok(json!(paths))
                 }
-                "library" => Ok(json!(Library::load_from(root)
+                "library" => Ok(json!(Library::load_from(root)?
                     .books
                     .iter()
                     .map(|entry| entry_value(root, entry))
@@ -329,7 +368,7 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     }
                     let hash =
                         EpubBook::file_hash(scratch.0.to_str().ok_or("Invalid import path")?)?;
-                    let mut lib = Library::load_from(root);
+                    let mut lib = Library::load_from(root)?;
                     if let Some(existing) = lib
                         .books
                         .iter()
@@ -344,11 +383,11 @@ fn dispatch(v: Value) -> Result<Value, String> {
                         scratch.0.to_string_lossy().into_owned(),
                         0,
                         None,
-                    );
+                    )?;
                     if !PathBuf::from(&e.path).starts_with(PathBuf::from(root).join("books"))
                         || EpubBook::file_hash(&e.path).ok().as_ref() != Some(&hash)
                     {
-                        before.save_to(root);
+                        before.save_to(root)?;
                         let _ = std::fs::remove_file(
                             PathBuf::from(root)
                                 .join("books")
@@ -407,8 +446,9 @@ fn dispatch(v: Value) -> Result<Value, String> {
                 "open" => {
                     let e = entry(root, field(&v, "id")?)?;
                     let parsed = book(root, &e)?;
-                    let mut library = Library::load_from(root);
-                    library.set_last_opened(root, &e.path, reader_core::now_millis());
+                    reader_core::open_operation::check()?;
+                    let mut library = Library::load_from(root)?;
+                    library.set_last_opened(root, &e.path, reader_core::now_millis())?;
                     let journal = SyncJournal::load(root, device);
                     journal.save(root)?;
                     let e = entry(root, &e.id)?;
@@ -427,41 +467,9 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     let e = entry(root, field(&v, "id")?)?;
                     let parsed = book(root, &e)?;
                     let index = number(&v, "chapter")?;
-                    let source = parsed
-                        .chapters
-                        .get(index)
-                        .ok_or("Reading chapter is out of range")?;
-                    let mut budget = 0usize;
-                    let mut blocks = Vec::new();
-                    for (index, offset, block) in parsed.render_chapter(index)? {
-                        let mut value = match block {
-                            ContentBlock::Image { data, alt, .. } => {
-                                if data.len().div_ceil(3).saturating_mul(4)
-                                    > 64 * 1024 * 1024 - budget
-                                {
-                                    return Err("EPUB chapter exceeds the 64 MiB limit".into());
-                                }
-                                json!({"type":"Image","data":reader_core::base64_encode(&data),"alt":alt})
-                            }
-                            _ => {
-                                let mut value = serde_json::to_value(block)
-                                    .map_err(|_| "Cannot encode chapter")?;
-                                // Native presentation is requested separately; default style
-                                // objects need not be repeated for every canonical paragraph.
-                                value.as_object_mut().unwrap().remove("native_style");
-                                value
-                            }
-                        };
-                        value["core_block"] = json!(index);
-                        value["core_char_offset"] = json!(offset);
-                        budget = budget.saturating_add(value.to_string().len());
-                        if budget > 64 * 1024 * 1024 {
-                            return Err("EPUB chapter exceeds the 64 MiB limit".into());
-                        }
-                        blocks.push(value);
-                    }
-                    Ok(json!({"title":source.title,"blocks":blocks}))
+                    image_transport::chapter(&parsed, index, None)
                 }
+
                 "save" => {
                     let e = entry(root, field(&v, "id")?)?;
                     let b = book(root, &e)?;
@@ -474,8 +482,12 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     let title = Some(b.chapters[chapter].title.clone());
                     let mut journal = SyncJournal::load(root, device);
                     journal.seed_entry(root, &e);
+                    let book_hash = Library::load_book_config(root, &e.id)?
+                        .and_then(|config| config.file_hash)
+                        .map(Ok)
+                        .unwrap_or_else(|| EpubBook::file_hash(&e.path))?;
                     let progress = ProgressEntry {
-                        book_hash: EpubBook::file_hash(&e.path)?,
+                        book_hash: book_hash.clone(),
                         title: e.title.clone(),
                         chapter,
                         block,
@@ -493,16 +505,17 @@ fn dispatch(v: Value) -> Result<Value, String> {
                     if changed && !accepted {
                         return Ok(entry_value(root, &e));
                     }
-                    let mut lib = Library::load_from(root);
-                    lib.apply_position(root, &e.path, chapter, title.clone(), block, offset);
+                    let mut lib = Library::load_from(root)?;
                     if changed {
-                        lib.set_last_opened(
-                            root,
-                            &e.path,
-                            v["edited_at"]
-                                .as_u64()
-                                .unwrap_or_else(reader_core::now_millis),
-                        );
+                        let record = reader_core::cloud_progress::VersionedProgress {
+                            progress: journal.own.progress[&book_hash].clone(),
+                            version: journal.own.progress_version(&book_hash),
+                        };
+                        if !lib.apply_versioned_position(root, &e.path, &record)? {
+                            return Ok(entry_value(root, &e));
+                        }
+                    } else {
+                        lib.apply_position(root, &e.path, chapter, title.clone(), block, offset)?;
                     }
                     let saved = entry(root, &e.id)?;
                     let config = Library::read_book_config(root, &e.id)
@@ -586,6 +599,30 @@ pub extern "C" fn reader_ios_cancel_sync() {
 mod tests {
     use super::TEST_SESSION_LOCK as TEST_LOCK;
     use super::*;
+    #[test]
+    fn corrupt_catalog_returns_an_error_envelope_then_recovers_a_valid_backup() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let catalog = dir.path().join("library.json");
+        std::fs::write(&catalog, b"damaged").unwrap();
+        assert_eq!(request(root, "library", json!({}))["ok"], false);
+        assert_eq!(std::fs::read(&catalog).unwrap(), b"damaged");
+        std::fs::write(
+            reader_core::storage::backup_path(&catalog),
+            b"{\"books\":[]}",
+        )
+        .unwrap();
+        let recovered = request(root, "library", json!({}));
+        assert_eq!(recovered["ok"], true);
+        assert_eq!(recovered["result"], json!([]));
+        assert!(std::fs::read_dir(dir.path()).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".corrupt.")));
+    }
+
     fn request(root: &str, op: &str, extra: Value) -> Value {
         let mut v = json!({"root":root,"device":"ios-test","op":op});
         if let Some(fields) = extra.as_object() {
@@ -601,6 +638,45 @@ mod tests {
             reader_ios_free(output);
             result
         }
+    }
+    #[test]
+    fn opening_cancellation_bypasses_mutation_lock_and_expires_without_poisoning_books() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let imported = request(root, "import", json!({"path":fixture(root)}));
+        assert_eq!(imported["ok"], true, "{imported}");
+        let id = imported["result"]["id"].as_str().unwrap();
+        let token = request(root, "begin_open", json!({}))["result"]
+            .as_u64()
+            .unwrap();
+        let lock = DATA_LOCK.lock().unwrap();
+        let own_root = root.to_owned();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(request(&own_root, "cancel_open", json!({"token":token})))
+                .unwrap()
+        });
+        let cancelled = rx.recv_timeout(std::time::Duration::from_secs(2));
+        drop(lock);
+        worker.join().unwrap();
+        assert_eq!(
+            cancelled.unwrap()["result"],
+            true,
+            "Cancellation queued behind the mutation lock"
+        );
+        let rejected = request(root, "open", json!({"id":id,"open_token":token}));
+        assert_eq!(rejected["error"], reader_core::open_operation::CANCELLED);
+        request(root, "finish_open", json!({"token":token}));
+        assert_eq!(
+            request(root, "open", json!({"id":id,"open_token":token}))["ok"],
+            false
+        );
+        assert_eq!(request(root, "open", json!({"id":id}))["ok"], true);
+        assert_eq!(
+            request(root, "chapter", json!({"id":id,"chapter":0}))["ok"],
+            true
+        );
     }
     fn fixture(root: &str) -> PathBuf {
         let text = PathBuf::from(root).join("fixture.txt");
@@ -780,7 +856,7 @@ mod tests {
         assert!(std::path::Path::new(e["path"].as_str().unwrap()).exists());
         assert_eq!(request(root, "remove", json!({"ids":[id]}))["ok"], true);
         assert!(source.exists());
-        assert!(Library::load_from(root).books.is_empty());
+        assert!(Library::load_from(root).unwrap().books.is_empty());
         assert!(PathBuf::from(root)
             .join("deleted-local-books.json")
             .exists());
@@ -877,7 +953,7 @@ mod tests {
             true
         );
         // Reopen the persistent files, not the Swift prototype's UserDefaults.
-        let saved = Library::load_from(root).books[0].clone();
+        let saved = Library::load_from(root).unwrap().books[0].clone();
         assert_eq!(
             (saved.last_chapter, saved.last_block, saved.last_char_offset),
             (chapter, block, 4)
@@ -897,8 +973,11 @@ mod tests {
             request(root, "import", json!({"path":path}))["result"]["id"],
             id
         );
-        assert_eq!(Library::load_from(root).books.len(), 1);
-        assert_eq!(Library::load_from(root).books[0].last_char_offset, 4);
+        assert_eq!(Library::load_from(root).unwrap().books.len(), 1);
+        assert_eq!(
+            Library::load_from(root).unwrap().books[0].last_char_offset,
+            4
+        );
         // Source may disappear: the app has its own copy.
         std::fs::remove_file(path).unwrap();
         *BOOK.lock().unwrap() = None;
@@ -927,7 +1006,7 @@ mod tests {
             request(root, "import", json!({"path":invalid}))["ok"],
             false
         );
-        assert_eq!(Library::load_from(root).books.len(), 2);
+        assert_eq!(Library::load_from(root).unwrap().books.len(), 2);
     }
     #[test]
     fn open_returns_only_catalog_and_single_chapters_keep_coordinates() {

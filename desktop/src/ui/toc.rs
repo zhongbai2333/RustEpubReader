@@ -167,7 +167,9 @@ impl ReaderApp {
                                             created_at: reader_core::now_secs(),
                                         });
                                     }
-                                    cfg.save(&self.data_dir);
+                                    if let Err(error) = cfg.save(&self.data_dir) {
+                                        self.error_msg = Some(error.to_string());
+                                    };
                                 }
                             }
                         });

@@ -211,6 +211,20 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
                     if forward { pager.view.transform = .identity }
                     else { source.transform = CGAffineTransform(translationX: source.bounds.width, y: 0) }
                 } completion: { _ in source.removeFromSuperview(); pager.view.transform = .identity; finish() }
+            } else if options.readingMode == .slide && animated {
+                // Arbitrary locator jumps can replace/rebase the page collection or
+                // stay within one leaf. UIKit's scroll completion can be lost when
+                // these follow each other. Publish nonanimated, then fade the paper;
+                // interactive/ordinary spread turns still use the native scroll pager.
+                let previous = pager.view.snapshotView(afterScreenUpdates: false)
+                previous?.frame = pager.view.frame; previous?.isUserInteractionEnabled = false
+                if let previous { view.addSubview(previous) }
+                pager.setViewControllers(next, direction: forward ? .forward : .reverse, animated: false)
+                if let previous {
+                    UIView.animate(withDuration: 0.22, animations: { previous.alpha = 0 }) { _ in
+                        previous.removeFromSuperview(); finish()
+                    }
+                } else { finish() }
             } else if options.readingMode.customTransition || !animated {
                 pager.setViewControllers(next, direction: forward ? .forward : .reverse, animated: false)
                 finish()
@@ -394,7 +408,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             footerSafeBottom = screenSafe.bottom
         }
         let contentWidth = size.width - horizontalInset * 2
-        dual = options.readingMode != .scroll && ReadingSpread.columns(width: contentWidth, height: size.height, margin: options.pageMargin, fontSize: options.fontSize) == 2
+        dual = options.readingMode != .scroll && ReadingSpread.columns(width: contentWidth, height: size.height, margin: options.pageMargin, fontSize: options.fontSize, forceSingleColumn: options.forceSingleColumn) == 2
         let leafWidth = dual ? contentWidth / 2 : contentWidth
         let textWidth = min(options.readingMode == .scroll ? options.fontSize * 34 : 620, leafWidth - options.pageMargin * 2)
         let textRect = CGRect(x: (leafWidth-textWidth)/2, y: verticalInset, width: textWidth, height: max(60, size.height-contentTopInset-verticalInset))
@@ -462,6 +476,8 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         ensurePagingThrough(index)
         let page = pages.indices.contains(index) ? pages[index] : nil
         let leaf = PaperController(index: index, page: page, paper: options.paper, selected: { [weak self] in self?.selected?($0) })
+        leaf.accessibleTurn = { [weak self] forward in self?.turnSpread(forward: forward) ?? false }
+        leaf.publicationNote = publicationNote; leaf.publicationLink = publicationLink; leaf.publicationEvent = publicationEvent
         leaf.speechHighlight = speechHighlight
         leaf.footerText = pageInfo(for: index)
         leaf.footerInk = options.ink; leaf.footerSafeBottom = footerSafeBottom
@@ -610,6 +626,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             surface.backgroundColor = self.options.backgroundImage == nil ? self.options.paper : .clear
             surface.isOpaque = self.options.backgroundImage == nil
             surface.selected = self.selected; surface.speechHighlight = self.speechHighlight
+            surface.publicationAccessibilityActions(note: self.publicationNote, link: self.publicationLink, action: self.publicationEvent)
         }
         restoreScroll(target, in: table, pixelY: pixelY)
         scheduleWarmup()
@@ -707,16 +724,16 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
         guard gesture.state == .ended else {return}
         turnSpread(forward: gesture.direction == .left)
     }
-    func turnSpread(forward: Bool) {
-        guard let pager, !transitioning else { return }
+    @discardableResult func turnSpread(forward: Bool) -> Bool {
+        guard let pager, !transitioning else { return false }
         var step = dual ? 2 : 1
         if forward && dual && currentIndex == 0 && pagingSpreadParity == 1 { step = 1 }
         if forward { ensurePagingThrough(currentIndex+step) }
         else { ensurePagingBefore(currentIndex, count: step) }
-        guard !chapterLoadFailed else {return}
+        guard !chapterLoadFailed else {return false}
         let next = forward ? currentIndex + step : max(0, currentIndex - step)
-        guard next != currentIndex else { return }
-        guard pages.indices.contains(next) else { return }
+        guard next != currentIndex else { return false }
+        guard pages.indices.contains(next) else { return false }
         transitioning = true; turning?()
         let finish: (Bool) -> Void = { [weak self, weak pager] completed in
             guard let self, pager === self.pager else { return }
@@ -726,6 +743,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             guard let shown = indices.filter({ self.pages.indices.contains($0) }).min() else { return }
             self.currentIndex = shown; self.anchor = self.pages[shown].anchor
             self.committed?(self.anchor); self.reportVisible(); self.trimPagingWindow(); self.rebuildIfNeeded(); self.applyQueuedNavigation()
+            if UIAccessibility.isVoiceOverRunning {UIAccessibility.post(notification:.pageScrolled,argument:self.pageInfo(for:self.currentIndex))}
         }
         if options.readingMode == .cover && !UIAccessibility.isReduceMotionEnabled,
            let previous = pager.view.snapshotView(afterScreenUpdates: false) {
@@ -749,6 +767,7 @@ final class NativeReadingController: UIViewController, UIPageViewControllerDataS
             pager.setViewControllers(controllers(at: next), direction: forward ? .forward : .reverse,
                                      animated: !UIAccessibility.isReduceMotionEnabled, completion: finish)
         }
+        return true
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -780,6 +799,10 @@ final class SpreadController: UIViewController {
 
 final class PaperController: UIViewController {
     private var surface: PaperSurface?
+    var accessibleTurn: ((Bool) -> Bool)?
+    var publicationNote: ((Int, String) -> Void)?
+    var publicationLink: ((Int, String) -> Void)?
+    var publicationEvent: ((Int, Int) -> Void)?
     // This label belongs to the leaf, so UIKit curls/slides and cover snapshots
     // carry the outgoing and incoming page numbers with their own paper.
     let pageFooter = UILabel()
@@ -810,6 +833,14 @@ final class PaperController: UIViewController {
         surface.speechHighlight = speechHighlight
         surface.isAccessibilityElement = page != nil
         surface.accessibilityIdentifier = "reading-page-\(index)"
+        surface.accessibleTurn = accessibleTurn
+        surface.publicationAccessibilityActions(note: publicationNote, link: publicationLink, action: publicationEvent)
+        if page != nil {
+            surface.accessibilityCustomActions = [
+                UIAccessibilityCustomAction(name: L("reader.next_page")) { [weak surface] _ in surface?.accessibleTurn?(true) ?? false },
+                UIAccessibilityCustomAction(name: L("reader.previous_page")) { [weak surface] _ in surface?.accessibleTurn?(false) ?? false }
+            ] + (surface.accessibilityCustomActions ?? [])
+        }
         if let page { surface.accessibilityLabel = BookTypesetter.accessibilityText(page.text.attributedSubstring(from:NSRange(location:page.range.location,length:page.range.length))) }
         if page?.surfaceHeight != nil {
             let scroll = UIScrollView()
@@ -850,6 +881,36 @@ final class PaperController: UIViewController {
     }
 }
 final class PaperSurface: UIView {
+    var accessibleTurn: ((Bool) -> Bool)?
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        guard let accessibleTurn else { return super.accessibilityScroll(direction) }
+        switch direction {
+        case .left, .next: return accessibleTurn(true)
+        case .right, .previous: return accessibleTurn(false)
+        default: return super.accessibilityScroll(direction)
+        }
+    }
+    func publicationAccessibilityActions(note: ((Int, String) -> Void)?, link: ((Int, String) -> Void)?, action: ((Int, Int) -> Void)?) {
+        guard let page else { accessibilityCustomActions = []; return }
+        let range = NSRange(location: page.range.location, length: page.range.length)
+        var actions = [UIAccessibilityCustomAction]()
+        for key in [BookTypesetter.noteKey, BookTypesetter.linkKey, BookTypesetter.actionKey] {
+            page.text.enumerateAttribute(key, in: range) { value, span, _ in
+                guard value != nil else { return }
+                // Footnote links also carry a normal link: expose one action.
+                if key == BookTypesetter.linkKey && page.text.attribute(BookTypesetter.noteKey, at: span.location, effectiveRange: nil) != nil { return }
+                let text = BookTypesetter.accessibilityText(page.text.attributedSubstring(from: span)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if key == BookTypesetter.noteKey, let href = value as? String, let note {
+                    actions.append(UIAccessibilityCustomAction(name: L("reader.publication_note") + ": " + (text.isEmpty ? href : text)) { _ in note(page.chapter, href); return true })
+                } else if key == BookTypesetter.linkKey, let href = value as? String, let link {
+                    actions.append(UIAccessibilityCustomAction(name: L("toolbar.open") + ": " + (text.isEmpty ? href : text)) { _ in link(page.chapter, href); return true })
+                } else if key == BookTypesetter.actionKey, let node = value as? Int, let action, !text.isEmpty {
+                    actions.append(UIAccessibilityCustomAction(name: text) { _ in action(page.chapter, node); return true })
+                }
+            }
+        }
+        accessibilityCustomActions = actions
+    }
     var page: ReadingPage? { didSet { cachedFrame = nil; setNeedsDisplay() } }
     var cachedFrame: CTFrame?
     var backgroundImage: UIImage? { didSet { if oldValue !== backgroundImage { setNeedsDisplay() } } }
@@ -1018,7 +1079,7 @@ final class ReadingScrollViewport: UIScrollView {
         let maximum = max(minimum, contentSize.height - bounds.height + adjustedContentInset.bottom)
         let next = min(maximum, max(minimum, contentOffset.y + delta))
         guard abs(next - contentOffset.y) > 0.5 else { return false }
-        setContentOffset(CGPoint(x: 0, y: next), animated: true)
+        setContentOffset(CGPoint(x: 0, y: next), animated: !UIAccessibility.isReduceMotionEnabled)
         UIAccessibility.post(notification: .pageScrolled, argument: nil)
         return true
     }
@@ -1059,7 +1120,7 @@ final class ReadingScrollViewport: UIScrollView {
                 surface.accessibilityCustomActions = [
                     UIAccessibilityCustomAction(name: L("reader.scroll_down")) { [weak self] _ in self?.accessibilityScroll(.down) ?? false },
                     UIAccessibilityCustomAction(name: L("reader.scroll_up")) { [weak self] _ in self?.accessibilityScroll(.up) ?? false }
-                ]
+                ] + (surface.accessibilityCustomActions ?? [])
             }
             if existing == nil {
                 surfaces[key] = surface; addSubview(surface)

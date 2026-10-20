@@ -103,6 +103,12 @@ impl ReaderApp {
                             .stroke(egui::Stroke::NONE),
                         |ui| {
                             design::menu_style(ui);
+                            if design::menu_item(ui, self.i18n.t("backup.title"), false, false)
+                                .clicked()
+                            {
+                                self.backup.show = true;
+                                ui.memory_mut(|m| m.close_popup());
+                            }
                             if design::menu_item(ui, self.i18n.t("about.title"), false, false)
                                 .clicked()
                             {

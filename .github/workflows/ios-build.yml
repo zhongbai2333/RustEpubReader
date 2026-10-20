@@ -89,13 +89,21 @@ jobs:
 
             - name: Build Apple Silicon simulator application
               run: |
-                  xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
+                  xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderUITests \
                     -configuration Debug -sdk iphonesimulator \
                     -destination 'generic/platform=iOS Simulator' \
                     -clonedSourcePackagesDirPath target/ios-ci/Packages \
                     -disableAutomaticPackageResolution \
                     -derivedDataPath target/ios-ci/Simulator \
-                    CODE_SIGN_IDENTITY=- ARCHS=arm64 build 2>&1 | tee target/ios-ci/logs/simulator.log
+                    CODE_SIGN_IDENTITY=- ARCHS=arm64 READER_APP_BUNDLE_ID=local.reader.columns build-for-testing 2>&1 | tee target/ios-ci/logs/simulator.log
+
+            - name: Run native iPad reading smoke checks
+              run: |
+                  READER_UI_MANIFEST="$(python3 -c 'import glob; paths=glob.glob("target/ios-ci/Simulator/Build/Products/ReaderUITests_*.xctestrun"); assert len(paths)==1, paths; print(paths[0])')"
+                  python3 scripts/check-mobile-runtime.py ios \
+                    --app target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
+                    --timeout 240 --output target/ios-ci/runtime --with-corpus --with-selection \
+                    --xctestrun "$READER_UI_MANIFEST"
 
             - name: Archive unsigned iPhone / iPad Release
               run: |
@@ -141,4 +149,12 @@ jobs:
               with:
                   name: ${{ inputs.artifact-prefix || 'ios-build' }}-logs
                   path: target/ios-ci/logs/*.log
+                  if-no-files-found: ignore
+
+            - name: Upload native runtime reports and screenshots
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-runtime
+                  path: target/ios-ci/runtime/*
                   if-no-files-found: ignore

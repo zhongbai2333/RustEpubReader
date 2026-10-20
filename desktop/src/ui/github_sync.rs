@@ -32,7 +32,6 @@ pub struct CloudSyncState {
     failed: Vec<TransferFailure>,
     pub needs_auth: bool,
     pub status: String,
-    pub offered: Option<ProgressEntry>,
     pub completed_at: Option<u64>,
     account: Option<String>,
 }
@@ -51,7 +50,6 @@ impl CloudSyncState {
     pub fn stop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
         self.pending = None;
-        self.offered = None;
         self.last_attempt = None;
         self.account = None;
         self.phase = None;
@@ -82,6 +80,9 @@ impl ReaderApp {
         } else {
             self.github_start_sync_device_flow();
         }
+    }
+    pub(crate) fn cloud_invalidate_journal(&mut self) {
+        self.cloud_sync.journal = None;
     }
     pub(crate) fn cloud_journal_init(&mut self) {
         if self.cloud_sync.journal.is_some() {
@@ -118,12 +119,66 @@ impl ReaderApp {
         self.cloud_sync.dirty_at = Some(Instant::now());
         self.cloud_save_journal();
     }
-    pub fn cloud_record_progress(&mut self, p: ProgressEntry) {
+    pub(crate) fn cloud_stored_progress(
+        &mut self,
+        hash: &str,
+    ) -> Option<reader_core::cloud_progress::VersionedProgress> {
         self.cloud_journal_init();
-        if self.cloud_sync.journal.as_mut().unwrap().record(p) {
-            self.cloud_sync.dirty_at = Some(Instant::now());
-            self.cloud_save_journal();
+        let journal = self.cloud_sync.journal.as_ref()?;
+        Some(reader_core::cloud_progress::VersionedProgress {
+            progress: journal.own.progress.get(hash)?.clone(),
+            version: journal.own.progress_version(hash),
+        })
+    }
+    pub(crate) fn cloud_accept_progress(
+        &mut self,
+        record: &reader_core::cloud_progress::VersionedProgress,
+    ) -> bool {
+        self.cloud_journal_init();
+        let journal = self.cloud_sync.journal.as_mut().unwrap();
+        if journal
+            .own
+            .progress
+            .contains_key(&record.progress.book_hash)
+            && journal.own.progress_version(&record.progress.book_hash) > record.version
+        {
+            return false;
         }
+        if journal
+            .own
+            .progress
+            .get(&record.progress.book_hash)
+            .is_some_and(|p| {
+                reader_core::cloud_progress::same_position(p, &record.progress)
+                    && p.chapter_title == record.progress.chapter_title
+                    && journal.own.progress_version(&record.progress.book_hash) == record.version
+            })
+        {
+            return true;
+        }
+        journal.accept(record);
+        self.cloud_sync.dirty_at = Some(Instant::now());
+        self.cloud_save_journal();
+        true
+    }
+    pub(crate) fn cloud_record_progress(
+        &mut self,
+        p: ProgressEntry,
+        event_ms: u64,
+    ) -> Option<reader_core::cloud_progress::VersionedProgress> {
+        self.cloud_journal_init();
+        let journal = self.cloud_sync.journal.as_mut().unwrap();
+        let hash = p.book_hash.clone();
+        if !journal.record_at(p, event_ms) {
+            return None;
+        }
+        let record = reader_core::cloud_progress::VersionedProgress {
+            progress: journal.own.progress[&hash].clone(),
+            version: journal.own.progress_version(&hash),
+        };
+        self.cloud_sync.dirty_at = Some(Instant::now());
+        self.cloud_save_journal();
+        Some(record)
     }
     pub fn cloud_start_sync(&mut self) {
         if self.book_share.receive && self.book_share.busy {
@@ -132,7 +187,8 @@ impl ReaderApp {
         self.cloud_start_phase(SyncPhase::Progress, false);
     }
     fn cloud_start_phase(&mut self, phase: SyncPhase, retry_failed: bool) {
-        if !self.github_sync_enabled
+        if self.backup.busy()
+            || !self.github_sync_enabled
             || self.cloud_sync.pending.is_some()
             || (phase == SyncPhase::Progress
                 && self.cloud_sync.throttled
@@ -383,7 +439,6 @@ impl ReaderApp {
                         .iter()
                         .map(|(h, r)| (h.clone(), r.progress.clone()))
                         .collect::<std::collections::BTreeMap<_, _>>();
-                    self.cloud_sync.offered = None;
                     if let Err(error) = reader_core::library::archive::ArchiveStore::apply_verified(
                         &self.data_dir,
                         &mut self.library,
@@ -440,13 +495,15 @@ impl ReaderApp {
                             {
                                 restored
                             } else {
-                                self.library.add_or_update(
-                                    &self.data_dir,
-                                    book.info.title.clone(),
-                                    checked.path().to_string_lossy().into_owned(),
-                                    p.map_or(0, |p| p.chapter),
-                                    p.and_then(|p| p.chapter_title.clone()),
-                                )
+                                self.library
+                                    .add_or_update(
+                                        &self.data_dir,
+                                        book.info.title.clone(),
+                                        checked.path().to_string_lossy().into_owned(),
+                                        p.map_or(0, |p| p.chapter),
+                                        p.and_then(|p| p.chapter_title.clone()),
+                                    )
+                                    .map_err(|_| "Cannot save downloaded book")?
                             };
                             if !std::path::Path::new(&entry.path)
                                 .starts_with(std::path::Path::new(&self.data_dir).join("books"))
@@ -456,7 +513,9 @@ impl ReaderApp {
                                     != Some(&book.info.hash)
                             {
                                 self.library = previous;
-                                self.library.save_to(&self.data_dir);
+                                if let Err(error) = self.library.save_to(&self.data_dir) {
+                                    self.error_msg = Some(error.to_string());
+                                };
                                 return Err("Cannot save downloaded book");
                             }
                             Ok(())
@@ -529,6 +588,18 @@ impl ReaderApp {
                             {
                                 continue;
                             }
+                            match self.library.apply_versioned_position(
+                                &self.data_dir,
+                                path,
+                                &record,
+                            ) {
+                                Ok(true) => {}
+                                Ok(false) => continue,
+                                Err(error) => {
+                                    self.error_msg = Some(error);
+                                    continue;
+                                }
+                            }
                             accepted = true;
                             if self.current_book_hash.as_ref() == Some(&hash)
                                 && self.book.is_some()
@@ -537,17 +608,10 @@ impl ReaderApp {
                                 self.pending_sync_updates
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner())
-                                    .push(p.clone());
-                            }
-                            if changed {
-                                self.library.apply_position(
-                                    &self.data_dir,
-                                    path,
-                                    p.chapter,
-                                    p.chapter_title.clone(),
-                                    p.block,
-                                    p.char_offset,
-                                );
+                                    .push(reader_core::sharing::CommittedProgress {
+                                        path: path.clone(),
+                                        record: record.clone(),
+                                    });
                             }
                         }
                         if accepted {
@@ -555,7 +619,11 @@ impl ReaderApp {
                             journal.applied.insert(hash, p.timestamp);
                         }
                     }
-                    journal.apply_recent(&self.data_dir, &mut self.library, &result.snapshots);
+                    if let Err(error) =
+                        journal.apply_recent(&self.data_dir, &mut self.library, &result.snapshots)
+                    {
+                        self.error_msg = Some(error.to_string());
+                    };
                     if !progress_phase {
                         self.cloud_sync.completed_at = Some(reader_core::now_secs());
                     }
@@ -578,6 +646,28 @@ impl ReaderApp {
                                 &self.cloud_sync.failed.len().to_string()
                             )
                         ));
+                    }
+                    if let Err(error) = github_sync::apply_cached_annotations(
+                        &self.data_dir,
+                        &self.github_username.clone().unwrap_or_default(),
+                    ) {
+                        result.annotation_error.get_or_insert(error);
+                    }
+                    if let Some(config) = self.book_config.as_mut() {
+                        match reader_core::library::Library::load_book_config(
+                            &self.data_dir,
+                            &config.id,
+                        ) {
+                            Ok(Some(updated)) => *config = updated,
+                            Err(error) => {
+                                result.annotation_error.get_or_insert(error);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(error) = result.annotation_error {
+                        self.cloud_sync.status.push_str(&format!(" · {error}"));
+                        self.cloud_sync.retry_delay = 30;
                     }
                     if let Some(error) = result.terminal_error {
                         self.cloud_sync.throttled = error.starts_with("RETRY_AFTER:");
@@ -776,29 +866,6 @@ impl ReaderApp {
                     .clicked()
                 {
                     self.cloud_start_phase(SyncPhase::Progress, true);
-                }
-            }
-            let offer = self
-                .cloud_sync
-                .offered
-                .clone()
-                .filter(|p| self.current_book_hash.as_ref() == Some(&p.book_hash));
-            if let Some(p) = offer {
-                ui.label(format!("{} · {} / {}", p.title, p.chapter + 1, p.block + 1));
-                if ui.button(self.i18n.t("cloud.apply")).clicked() {
-                    // Never navigate beyond the parsed chapter list.
-                    if self
-                        .book
-                        .as_ref()
-                        .is_some_and(|b| p.chapter < b.chapters.len())
-                    {
-                        self.pending_sync_updates
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .push(p.clone());
-
-                        self.cloud_sync.offered = None;
-                    }
                 }
             }
         }

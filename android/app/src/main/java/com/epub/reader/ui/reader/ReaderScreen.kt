@@ -142,6 +142,8 @@ fun ReaderScreen(
     onSaveNote: (String, String) -> Unit = { _, _ -> },
     // 排版
     lineSpacing: Float = 1.5f,
+    forceSingleColumn: Boolean = false,
+    onForceSingleColumnChange: (Boolean) -> Unit = {},
     paraSpacing: Float = 0.5f,
     textIndent: Int = 2,
     titleFontScale: Float = 1.5f,
@@ -195,6 +197,7 @@ fun ReaderScreen(
     correctionContributionContent: @Composable (() -> Unit) -> Unit = {},
     toolsOverlayVisible: Boolean = false,
     onInitialLayout: () -> Unit = {},
+    onSelectionObserved: ReaderSelectionObserver? = null,
     introductionRequested: Boolean = false,
     onIntroductionShown: () -> Unit = {},
     returnPoint: com.zhongbai233.epub.reader.model.ReaderReturnPoint? = null,
@@ -498,6 +501,10 @@ fun ReaderScreen(
             }
         }
         return sb.toString()
+    }
+
+    if (onSelectionObserved != null) SideEffect {
+        onSelectionObserved(blockLayoutRegistry, textSelection, textSelection?.let { getSelectedText(it) }.orEmpty())
     }
 
     fun updateSelectionMenuFromCurrentSelection() {
@@ -1003,6 +1010,7 @@ fun ReaderScreen(
             } else {
                 // 翻页模式: 左右点击翻页, 中间点击切换控制栏
                 PageModeContent(
+                    forceSingleColumn = forceSingleColumn,
                     onContentPrepared = { contentPrepared=true },
                     chapter = chapter,
                     currentChapter = currentChapter,
@@ -1265,6 +1273,8 @@ fun ReaderScreen(
                     contributionContent={correctionContributionContent {showSettingsSheet=false}},
                     onDismiss={showSettingsSheet=false},
                 ) else { ReaderSettingsSheet(
+                    forceSingleColumn = forceSingleColumn,
+                    onForceSingleColumnChange = onForceSingleColumnChange,
                     appearanceLinkage = appearanceLinkage,
                     systemAppearanceDark = systemAppearanceDark,
                     ambientAppearanceDark = ambientAppearanceDark,

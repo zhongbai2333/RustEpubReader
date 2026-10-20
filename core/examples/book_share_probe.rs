@@ -77,13 +77,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let epub =
             reader_core::txt::convert_txt_to_epub(&source, Path::new(root), &Default::default())?
                 .epub_path;
-        library.add_or_update(
-            root,
-            "跨端分享测试 Book".into(),
-            epub.to_string_lossy().into(),
-            0,
-            None,
-        );
+        library
+            .add_or_update(
+                root,
+                "跨端分享测试 Book".into(),
+                epub.to_string_lossy().into(),
+                0,
+                None,
+            )
+            .unwrap();
         library = Library::read_snapshot(root)?;
     }
     let ids = library

@@ -20,13 +20,16 @@ fn fixture(root: &str, title: &str, large: bool) -> String {
     let epub = crate::txt::convert_txt_to_epub(&text, Path::new(root), &Default::default())
         .unwrap()
         .epub_path;
-    let entry = crate::library::Library::load_from(root).add_or_update(
-        root,
-        title.into(),
-        epub.to_string_lossy().into_owned(),
-        0,
-        None,
-    );
+    let entry = crate::library::Library::load_from(root)
+        .unwrap()
+        .add_or_update(
+            root,
+            title.into(),
+            epub.to_string_lossy().into_owned(),
+            0,
+            None,
+        )
+        .unwrap();
     entry.id
 }
 fn ticket(key: [u8; 32], address: String) -> Ticket {
@@ -151,11 +154,13 @@ fn importing_duplicates_preserves_progress_annotations_identity_and_original() {
         .zip(&received.paths)
         .map(|(x, p)| (x.title.clone(), x.hash.clone(), p.clone()))
         .collect::<Vec<_>>();
-    let mut library = crate::library::Library::load_from(receiver);
+    let mut library = crate::library::Library::load_from(receiver).unwrap();
     let (first, skipped) = library.import_shared_books(receiver, &list).unwrap();
     assert_eq!((first.len(), skipped), (1, 0));
     assert_ne!(first[0].id, id);
-    library.update_position(receiver, &first[0].path, 1, Some("继续".into()), 3, 2);
+    library
+        .update_position(receiver, &first[0].path, 1, Some("继续".into()), 3, 2)
+        .unwrap();
     let cfgpath = b.path().join("books").join(format!("{}.json", first[0].id));
     let before = fs::read(&cfgpath).unwrap();
     let books_before = serde_json::to_value(&library).unwrap();
@@ -303,7 +308,13 @@ fn reading_a_migrated_catalog_does_not_rewrite_config_or_future_annotations() {
             .len(),
         1
     );
-    assert_eq!(crate::library::Library::load_from(root).books.len(), 1);
+    assert_eq!(
+        crate::library::Library::load_from(root)
+            .unwrap()
+            .books
+            .len(),
+        1
+    );
     assert_eq!(fs::read(&config).unwrap(), before);
     let catalog = dir.path().join("library.json");
     fs::write(&catalog, b"corrupt catalog").unwrap();

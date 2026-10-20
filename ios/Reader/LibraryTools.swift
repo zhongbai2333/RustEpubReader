@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 // Keep the visible shelf stable while live reading metadata changes underneath it.
 final class StableShelfOrder {
@@ -158,6 +159,9 @@ struct ReleaseInfo: Decodable { let tag_name: String; let draft: Bool; let prere
         return parts.map { Int($0)! } + Array(repeating: 0, count: 4-parts.count)
     }
     func check(manual: Bool = false) async {
+        #if READER_PERFORMANCE_CHECK
+        if CommandLine.arguments.contains("--measure-release-shelf") { return }
+        #endif
         guard !checking else { return }
         if !manual {
             guard UserDefaults.standard.object(forKey: "reader.releaseNotice") as? Bool ?? true else { return }
@@ -408,8 +412,10 @@ struct LibrarySortDisplayView: View {
 }
 
 struct LibrarySettingsView: View {
-    private enum Page: Hashable { case appearance, language, about }
+    private enum Page: Hashable { case appearance, language, about, backup }
     @ObservedObject var releases: ReleaseNotice
+    @ObservedObject var library: PreviewLibrary
+    @ObservedObject var account: GitHubAccount
     let count: Int
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -423,9 +429,10 @@ struct LibrarySettingsView: View {
             Form {
                 NavigationLink(value: Page.appearance) { Label(L("ui.appearance"), systemImage: "circle.lefthalf.filled") }
                 NavigationLink(value: Page.language) { Label(L("ui.language"), systemImage: "globe") }
+                NavigationLink(value: Page.backup) { Label(L("backup.title"), systemImage: "externaldrive") }
                 NavigationLink(value: Page.about) { Label(L("about.title"), systemImage: "info.circle") }
             }.navigationTitle(L("settings.title")).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L("manage.done")) { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(L(path.last == .backup ? "settings.close" : "manage.done")) { dismiss() }.disabled(library.busy) } }
                 .navigationDestination(for: Page.self) { page in
                     switch page {
                     case .appearance:
@@ -433,9 +440,11 @@ struct LibrarySettingsView: View {
                             .navigationTitle(L("ui.appearance")).navigationBarTitleDisplayMode(.inline)
                     case .language: ReaderLanguagePicker(embedded: true)
                     case .about: AboutView(releases: releases, count: count, embedded: true)
+                    case .backup: LibraryBackupView(library:library,account:account,onNeedsExpanded:{detent = .large})
                     }
                 }
         }.readerPanelSurface(appearance: appearance)
+            .interactiveDismissDisabled(library.busy)
             .environment(\.colorScheme, appearance.appDark ? .dark : .light)
             .presentationDetents([.height(300), .medium, .large], selection: $detent)
             .presentationDragIndicator(.visible)

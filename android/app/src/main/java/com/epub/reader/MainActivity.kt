@@ -68,6 +68,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val vm: ReaderViewModel = viewModel()
+            DisposableEffect(vm) {
+                if (BuildConfig.READER_PERFORMANCE_CHECKS && intent.getBooleanExtra("shelf_performance", false)) {
+                    Class.forName("com.zhongbai233.epub.reader.ui.reader.ShelfPerformanceHooks")
+                        .getMethod("attach", MainActivity::class.java, ReaderViewModel::class.java).invoke(null, this@MainActivity, vm)
+                }
+                onDispose { }
+            }
             val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
             val ambient = com.zhongbai233.epub.reader.ui.reader.automaticReadingAppearance(vm.appearanceLinkage.usesAmbient)
             SideEffect { vm.updateAppearanceSignals(systemDark,ambient.dark,ambient.available) }
@@ -167,6 +174,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
 
     var showLibrarySettings by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var preparingBookExport by remember { mutableStateOf(false) }
+    var preparingAnnotationExport by remember { mutableStateOf(false) }
 
     val currentBook = vm.currentBook
     val readerPaper=androidx.compose.ui.graphics.Color(vm.readingAppearance.style.variant(readerDark).paper)
@@ -282,7 +290,10 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             syncMeter = vm.githubSyncMeter,
                             archivedBooks = vm.archivedBooks,
                             onArchiveAction = vm::archiveAction,
-                            onCoverBounds = { uri, rect -> if(rect.width>0 && rect.height>0) bookMotion.covers[uri]=rect else bookMotion.covers.remove(uri) },
+                            onCoverBounds = { uri, rect ->
+                                if(rect.width>0 && rect.height>0) bookMotion.covers[uri]=rect else bookMotion.covers.remove(uri)
+                                vm.libraryRenderObserver?.coverBounds(uri, rect)
+                            },
                             onOpenSync = { homeTab = 1 },
                             onOpenStatistics = { vm.openStatistics(false) },
                             books = vm.books,
@@ -393,6 +404,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
 
                         ReaderScreen(
                             onInitialLayout = { bookMotion.ready=true },
+                            onSelectionObserved = vm.readerSelectionObserver,
                             introductionRequested = !vm.readerIntroductionSeen && !bookMotion.active && !bookMotion.showShelf,
                             onIntroductionShown = vm::markReaderIntroductionShown,
                             correctionContributionContent = { closeCorrection ->
@@ -480,6 +492,8 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             textIndent = vm.textIndent,
                             titleFontScale = vm.titleFontScale,
                             onLineSpacingChange = { vm.updateLineSpacing(it) },
+                            forceSingleColumn = vm.forceSingleColumn,
+                            onForceSingleColumnChange = vm::updateForceSingleColumn,
                             onParaSpacingChange = { vm.updateParaSpacing(it) },
                             onTextIndentChange = { vm.updateTextIndent(it) },
                             onTitleFontScaleChange = { vm.updateTitleFontScale(it) },
@@ -553,9 +567,50 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                         // 标注面板
                         if (vm.showAnnotationsPanel) {
                             AnnotationsSheet(
+                                loadDetails={key->
+                                    val id=vm.currentBookId ?: error("Missing annotation book")
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        val request=org.json.JSONObject().put("action","details").put("id",id).put("key",key)
+                                        val envelope=org.json.JSONObject(RustBridge.annotationTools(context.filesDir.absolutePath,request.toString()) ?: error("Missing annotation details"))
+                                        check(envelope.getBoolean("ok")) {envelope.optString("error")}
+                                        envelope.getJSONObject("result")
+                                    }
+                                },
+                                exporting = preparingAnnotationExport,
+                                onExport = {
+                                    val bookId=vm.currentBookId
+                                    if (bookId!=null && !preparingAnnotationExport) {
+                                        preparingAnnotationExport=true
+                                        scope.launch {
+                                            try {
+                                                val uri=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                    val request=org.json.JSONObject().put("action","export").put("id",bookId)
+                                                    val envelope=org.json.JSONObject(RustBridge.annotationTools(context.filesDir.absolutePath,request.toString()) ?: error("Missing annotation export"))
+                                                    check(envelope.getBoolean("ok")) {envelope.optString("error")}
+                                                    val document=envelope.getJSONObject("result")
+                                                    val name=document.getString("filename")
+                                                    check(name==java.io.File(name).name && name.endsWith(".md")) {"Invalid annotation export filename"}
+                                                    val dir=java.io.File(context.cacheDir,"exports/${java.util.UUID.randomUUID()}")
+                                                    check(dir.mkdirs()) {"Cannot create annotation export directory"}
+                                                    val file=java.io.File(dir,name);file.writeText(document.getString("markdown"),Charsets.UTF_8)
+                                                    androidx.core.content.FileProvider.getUriForFile(context,"${context.packageName}.exports",file)
+                                                }
+                                                val intent=android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                    type="text/markdown";putExtra(android.content.Intent.EXTRA_STREAM,uri)
+                                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    clipData=android.content.ClipData.newUri(context.contentResolver,"Markdown",uri)
+                                                }
+                                                context.startActivity(android.content.Intent.createChooser(intent,I18n.t("annotations.export_markdown")))
+                                            } catch(cancelled:kotlinx.coroutines.CancellationException) {throw cancelled}
+                                            catch(error:Exception) {vm.reportExportFailure(error.message ?: I18n.t("annotations.export_failed"))}
+                                            finally {preparingAnnotationExport=false}
+                                        }
+                                    }
+                                },
                                 bookmarks = vm.bookConfig?.bookmarks ?: emptyList(),
                                 highlights = vm.bookConfig?.highlights ?: emptyList(),
                                 notes = vm.bookConfig?.notes ?: emptyList(),
+                                concurrentNotes = vm.bookConfig?.concurrentNotes ?: emptySet(),
                                 corrections = vm.bookConfig?.corrections ?: emptyList(),
                                 chapters = book.chapterTitles,
                                 onNavigateToChapter = { ch, block, offset ->
@@ -566,7 +621,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                                     vm.removeBookmarkForChapter(chapter)
                                 },
                                 onRemoveHighlight = { hlId -> vm.removeHighlight(hlId) },
-                                onEditNote = { hlId, content -> vm.saveNote(hlId, content) },
+                                onEditNote = {hlId,content,original,completed->vm.saveNote(hlId,content,original,completed)},
                                 onDismiss = { vm.showAnnotationsPanel = false },
                             )
                         }

@@ -62,7 +62,9 @@ impl ReaderApp {
             // Persist the count so we don't prompt again at this level
             if let Some(cfg) = &mut self.book_config {
                 cfg.last_contribute_prompt_count = resolved_count;
-                cfg.save(&self.data_dir);
+                if let Err(error) = cfg.save(&self.data_dir) {
+                    self.error_msg = Some(error.to_string());
+                };
             }
         }
     }

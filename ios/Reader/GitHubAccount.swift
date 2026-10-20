@@ -120,7 +120,7 @@ import SwiftUI
         generation += 1; reader_ios_cancel_sync(); syncTask?.cancel(); syncTask = nil; syncing = false; syncStatus = ""
     }
     func syncNow(retryFailed: Bool = false) {
-        guard enabled, foreground, !syncing, let credential, Date() >= nextAllowed else { return }
+        guard enabled, foreground, !syncing, !library.busy, let credential, Date() >= nextAllowed else { return }
         let intent = generation, epoch = reader_ios_epoch(), client = library.client
         let countContributions = self.countContributions
         syncing = true; error = nil; meter = nil
@@ -153,10 +153,11 @@ import SwiftUI
                     guard intent == generation else { return }
                     if phase == "progress" { uploadedProgressRevision=progressRevision }
                     summary = result; library.offer = result.offer
-                    await library.reload(); lastSync = Date()
+                    await library.reload(); library.annotationSyncRevision &+= 1; lastSync = Date()
                     UserDefaults.standard.set(lastSync, forKey: "github.lastSync.\(credential.owner.lowercased())")
                     if phase == "books" { nextAutoSync = Date().addingTimeInterval(Double(result.next_retry_after ?? 300)) }
                     if let failure = result.terminal_error { throw CoreFailure(message: failure) }
+                    if let failure = result.annotation_error { throw CoreFailure(message: failure) }
                 }
             } catch {
                 guard intent == generation, !Task.isCancelled else { return }

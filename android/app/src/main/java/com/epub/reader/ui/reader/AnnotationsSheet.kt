@@ -1,5 +1,9 @@
 package com.zhongbai233.epub.reader.ui.reader
 
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,19 +31,62 @@ import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnnotationsSheet(
+    exporting: Boolean,
+    onExport: () -> Unit,
+    loadDetails: suspend (String)->org.json.JSONObject,
     bookmarks: List<BookmarkDto>,
     highlights: List<HighlightDto>,
     notes: List<NoteDto>,
+    concurrentNotes: Set<String>,
     corrections: List<CorrectionDto>,
     chapters: List<String>,
     onNavigateToChapter: (Int, Int, Int) -> Unit,
     onRemoveBookmark: (Int) -> Unit,
     onRemoveHighlight: (String) -> Unit,
-    onEditNote: (String, String) -> Unit,
+    onEditNote: (String, String, String?, (Boolean)->Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selectedTab by remember { mutableIntStateOf(0) }
+    val scope=rememberCoroutineScope()
+    var detailsKey by remember {mutableStateOf<String?>(null)}
+    var details by remember {mutableStateOf<org.json.JSONObject?>(null)}
+    var detailsError by remember {mutableStateOf<String?>(null)}
+    var detailsGeneration by remember {mutableLongStateOf(0L)}
+    val showDetails:(String)->Unit={key->
+        detailsGeneration++;val generation=detailsGeneration
+        detailsKey=key;details=null;detailsError=null
+        scope.launch {
+            try {val result=loadDetails(key);if(generation==detailsGeneration) details=result}
+            catch(cancelled:kotlinx.coroutines.CancellationException) {throw cancelled}
+            catch(error:Exception) {if(generation==detailsGeneration) detailsError=error.message ?: I18n.t("common.error_unknown")}
+        }
+    }
+    if(detailsKey!=null) {
+        AlertDialog(onDismissRequest={detailsGeneration++;detailsKey=null},title={Text(I18n.t("annotations.sync_details"))},
+            text={
+                Column(Modifier.heightIn(max=420.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                    if(detailsError!=null) Text(detailsError!!)
+                    else if(details==null) CircularProgressIndicator()
+                    else {
+                        val result=details!!
+                        if(result.optBoolean("concurrent")) Text(I18n.t("annotations.concurrent_versions"),fontWeight=FontWeight.SemiBold)
+                        val versions=result.getJSONArray("revisions")
+                        for(index in 0 until versions.length()) {
+                            val version=versions.getJSONObject(index)
+                            val source=if(version.optBoolean("local")) I18n.t("annotations.local_source") else if(version.isNull("source")) I18n.t("annotations.legacy_source") else version.getString("source").take(12)
+                            val time=version.optLong("edited_at",0L)
+                            val date=if(time in 1L..253402300799L) java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM,java.text.DateFormat.SHORT,I18n.locale).format(java.util.Date(time*1000)) else I18n.t("annotations.unknown_time")
+                            Text("${I18n.t("annotations.source_device")}: $source")
+                            Text("${I18n.t("annotations.edited_at")}: $date")
+                            val payload=version.optJSONObject("value")?.optJSONObject("data")
+                            if(payload?.has("content")==true) SelectionContainer {Text(payload.getString("content"))}
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            },confirmButton={TextButton(onClick={detailsGeneration++;detailsKey=null}) {Text(I18n.t("manage.done"))}})
+    }
     val tabs =
         listOf(
             I18n.t("annotations.bookmarks"),
@@ -55,12 +102,13 @@ fun AnnotationsSheet(
         Column(
             modifier = Modifier.fillMaxWidth().fillMaxHeight(0.75f).padding(horizontal = 16.dp)
         ) {
-            Text(
-                I18n.t("annotations.title"),
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
+            Row(Modifier.fillMaxWidth().padding(bottom=12.dp),verticalAlignment=Alignment.CenterVertically) {
+                Text(I18n.t("annotations.title"),fontSize=18.sp,fontWeight=FontWeight.Bold,modifier=Modifier.weight(1f))
+                if(exporting) CircularProgressIndicator(Modifier.size(24.dp),strokeWidth=2.dp)
+                else IconButton(onClick=onExport,enabled=bookmarks.isNotEmpty()||highlights.isNotEmpty()) {
+                    Icon(Icons.AutoMirrored.Filled.OpenInNew,contentDescription=I18n.t("annotations.export_accessibility"))
+                }
+            }
 
             TabRow(selectedTabIndex = selectedTab) {
                 tabs.forEachIndexed { index, title ->
@@ -81,15 +129,18 @@ fun AnnotationsSheet(
                         chapters = chapters,
                         onNavigate = onNavigateToChapter,
                         onRemove = onRemoveBookmark,
+                        onDetails=showDetails,
                     )
                 1 ->
                     HighlightsTab(
                         highlights = highlights,
                         notes = notes,
+                        concurrentNotes = concurrentNotes,
                         chapters = chapters,
                         onNavigate = onNavigateToChapter,
                         onRemove = onRemoveHighlight,
                         onEditNote = onEditNote,
+                        onDetails=showDetails,
                     )
                 2 ->
                     CorrectionsTab(
@@ -108,6 +159,7 @@ private fun BookmarksTab(
     chapters: List<String>,
     onNavigate: (Int, Int, Int) -> Unit,
     onRemove: (Int) -> Unit,
+    onDetails:(String)->Unit,
 ) {
     if (bookmarks.isEmpty()) {
         EmptyHint(I18n.t("annotations.no_bookmarks"))
@@ -140,11 +192,12 @@ private fun BookmarksTab(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        "${I18n.t("annotations.chapter")} ${bm.chapter + 1}",
+                        I18n.tf1("annotations.chapter", (bm.chapter + 1).toString()),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                IconButton(onClick={onDetails("b:${bm.chapter}:${bm.block}")}) {Icon(Icons.Default.Info,contentDescription=I18n.t("annotations.sync_details"))}
                 IconButton(onClick = { onRemove(bm.chapter) }) {
                     Icon(
                         Icons.Default.Close,
@@ -162,10 +215,12 @@ private fun BookmarksTab(
 private fun HighlightsTab(
     highlights: List<HighlightDto>,
     notes: List<NoteDto>,
+    concurrentNotes: Set<String>,
     chapters: List<String>,
     onNavigate: (Int, Int, Int) -> Unit,
     onRemove: (String) -> Unit,
-    onEditNote: (String, String) -> Unit,
+    onDetails:(String)->Unit,
+    onEditNote: (String, String, String?, (Boolean)->Unit) -> Unit,
 ) {
     if (highlights.isEmpty()) {
         EmptyHint(I18n.t("annotations.no_highlights"))
@@ -174,6 +229,8 @@ private fun HighlightsTab(
 
     var editingNoteId by remember { mutableStateOf<String?>(null) }
     var editingNoteText by remember { mutableStateOf("") }
+    var originalNote by remember {mutableStateOf<String?>(null)}
+    var savingNote by remember {mutableStateOf(false)}
 
     LazyColumn {
         items(highlights.sortedBy { it.chapter * 10000 + it.startBlock }) { hl ->
@@ -196,12 +253,14 @@ private fun HighlightsTab(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
+                    IconButton(onClick={onDetails(if(note==null) "h:${hl.id}" else "n:${hl.id}")}) {Icon(Icons.Default.Info,contentDescription=I18n.t("annotations.sync_details"))}
                     IconButton(
                         onClick = {
                             editingNoteId = hl.id
+                            originalNote=note?.content
                             editingNoteText = note?.content ?: ""
                         },
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(48.dp),
                     ) {
                         Icon(
                             if (note != null) Icons.Default.Edit
@@ -212,7 +271,7 @@ private fun HighlightsTab(
                     }
                     IconButton(
                         onClick = { onRemove(hl.id) },
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(48.dp),
                     ) {
                         Icon(
                             Icons.Default.Close,
@@ -222,6 +281,7 @@ private fun HighlightsTab(
                     }
                 }
 
+                if (hl.id in concurrentNotes) Text(I18n.t("annotations.concurrent_versions"),fontSize=12.sp,color=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(start=20.dp))
                 if (note != null) {
                     Text(
                         note.content,
@@ -236,10 +296,11 @@ private fun HighlightsTab(
                 // 笔记编辑弹窗
                 if (editingNoteId == hl.id) {
                     AlertDialog(
-                        onDismissRequest = { editingNoteId = null },
+                        onDismissRequest = { if(!savingNote) editingNoteId = null },
                         title = { Text(I18n.t("annotations.edit_note")) },
                         text = {
                             OutlinedTextField(
+                                enabled=!savingNote,
                                 value = editingNoteText,
                                 onValueChange = { editingNoteText = it },
                                 modifier = Modifier.fillMaxWidth(),
@@ -250,18 +311,20 @@ private fun HighlightsTab(
                         },
                         confirmButton = {
                             TextButton(
+                                enabled=!savingNote,
                                 onClick = {
-                                    onEditNote(hl.id, editingNoteText)
-                                    editingNoteId = null
+                                    savingNote=true
+                                    onEditNote(hl.id,editingNoteText,originalNote) {success->savingNote=false;if(success) editingNoteId=null}
                                 },
                                 shape = ReaderGeometry.Shape,
                                 contentPadding = ReaderGeometry.ButtonPadding,
                             ) {
-                                Text(I18n.t("common.save"))
+                                Text(I18n.t(if(hl.id in concurrentNotes) "annotations.save_merge" else "common.save"))
                             }
                         },
                         dismissButton = {
                             TextButton(
+                                enabled=!savingNote,
                                 onClick = { editingNoteId = null },
                                 shape = ReaderGeometry.Shape,
                                 contentPadding = ReaderGeometry.ButtonPadding,

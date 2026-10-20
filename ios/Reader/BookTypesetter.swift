@@ -90,7 +90,10 @@ enum BookTypesetter {
                 else if let scale = native?.size { size = min(96, max(6, font.pointSize * CGFloat(scale))) }
                 else { size = heading ? font.pointSize * CGFloat(max(1.1, 1.75 - Double(block.level ?? 1) * 0.1)) : font.pointSize }
                 paragraph.minimumLineHeight = size * max((native?.line ?? options.lineHeight) * (native?.inline ?? []).filter {!$0.hidden}.compactMap(\.size).reduce(1,max), (native?.ruby ?? []).isEmpty ? 1 : 1.7)
-                paragraph.maximumLineHeight = paragraph.minimumLineHeight
+                // Ruby contributes native ascent beyond the base font's line
+                // metrics. Keep the chosen spacing as a minimum, without
+                // clipping annotations into adjacent lines at large sizes.
+                paragraph.maximumLineHeight = (native?.ruby ?? []).isEmpty ? paragraph.minimumLineHeight : 0
                 paragraph.firstLineHeadIndent = left + (heading ? 0 : (native?.indent_length?.resolve(size,rect.width) ?? size * (native?.indent ?? options.firstLineIndent)))
                 if heading { paragraph.alignment = .center; if native?.margin_bottom == nil { paragraph.paragraphSpacing = font.pointSize * (native?.after ?? (24/font.pointSize)) } }
                 if let align=native?.align {paragraph.alignment=align=="center" ? .center : align=="right" ? .right : align=="justify" ? .justified : .left}

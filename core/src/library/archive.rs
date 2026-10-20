@@ -59,6 +59,7 @@ pub struct ArchiveStore {
 }
 impl ArchiveStore {
     pub fn load(root: &str) -> Result<Self, String> {
+        let _access = super::access::lock(root)?;
         match std::fs::read(Path::new(root).join("book-lifecycle.json")) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(_) => Err("Cannot read book archive".into()),
@@ -94,6 +95,7 @@ impl ArchiveStore {
         }
     }
     fn save(&self, root: &str) -> Result<(), String> {
+        let _access = super::access::lock(root)?;
         std::fs::create_dir_all(root).map_err(|_| "Cannot save book archive")?;
         super::write_rename_file(
             &Path::new(root).join("book-lifecycle.json"),
@@ -150,6 +152,7 @@ impl ArchiveStore {
     }
     /// Validate the entire selection before persisting any changes. Archiving never unlinks files.
     pub fn archive(root: &str, library: &mut Library, paths: &[String]) -> Result<usize, String> {
+        let _access = super::access::lock(root)?;
         if paths.is_empty() || paths.len() > 1000 {
             return Err("Invalid book selection".into());
         }
@@ -196,10 +199,11 @@ impl ArchiveStore {
                 .iter()
                 .map(|(entry, _)| entry.path.clone())
                 .collect(),
-        );
+        )?;
         Ok(selected.len())
     }
     pub fn change(root: &str, hash: &str, state: BookState) -> Result<(), String> {
+        let _access = super::access::lock(root)?;
         if !matches!(state, BookState::Active | BookState::Deleted) {
             return Err("Invalid archive action".into());
         }
@@ -212,7 +216,7 @@ impl ArchiveStore {
             .ok_or("Book is no longer archived")?;
         store.revise(record.lifecycle.book, state, record.entry);
         store.save(root)?;
-        let mut library = Library::load_from(root);
+        let mut library = Library::load_from(root)?;
         store.reconcile(root, &mut library, &Default::default())?;
         Ok(())
     }
@@ -223,6 +227,7 @@ impl ArchiveStore {
         snapshots: &[DeviceSnapshot],
         own: &DeviceSnapshot,
     ) -> Result<(), String> {
+        let _access = super::access::lock(root)?;
         Self::apply_verified(root, library, snapshots, own, &Default::default())
     }
     pub fn apply_verified(
@@ -232,6 +237,7 @@ impl ArchiveStore {
         own: &DeviceSnapshot,
         confirmed: &std::collections::BTreeSet<String>,
     ) -> Result<(), String> {
+        let _access = super::access::lock(root)?;
         let mut states = own.lifecycle.clone();
         for snapshot in snapshots {
             merge_states(&mut states, &snapshot.lifecycle);
@@ -279,7 +285,7 @@ impl ArchiveStore {
             .filter(|r| r.lifecycle.state != BookState::Active)
             .filter_map(|r| r.entry.as_ref().map(|e| e.path.clone()))
             .collect();
-        library.hide_paths(root, &hidden);
+        library.hide_paths(root, &hidden)?;
         for (hash, record) in &self.records {
             if record.lifecycle.state != BookState::Active {
                 if let Some(entry) = &record.entry {
@@ -297,7 +303,7 @@ impl ArchiveStore {
                 }
             } else if let Some(entry) = &record.entry {
                 if Path::new(&entry.path).is_file() {
-                    library.restore_entry(root, entry.clone());
+                    library.restore_entry(root, entry.clone())?;
                 }
             }
         }
@@ -343,6 +349,7 @@ pub fn restore_download(
     hash: &str,
     bytes: &[u8],
 ) -> Result<Option<BookEntry>, String> {
+    let _access = super::access::lock(root)?;
     let store = ArchiveStore::load(root)?;
     let Some(record) = store.records.get(hash) else {
         return Ok(None);
@@ -363,7 +370,7 @@ pub fn restore_download(
         return Err("Cannot restore archived book".into());
     }
     super::write_rename_file(&expected, bytes)?;
-    library.restore_entry(root, entry.clone());
+    library.restore_entry(root, entry.clone())?;
     Ok(Some(entry.clone()))
 }
 
@@ -375,6 +382,7 @@ pub fn restore_download_file(
     hash: &str,
     source: &Path,
 ) -> Result<Option<BookEntry>, String> {
+    let _access = super::access::lock(root)?;
     let store = ArchiveStore::load(root)?;
     let Some(record) = store.records.get(hash) else {
         return Ok(None);
@@ -395,7 +403,7 @@ pub fn restore_download_file(
         return Err("Cannot restore archived book".into());
     }
     if crate::file_hash(&expected.to_string_lossy()).is_ok_and(|v| v == hash) {
-        library.restore_entry(root, entry.clone());
+        library.restore_entry(root, entry.clone())?;
         return Ok(Some(entry.clone()));
     }
     let temporary = expected.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -411,11 +419,12 @@ pub fn restore_download_file(
         let _ = std::fs::remove_file(&temporary);
     }
     result?;
-    library.restore_entry(root, entry.clone());
+    library.restore_entry(root, entry.clone())?;
     Ok(Some(entry.clone()))
 }
 
 pub fn dispatch(root: &str, request: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let _access = super::access::lock(root)?;
     match request["action"].as_str().unwrap_or("list") {
         "list" => {
             let values = ArchiveStore::load(root)?
@@ -440,7 +449,7 @@ pub fn dispatch(root: &str, request: &serde_json::Value) -> Result<serde_json::V
                 .iter()
                 .map(|v| v.as_str().map(String::from).ok_or("Invalid book selection"))
                 .collect::<Result<Vec<_>, _>>()?;
-            let count = ArchiveStore::archive(root, &mut Library::load_from(root), &paths)?;
+            let count = ArchiveStore::archive(root, &mut Library::load_from(root)?, &paths)?;
             Ok(serde_json::json!({"count":count}))
         }
         "restore" | "delete" => {
@@ -468,13 +477,9 @@ mod tests {
         let root = dir.path().to_str().unwrap();
         let bytes = b"archive fixture".to_vec();
         let mut library = Library::default();
-        let entry = library.add_or_update_from_bytes(
-            root,
-            "Book".into(),
-            &bytes,
-            3,
-            Some("Chapter".into()),
-        );
+        let entry = library
+            .add_or_update_from_bytes(root, "Book".into(), &bytes, 3, Some("Chapter".into()))
+            .unwrap();
         (dir, library, entry, bytes)
     }
     #[test]
@@ -482,12 +487,12 @@ mod tests {
         let (dir, mut library, entry, _) = setup();
         let root = dir.path().to_str().unwrap();
         ArchiveStore::archive(root, &mut library, std::slice::from_ref(&entry.path)).unwrap();
-        assert!(Library::load_from(root).books.is_empty());
+        assert!(Library::load_from(root).unwrap().books.is_empty());
         assert!(Path::new(&entry.path).exists());
         let store = ArchiveStore::load(root).unwrap();
         let hash = store.records.keys().next().unwrap();
         ArchiveStore::change(root, hash, BookState::Active).unwrap();
-        let restored = Library::load_from(root).books.remove(0);
+        let restored = Library::load_from(root).unwrap().books.remove(0);
         assert_eq!(restored.id, entry.id);
         assert_eq!(restored.last_chapter, 3);
     }
@@ -578,8 +583,10 @@ mod tests {
         let hash = crate::bytes_hash(&bytes);
         ArchiveStore::archive(root, &mut library, std::slice::from_ref(&entry.path)).unwrap();
         ArchiveStore::change(root, &hash, BookState::Active).unwrap();
-        library = Library::load_from(root);
-        library.hide_paths(root, &std::collections::HashSet::from([entry.path.clone()]));
+        library = Library::load_from(root).unwrap();
+        library
+            .hide_paths(root, &std::collections::HashSet::from([entry.path.clone()]))
+            .unwrap();
         std::fs::remove_file(&entry.path).unwrap();
         let staged = dir.path().join("download.partial");
         std::fs::write(&staged, b"corrupt").unwrap();
@@ -645,18 +652,17 @@ mod tests {
         let old = dir.path().join("before");
         let new = dir.path().join("after");
         let mut library = Library::default();
-        let entry = library.add_or_update_from_bytes(
-            old.to_str().unwrap(),
-            "Book".into(),
-            b"relocation",
-            3,
-            None,
-        );
+        let entry = library
+            .add_or_update_from_bytes(old.to_str().unwrap(), "Book".into(), b"relocation", 3, None)
+            .unwrap();
         ArchiveStore::archive(old.to_str().unwrap(), &mut library, &[entry.path]).unwrap();
         let hash = crate::bytes_hash(b"relocation");
         std::fs::rename(&old, &new).unwrap();
         ArchiveStore::change(new.to_str().unwrap(), &hash, BookState::Active).unwrap();
-        let restored = Library::load_from(new.to_str().unwrap()).books.remove(0);
+        let restored = Library::load_from(new.to_str().unwrap())
+            .unwrap()
+            .books
+            .remove(0);
         assert_eq!(restored.id, entry.id);
         assert!(Path::new(&restored.path).is_file());
         assert_eq!(restored.last_chapter, 3);

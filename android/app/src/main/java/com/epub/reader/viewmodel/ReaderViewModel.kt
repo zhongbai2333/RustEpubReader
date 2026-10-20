@@ -1,5 +1,8 @@
 package com.zhongbai233.epub.reader.viewmodel
 
+import com.zhongbai233.epub.reader.ui.reader.readerSourceText
+import com.zhongbai233.epub.reader.ui.reader.unicodeScalarOffset
+import com.zhongbai233.epub.reader.ui.reader.utf16TextOffset
 import android.app.Application
 import android.net.Uri
 import android.net.wifi.WifiManager
@@ -9,7 +12,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -24,6 +26,7 @@ import com.zhongbai233.epub.reader.util.UpdateChecker
 import com.zhongbai233.epub.reader.tts.TtsManager
 import com.zhongbai233.epub.reader.csc.CscEngine
 import com.zhongbai233.epub.reader.csc.CorrectionInfo
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,8 +45,6 @@ import com.zhongbai233.epub.reader.util.GitHubTokenStore
 import com.zhongbai233.epub.reader.util.resolveResumeChapter
 import com.zhongbai233.epub.reader.util.canApplyGithubSync
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 
 data class TxtChapterPreview(val title: String, val lineStart: Int, val charCount: Int)
 
@@ -69,9 +70,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private val library = Library(context, loadImmediately = false)
     private var libraryStartup: Job? = null
     private var libraryRefresh: Job? = null
-    private val coverRequests = mutableSetOf<String>()
-    private val coverWorkers = Semaphore(2)
-    private val coverAccess = java.util.LinkedHashMap<String, Unit>(96, 0.75f, true)
     private var currentBookUri: String? = null
     val originalBookPath: String get() = currentBookUri.orEmpty()
     val currentBookId: String?
@@ -88,7 +86,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var githubSyncMeter by mutableStateOf<JSONObject?>(null)
         private set
     private var githubMeterJob: Job? = null
-    val coverCache = mutableStateMapOf<String, ByteArray?>()
+    private val shelfCovers by lazy {
+        ShelfCoverLoader(viewModelScope, {uri->books.any {it.uri==uri}},
+            {uri->libraryRenderObserver?.coverRequested(uri)},
+            {uri->RustBridge.getShelfCover(dataDir, uri)?.let {Base64.decode(it, Base64.DEFAULT)}})
+    }
+    val coverCache get() = shelfCovers.cache
+    internal var libraryRenderObserver: com.zhongbai233.epub.reader.ui.library.LibraryRenderObserver? = null
+    internal var readerSelectionObserver: com.zhongbai233.epub.reader.ui.reader.ReaderSelectionObserver? = null
 
     // ---- �Ķ���״̬ ----
     var currentBook by mutableStateOf<EpubBook?>(null)
@@ -132,7 +137,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 val at = block.coerceIn(0, source.blocks.lastIndex.coerceAtLeast(0))
                 val content = source.blocks.getOrNull(at)
                 val text = when (content) { is ContentBlock.Paragraph -> content.spans.joinToString("") { it.text }; is ContentBlock.Heading -> content.spans.joinToString("") { it.text }; else -> "" }
-                val offset = if (scalarOffset) text.offsetByCodePoints(0, charOffset.coerceIn(0, text.codePointCount(0, text.length))) else charOffset.coerceIn(0, text.length)
+                val offset = if (scalarOffset) utf16TextOffset(text, charOffset) else charOffset.coerceIn(0, text.length)
                 val target = ReaderLocation(chapter, at, offset)
                 val origin = ReaderReturnPoint(ReaderLocation(currentChapter, currentBlock, currentCharOffset),
                     book.chapterTitles.getOrNull(currentChapter) ?: "", currentPageLabel)
@@ -199,6 +204,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     // ---- 排版设置 ----
     var lineSpacing by mutableFloatStateOf(1.5f)
+        private set
+    var forceSingleColumn by mutableStateOf(false)
         private set
     var paraSpacing by mutableFloatStateOf(0.5f)
         private set
@@ -282,6 +289,31 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     // ---- ����״̬ ----
     var isLoading by mutableStateOf(false)
         private set
+    var backupBusy by mutableStateOf(false)
+        private set
+    val backupAvailable: Boolean get() = !backupBusy && !isLoading && currentBook == null && !githubSyncRunning && !autoSyncInProgress
+    suspend fun <T> backupFileOperation(block: suspend ()->T): T {
+        check(backupAvailable) { I18n.t("backup.wait") }
+        backupBusy=true
+        try { return withContext(kotlinx.coroutines.NonCancellable) {block()} }
+        finally {backupBusy=false}
+    }
+    suspend fun backupOperation(action: String, path: String, expected: String?=null): JSONObject = backupFileOperation {
+            libraryStartup?.join()
+            val result=withContext(Dispatchers.IO) {
+                val request=JSONObject().put("action",action).put("path",path)
+                if(expected!=null) request.put("expected_manifest",expected)
+                val envelope=JSONObject(RustBridge.backupTools(dataDir,request.toString()) ?: error("Missing backup result"))
+                check(envelope.optBoolean("ok")) {envelope.optString("error")}
+                if(action=="restore") library.reload()
+                envelope.getJSONObject("result")
+            }
+            if(action=="restore") { loadLibrary(); localProgressRevision++ }
+            result
+    }
+    suspend fun backupProgress(): JSONObject? = withContext(Dispatchers.IO) {
+        runCatching { JSONObject(RustBridge.backupTools(dataDir,"{\"action\":\"status\"}") ?: return@runCatching null).optJSONObject("result") }.getOrNull()
+    }
     var errorMessage by mutableStateOf<String?>(null)
         private set
     var loadingMessage by mutableStateOf<String?>(null)
@@ -435,10 +467,16 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             try { startSharingServer() } catch (_: Exception) { }
         }
         libraryStartup = viewModelScope.launch {
-            withContext(Dispatchers.IO) { library.reload(); scanBooksDir() }
-            loadLibrary()
-            val lastUri = prefs.getString(PrefKeys.LAST_BOOK_URI, null)
-            if (lastUri != null) openFromPath(lastUri, prefs.getInt(PrefKeys.LAST_BOOK_CHAPTER, 0))
+            try {
+                withContext(Dispatchers.IO) { library.reload(); scanBooksDir() }
+                loadLibrary()
+                val lastUri = prefs.getString(PrefKeys.LAST_BOOK_URI, null)
+                if (lastUri != null) openFromPath(lastUri, prefs.getInt(PrefKeys.LAST_BOOK_CHAPTER, 0))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                addLog("Library load failed: ${failure.message}")
+                errorMessage = I18n.t("library.error_read_failed")
+            }
         }
         try { loadPairedDevices() } catch (_: Exception) { }
         try { startDiscovery() } catch (_: Exception) { }
@@ -485,6 +523,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         const val GITHUB_TOKEN = "github_token"
         const val GITHUB_USERNAME = "github_username"
         const val LINE_SPACING = "line_spacing"
+        const val FORCE_SINGLE_COLUMN = "force_single_column"
         const val PARA_SPACING = "para_spacing"
         const val TEXT_INDENT = "text_indent"
         const val TITLE_FONT_SCALE = "title_font_scale"
@@ -538,6 +577,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         githubSyncNeedsAuth = githubSyncEnabled && githubToken == null
         githubUsername = if (githubToken != null) prefs.getString(PrefKeys.GITHUB_USERNAME, null) else null
         lineSpacing = prefs.getFloat(PrefKeys.LINE_SPACING, 1.5f).coerceIn(1.0f, 3.0f)
+        forceSingleColumn = prefs.getBoolean(PrefKeys.FORCE_SINGLE_COLUMN, false)
         paraSpacing = prefs.getFloat(PrefKeys.PARA_SPACING, 0.5f).coerceIn(0.0f, 2.0f)
         textIndent = prefs.getInt(PrefKeys.TEXT_INDENT, 2).coerceIn(0, 4)
         titleFontScale = prefs.getFloat(PrefKeys.TITLE_FONT_SCALE, 1.5f).coerceIn(1.0f, 2.5f)
@@ -569,6 +609,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             .putBoolean(PrefKeys.SHOW_IMMERSIVE_STATUS, showImmersiveStatus)
             .putBoolean(PrefKeys.AUTO_START_SHARING, autoStartSharing)
             .putFloat(PrefKeys.LINE_SPACING, lineSpacing)
+            .putBoolean(PrefKeys.FORCE_SINGLE_COLUMN, forceSingleColumn)
             .putFloat(PrefKeys.PARA_SPACING, paraSpacing)
             .putInt(PrefKeys.TEXT_INDENT, textIndent)
             .putFloat(PrefKeys.TITLE_FONT_SCALE, titleFontScale)
@@ -608,93 +649,31 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }.also { libraryRefresh = it }
     }
 
-    /** Read synced progress from PeerStore and apply chapter numbers to library entries */
+    /** Rust validates and commits selected records before notifying the native viewport. */
     private suspend fun applySyncedProgress() {
+        val revision = withContext(Dispatchers.Main) { localProgressRevision }
         val progressJson = RustBridge.getSyncedProgress(dataDir) ?: return
-        try {
-            val arr = org.json.JSONArray(progressJson)
-            if (arr.length() == 0) return
-            data class SyncedProgress(
-                val chapter: Int,
-                val block: Int,
-                val charOffset: Int,
-                val chapterTitle: String?,
-                val timestamp: Long,
-            )
-
-            // Build hash -> progress map from synced progress
-            val progressMap = mutableMapOf<String, SyncedProgress>()
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val hash = obj.getString("book_hash")
-                val chapter = obj.getInt("chapter")
-                val block = obj.optInt("block", 0)
-                val charOffset = obj.optInt("char_offset", 0)
-                val chapterTitle = obj.optString("chapter_title", "")
-                    .takeIf { it.isNotBlank() }
-                val ts = obj.optLong("timestamp", 0)
-                progressMap[hash] = SyncedProgress(chapter, block, charOffset, chapterTitle, ts)
-            }
-            // Match library books by hash
-            var updated = 0
-            val newestRemote = progressMap.values.maxOf { it.timestamp }
-            for (book in library.books.toList()) {
-                // There cannot be a newer matching position; avoid reading every
-                // EPUB just to hash it again on an ordinary pull-to-refresh.
-                if (book.lastOpened / 1000L >= newestRemote) continue
-                val hash = RustBridge.fileHash(book.uri) ?: continue
-                val remote = progressMap[hash] ?: continue
-                val shouldUpdate =
-                    book.lastChapter != remote.chapter ||
-                        book.lastBlock != remote.block ||
-                        book.lastCharOffset != remote.charOffset ||
-                        (book.lastChapter == remote.chapter &&
-                            remote.chapterTitle != null &&
-                            remote.chapterTitle != book.lastChapterTitle)
-
-                if (shouldUpdate && remote.timestamp > book.lastOpened / 1000L) {
-                    library.applyRemotePosition(
-                        book.uri,
-                        remote.chapter,
-                        remote.chapterTitle,
-                        remote.block,
-                        remote.charOffset
-                    )
-                    if (book.uri == currentBookUri) withContext(Dispatchers.Main) {
-                        if (currentBookUri == book.uri) goToPosition(remote.chapter, remote.block, remote.charOffset, remote = true, scalarOffset = true)
-                    }
-                    updated++
+        val arr = org.json.JSONArray(progressJson)
+        if (arr.length() == 0) return
+        library.reload()
+        for (i in 0 until arr.length()) {
+            val remote = arr.getJSONObject(i)
+            val path = remote.getString("path")
+            val chapter = remote.getInt("chapter")
+            val block = remote.optInt("block", 0)
+            val offset = remote.optInt("char_offset", 0)
+            withContext(Dispatchers.Main) {
+                if (currentBookUri == path && localProgressRevision == revision) {
+                    val source = currentBook?.chapters?.getOrNull(currentChapter)?.blocks?.getOrNull(currentBlock)
+                    val scalar = unicodeScalarOffset(readerSourceText(source), currentCharOffset)
+                    if (currentChapter != chapter || currentBlock != block || scalar != offset) goToPosition(chapter, block, offset, remote = true, scalarOffset = true)
                 }
             }
-            if (updated > 0) {
-                addLog("applySyncedProgress: updated $updated book(s)")
-            }
-        } catch (e: Exception) {
-            addLog("applySyncedProgress error: ${e.message}")
         }
+        addLog("applySyncedProgress: committed ${arr.length()} position(s)")
     }
 
-    fun requestCover(uri: String) {
-        if (coverCache.containsKey(uri)) { coverAccess[uri] = Unit; return }
-        if (!coverRequests.add(uri)) return
-        viewModelScope.launch {
-            try {
-                val decoded = coverWorkers.withPermit {
-                    withContext(Dispatchers.IO) {
-                        runCatching { RustBridge.getShelfCover(dataDir, uri)?.let { Base64.decode(it, Base64.DEFAULT) } }.getOrNull()
-                    }
-                }
-                if (books.any { it.uri == uri }) {
-                    // Bounded encoded thumbnails; full-resolution covers never enter this cache.
-                    coverAccess[uri] = Unit
-                    while (coverAccess.size > 96) {
-                        val oldest = coverAccess.keys.first(); coverAccess.remove(oldest); coverCache.remove(oldest)
-                    }
-                    coverCache[uri] = decoded
-                }
-            } finally { coverRequests.remove(uri) }
-        }
-    }
+    fun requestCover(uri: String) { shelfCovers.request(uri) }
 
     fun reportExportFailure(detail: String = "") { errorMessage = I18n.tf1("book.export_failed", detail) }
 
@@ -853,7 +832,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun openFromUri(uri: Uri) {
-        viewModelScope.launch {
+        cancelPendingBookOpen()
+        val generation=openingSession.generation
+        openingSession.job = viewModelScope.launch {
             libraryStartup?.join()
             isLoading = true
             loadingMessage = I18n.t("common.opening_book")
@@ -871,8 +852,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     parseAndOpen(file)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                errorMessage = I18n.tf("common.error_open_failed_detail", (e.message).toString())
+                if(generation==openingSession.generation) {
+                    errorMessage = I18n.tf("common.error_open_failed_detail", (e.message).toString())
+                }
             } finally {
                 if (!isTxt) {
                     tempFile?.let { file ->
@@ -881,8 +866,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
-                loadingMessage = null
-                isLoading = false
+                if(generation==openingSession.generation) { loadingMessage = null; isLoading = false }
             }
         }
     }
@@ -908,18 +892,16 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private var pendingBookOpenJob: Job? = null
-    private var bookOpenGeneration = 0
+    private val openingSession = BookOpeningSession { RustBridge.cancelBookOpen(it) }
     fun cancelPendingBookOpen() {
-        bookOpenGeneration++
-        pendingBookOpenJob?.cancel(); pendingBookOpenJob=null
+        openingSession.cancel()
         isLoading=false; loadingMessage=null
     }
     fun openFromPath(filePath: String, chapter: Int = 0) {
         android.util.Log.d("READER-RESUME", "openFromPath path=$filePath chapter=$chapter")
         cancelPendingBookOpen()
-        val generation=bookOpenGeneration
-        pendingBookOpenJob = viewModelScope.launch {
+        val generation=openingSession.generation
+        openingSession.job = viewModelScope.launch {
             libraryStartup?.join()
             isLoading = true
             loadingMessage = I18n.t("common.opening_book")
@@ -927,7 +909,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val file = File(filePath)
                 if (!file.exists()) {
-                    errorMessage = "�ļ�������: $filePath"
+                    errorMessage = I18n.t("common.error_read_file_failed")
                     return@launch
                 }
                 val (resolvedChapter, resolvedBlock) = resolveStartPosition(filePath, chapter)
@@ -935,9 +917,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                errorMessage = "��ʧ��: ${e.message}"
+                // A cancelled blocking JNI call reports IOException. Its stale
+                // failure must not become an alert after returning to the shelf.
+                if(generation==openingSession.generation) {
+                    errorMessage = I18n.tf("common.error_open_failed_detail", e.message.orEmpty())
+                }
             } finally {
-                if(generation==bookOpenGeneration) { loadingMessage = null; isLoading = false }
+                if(generation==openingSession.generation) { loadingMessage = null; isLoading = false }
             }
         }
     }
@@ -972,6 +958,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private suspend fun parseAndOpen(file: File, startChapter: Int = 0, startBlock: Int = 0) {
+        val ticket = RustBridge.beginBookOpen()
+        openingSession.started(ticket)
+        try {
         val inputPath = file.absolutePath
         val managedEntry = withContext(Dispatchers.IO) {
             val fallbackTitle = file.nameWithoutExtension.ifBlank { "Untitled" }
@@ -980,8 +969,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val managedPath = managedEntry.uri
 
         val book = withContext(Dispatchers.IO) {
-            val metadataJson = RustBridge.openBook(managedPath)
-                ?: throw Exception("EPUB ����ʧ�� (Rust Bridge)")
+            val metadataJson = RustBridge.openBookCancellable(managedPath, ticket, startChapter)
+                ?: throw Exception(I18n.t("reader.error_epub_read_failed"))
             
             val metadata = jsonParser.decodeFromString<BookMetadataDto>(metadataJson)
 
@@ -1035,7 +1024,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 coverData = coverBytes,
                 chapterTitles = metadata.chapterTitles
             )
-        } ?: throw Exception("EPUB ����ʧ��")
+        } ?: throw Exception(I18n.t("reader.error_epub_read_failed"))
 
         withContext(Dispatchers.IO) { RustBridge.recordBookOpened(dataDir, managedPath) }
         localProgressRevision++ // Recent-reading metadata is also part of the fast sync phase.
@@ -1053,7 +1042,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val savedPosition=library.books.firstOrNull { it.uri==managedPath }
         val savedBlock=book.chapters.getOrNull(currentChapter)?.blocks?.getOrNull(currentBlock)
         val savedText=when(savedBlock) {is ContentBlock.Paragraph->savedBlock.spans.joinToString(""){it.text};is ContentBlock.Heading->savedBlock.spans.joinToString(""){it.text};else->""}
-        currentCharOffset=savedText.offsetByCodePoints(0,(savedPosition?.lastCharOffset ?: 0).coerceIn(0,savedText.codePointCount(0,savedText.length)))
+        currentCharOffset=utf16TextOffset(savedText, savedPosition?.lastCharOffset ?: 0)
         positionRevision++
         val chapterTitle = try {
             book.chapters[currentChapter].title
@@ -1081,6 +1070,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
         loadLibrary()
         loadBookConfig()
+        } finally {
+            RustBridge.finishBookOpen(ticket)
+            openingSession.finished(ticket)
+        }
     }
 
     private fun isTxtUri(uri: Uri): Boolean {
@@ -1293,6 +1286,11 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateLineSpacing(value: Float) {
         lineSpacing = value.coerceIn(1.0f, 3.0f)
+        persistSettings()
+    }
+
+    fun updateForceSingleColumn(value: Boolean) {
+        forceSingleColumn = value
         persistSettings()
     }
 
@@ -1552,10 +1550,15 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         } catch (_: Exception) { null }
         val block=currentBook?.chapters?.getOrNull(currentChapter)?.blocks?.getOrNull(currentBlock)
         val text=when(block) { is ContentBlock.Paragraph->block.spans.joinToString("") {it.text}; is ContentBlock.Heading->block.spans.joinToString("") {it.text}; else->"" }
-        val scalarOffset=text.codePointCount(0,currentCharOffset.coerceIn(0,text.length))
+        val scalarOffset=unicodeScalarOffset(text, currentCharOffset)
         val previous=library.books.firstOrNull {it.uri==uri}
         if(previous?.lastChapter != currentChapter || previous.lastBlock != currentBlock || previous.lastCharOffset != scalarOffset) localProgressRevision++
-        library.updatePosition(uri, currentChapter, chapterTitle, currentBlock, scalarOffset)
+        try { library.updatePosition(uri, currentChapter, chapterTitle, currentBlock, scalarOffset) }
+        catch (failure: Exception) {
+            addLog("Progress save failed: ${failure.message}")
+            errorMessage = I18n.t("reader.error_save_book_failed")
+            return
+        }
 
         // Write chapter to SharedPreferences: global key + per-book key (resilient backup)
         val bookId = library.books.firstOrNull { it.uri == uri }?.id
@@ -1731,7 +1734,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun tryAutoSyncWithPairedPeer(peers: List<DiscoveredPeer>) {
-        if (autoSyncInProgress) return
+        if (autoSyncInProgress || backupBusy) return
         if (pairedDevices.isEmpty() || peers.isEmpty()) return
 
         val pairedPeer = peers.firstOrNull { peer ->
@@ -2066,7 +2069,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun syncGithubNow() = syncGithubStages(false)
     fun retryGithubFiles() = syncGithubStages(true)
     private fun syncGithubStages(retryFailed: Boolean) {
-        if (!githubSyncEnabled || !githubSyncForeground || githubSyncRunning) return
+        if (!githubSyncEnabled || !githubSyncForeground || githubSyncRunning || backupBusy) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (githubSyncThrottled && now - githubSyncAttemptAt < githubSyncRetryMs) return
         val token = githubToken ?: run { githubSyncNeedsAuth = true; return }
@@ -2128,7 +2131,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         githubSyncFailures = if (failures == null) emptyList() else (0 until failures.length()).map { failures.getJSONObject(it) }
                         if (githubSyncFailures.isNotEmpty()) githubSyncStatus += " · ${I18n.tf1("cloud.files_failed", githubSyncFailures.size.toString())}"
                     }
+                    currentBookId?.let { reloadBookConfig(dataDir, it) }
                     if (!result.isNull("terminal_error")) throw IllegalStateException(result.getString("terminal_error"))
+                    if (!result.isNull("annotation_error")) throw IllegalStateException(result.getString("annotation_error"))
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -2221,11 +2226,19 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         isChapterBookmarked = bookConfig?.bookmarks?.any { it.chapter == ch } ?: false
     }
 
+    private val storageFailureHandler = CoroutineExceptionHandler { _, failure ->
+        viewModelScope.launch(Dispatchers.Main) {
+            addLog("Storage operation failed: ${failure.message}")
+            errorMessage = I18n.t("reader.error_save_book_failed")
+            updateBookmarkState()
+        }
+    }
+
     fun toggleBookmark(): Boolean {
         val bookId = currentBookId ?: return false
         val dataDir = getApplication<Application>().filesDir.absolutePath
         val chapter = currentChapter
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO + storageFailureHandler) {
             val result = RustBridge.toggleBookmark(dataDir, bookId, chapter)
             // reload config
             val json = RustBridge.getBookConfig(dataDir, bookId)
@@ -2248,7 +2261,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun removeBookmarkForChapter(chapter: Int) {
         val bookId = currentBookId ?: return
         val dataDir = getApplication<Application>().filesDir.absolutePath
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO + storageFailureHandler) {
             // toggleBookmark will remove if present
             RustBridge.toggleBookmark(dataDir, bookId, chapter)
             reloadBookConfig(dataDir, bookId)
@@ -2265,9 +2278,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         val bookId = currentBookId ?: return
         val dataDir = getApplication<Application>().filesDir.absolutePath
-        val payload = """{"chapter":$chapter,"start_block":$startBlock,"start_offset":$startOffset,"end_block":$endBlock,"end_offset":$endOffset,"color":"$color"}"""
-        viewModelScope.launch(Dispatchers.IO) {
-            RustBridge.addHighlight(dataDir, bookId, payload)
+        val publication = currentBook ?: return
+        viewModelScope.launch(Dispatchers.IO + storageFailureHandler) {
+            val source = publication.chapters[chapter]
+            val start = unicodeScalarOffset(readerSourceText(source.blocks.getOrNull(startBlock)), startOffset)
+            val end = unicodeScalarOffset(readerSourceText(source.blocks.getOrNull(endBlock)), endOffset)
+            val payload = org.json.JSONObject().put("chapter", chapter).put("start_block", startBlock)
+                .put("start_offset", start).put("end_block", endBlock).put("end_offset", end).put("color", color)
+            checkNotNull(RustBridge.addHighlight(dataDir, bookId, payload.toString())) {"Cannot save highlight"}
             reloadBookConfig(dataDir, bookId)
         }
     }
@@ -2275,18 +2293,25 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun removeHighlight(highlightId: String) {
         val bookId = currentBookId ?: return
         val dataDir = getApplication<Application>().filesDir.absolutePath
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO + storageFailureHandler) {
             RustBridge.removeHighlight(dataDir, bookId, highlightId)
             reloadBookConfig(dataDir, bookId)
         }
     }
 
-    fun saveNote(highlightId: String, content: String) {
-        val bookId = currentBookId ?: return
-        val dataDir = getApplication<Application>().filesDir.absolutePath
-        viewModelScope.launch(Dispatchers.IO) {
-            RustBridge.saveNote(dataDir, bookId, highlightId, content)
-            reloadBookConfig(dataDir, bookId)
+    fun saveNote(highlightId: String, content: String, originalNote:String?=bookConfig?.notes?.firstOrNull {it.highlightId==highlightId}?.content, completed:(Boolean)->Unit={}) {
+        val bookId=currentBookId ?: return
+        val dataDir=getApplication<Application>().filesDir.absolutePath
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val request=JSONObject().put("action","note").put("id",bookId).put("highlight_id",highlightId).put("content",content).put("original_note",originalNote ?: JSONObject.NULL)
+                    val envelope=JSONObject(RustBridge.annotationTools(dataDir,request.toString()) ?: error("Missing note result"))
+                    check(envelope.getBoolean("ok")) {envelope.optString("error")}
+                }
+                reloadBookConfig(dataDir,bookId);completed(true)
+            } catch(cancelled:CancellationException) {throw cancelled}
+            catch(error:Exception) {errorMessage=I18n.t("reader.error_save_book_failed");completed(false)}
         }
     }
 
@@ -2295,13 +2320,14 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         try {
             val cfg = jsonParser.decodeFromString<FullBookConfig>(json)
             withContext(Dispatchers.Main) {
-                bookConfig = cfg
-                updateBookmarkState()
+                if(currentBookId==bookId) {bookConfig = cfg;updateBookmarkState()}
             }
         } catch (_: Exception) { }
     }
 
     override fun onCleared() {
+        libraryRenderObserver = null
+        cancelPendingBookOpen()
         bookSharing.close()
         activityTracker.close()
         cancelGithubSyncWork()

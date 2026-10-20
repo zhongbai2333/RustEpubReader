@@ -3,14 +3,19 @@ import UniformTypeIdentifiers
 
 @main struct ReaderPreviewApp: App {
     init() {
+        #if READER_PERFORMANCE_CHECK
+        if CommandLine.arguments.contains("--measure-release-shelf") { ShelfReleasePerformance.beginProcess() }
+        #endif
         ReaderFonts.shared.restoreSystemFonts()
         #if READER_PERFORMANCE_CHECK
+        if CommandLine.arguments.contains("--measure-image-bridge") {ImageBridgePerformance.run()}
         if CommandLine.arguments.contains("--measure-release-book") {ReadingReleasePerformance.run()}
         #endif
         #if DEBUG
         if CommandLine.arguments.contains("--verify-appearance") { ReadingAppearanceRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-book-share") { BookShareRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-i18n") {ReaderI18n.verifyBundled()}
+        if CommandLine.arguments.contains("--verify-support-panels") {LibraryPanelsRuntimeCheck.run()}
         if CommandLine.arguments.contains("--verify-native") { NativePresentationRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-keychain") { KeychainRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-illustrations") { IllustrationRuntimeCheck.run() }
@@ -18,12 +23,31 @@ import UniformTypeIdentifiers
         if CommandLine.arguments.contains("--verify-model") { ModelRuntimeCheck.run() }
         #endif
     }
-    var body: some Scene { WindowGroup { AppHome().task {
+    var body: some Scene { WindowGroup {
+        #if READER_PERFORMANCE_CHECK
+        if CommandLine.arguments.contains("--measure-image-bridge") { Color.clear }
+        else if CommandLine.arguments.contains("--measure-release-shelf") { ShelfPerformanceRoot() }
+        else { home }
+        #else
+        home
+        #endif
+    } }
+    @ViewBuilder private var home: some View {
+        #if DEBUG
+        if CommandLine.arguments.contains("--verify-reduced-motion-ui") {ReaderMotionUITestHost()}
+        else if CommandLine.arguments.contains("--verify-selection-ui") {ReaderSelectionUITestHost().ignoresSafeArea()}
+        else if CommandLine.arguments.contains("--verify-backup-files-ui") {LibraryFilesUITestHost()}
+        else {ordinaryHome}
+        #else
+        ordinaryHome
+        #endif
+    }
+    private var ordinaryHome: some View { AppHome().task {
         #if DEBUG
         if CommandLine.arguments.contains("--verify-fonts") { await FontsRuntimeCheck.run() }
         if CommandLine.arguments.contains("--verify-speech") { await SpeechRuntimeCheck.run() }
         #endif
-    } } }
+    } }
 }
 
 struct AppHome: View {
@@ -40,8 +64,8 @@ struct AppHome: View {
     @StateObject private var account: GitHubAccount
     @StateObject private var nearby: NearbySync
     @Environment(\.scenePhase) private var scenePhase
-    init() {
-        let library = PreviewLibrary()
+    init(library supplied: PreviewLibrary? = nil) {
+        let library = supplied ?? PreviewLibrary()
         _library = StateObject(wrappedValue: library)
         _account = StateObject(wrappedValue: GitHubAccount(library: library))
         _nearby = StateObject(wrappedValue: NearbySync(library: library))
@@ -76,6 +100,9 @@ struct AppHome: View {
     @StateObject private var releases = ReleaseNotice()
     @Environment(\.horizontalSizeClass) private var sizeClass
     var body: some View {
+        #if READER_PERFORMANCE_CHECK
+        let _ = ShelfProbeMetrics.shared.homeEvaluated()
+        #endif
         ZStack {
         Group {
             if sizeClass == .regular {
@@ -134,7 +161,12 @@ struct AppHome: View {
                 .ignoresSafeArea().zIndex(2)
         }
         }
-        .onPreferenceChange(BookCoverFrames.self) { coverFrames = $0 }
+        .onPreferenceChange(BookCoverFrames.self) { frames in
+            #if READER_PERFORMANCE_CHECK
+            ShelfProbeMetrics.shared.geometryUpdated()
+            #endif
+            coverFrames = frames
+        }
         .environmentObject(appearanceLink)
         .environment(\.colorScheme, appearanceLink.appDark ? .dark : .light)
         .preferredColorScheme(appearanceLink.appDark ? .dark : .light)
@@ -147,7 +179,7 @@ struct AppHome: View {
             }
         }
         .environment(\.locale, readerI18n.locale)
-        .tint(Color(red: 0.18, green: 0.39, blue: 0.75))
+        .tint(.readerAppTint)
         .onChange(of: library.books.map(\.id)) { _, ids in
             if let book=selectedBook, !ids.contains(book.id) { closeBook() }
         }
@@ -204,15 +236,25 @@ struct AppHome: View {
         // Cancel a live expansion before reopening: stale animation/layout
         // callbacks must not release the next book's visibility gate.
         var cancellationPassed=false
+        var cancellationMilliseconds:Double = -1
+        var cancellationDuringExpansion=false, cancellationCoreReady=false
         if let entry=library.recentBooks.first {
             openBook(entry,"shelf:"+entry.id)
             try? await Task.sleep(for:.milliseconds(180))
+            cancellationDuringExpansion=openingBook != nil && !openingExpanded
+            cancellationCoreReady=readerReady
+            let cancelledAt=ContinuousClock.now
             closeBook()
             for _ in 0..<100 {
                 if !closing {break}
                 try? await Task.sleep(for:.milliseconds(16))
             }
+            let latency=cancelledAt.duration(to:.now)
+            cancellationMilliseconds=Double(latency.components.seconds)*1000+Double(latency.components.attoseconds)/1e15
             cancellationPassed=selectedBook == nil && openingBook == nil && !closing
+            // Observe beyond any old open/animation completion before reopening.
+            try? await Task.sleep(for:.milliseconds(800))
+            cancellationPassed = cancellationPassed && selectedBook == nil && openingBook == nil && !closing
         }
         for index in 0..<4 {
             let visible=coverFrames.filter {$0.key.hasPrefix("shelf:") && $0.value.width>0 && $0.value.minY>=0 && $0.value.maxY<1000}
@@ -253,7 +295,10 @@ struct AppHome: View {
                 "returned_to_opened_cover":returnedToSource,
                 "source_x":source?.minX ?? -1,"return_x":sourceCover?.minX ?? -1,
                 "source_y":source?.minY ?? -1,"return_y":sourceCover?.minY ?? -1,
-                "open_seconds": seconds, "cancel_before_reopen_passed":cancellationPassed, "hidden_preparation_samples":hiddenSamples, "premature_native_samples":prematureSamples, "control_hit_tests":hitTests, "controls_hittable":hitTests.count==3 && hitTests.values.allSatisfy {$0.contains("ReaderChromeControl") || $0.contains("ReaderMenuButton")}])
+                "open_seconds": seconds, "cancel_before_reopen_passed":cancellationPassed,
+                "visible_cancel_to_shelf_ms":cancellationMilliseconds, "cancel_during_expansion":cancellationDuringExpansion,
+                "reader_ready_at_cancel":cancellationCoreReady, "late_completion_observed_ms":800,
+                "hidden_preparation_samples":hiddenSamples, "premature_native_samples":prematureSamples, "control_hit_tests":hitTests, "controls_hittable":hitTests.count==3 && hitTests.values.allSatisfy {$0.contains("ReaderChromeControl") || $0.contains("ReaderMenuButton")}])
             try? await Task.sleep(for: .milliseconds(500))
         }
         let file = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("book-presentation-verification.json")
@@ -273,8 +318,23 @@ struct AppHome: View {
     }
     @MainActor private func controlHitTests()->[String:String] {
         guard let window=UIApplication.shared.connectedScenes.compactMap({$0 as? UIWindowScene}).flatMap({$0.windows}).first(where:{$0.isKeyWindow}) else {return [:]}
-        let safe=window.safeAreaInsets,bounds=window.bounds
-        let points=["close":CGPoint(x:safe.left+38,y:safe.top+30),"bookmark":CGPoint(x:bounds.maxX-safe.right-38,y:safe.top+30),"menu":CGPoint(x:bounds.maxX-safe.right-38,y:bounds.maxY-safe.bottom-30)]
+        let safeBounds=window.bounds.inset(by:window.safeAreaInsets)
+        var points:[String:CGPoint]=[:]
+        func find(_ view:UIView) {
+            guard !view.isHidden,view.alpha>0.01 else{return}
+            let label=view.accessibilityLabel
+            let key:String?
+            if view is ReaderMenuButton {key="menu"}
+            else if view is ReaderChromeControl,label==L("nav.back_to_library") {key="close"}
+            else if view is ReaderChromeControl,label==L("context.bookmark") || label==L("reader.remove_bookmark") {key="bookmark"}
+            else {key=nil}
+            if let key {
+                let point=view.convert(CGPoint(x:view.bounds.midX,y:view.bounds.midY),to:window)
+                if view.bounds.width>=40 && view.bounds.height>=40 && safeBounds.contains(point) {points[key]=point}
+            }
+            for child in view.subviews {find(child)}
+        }
+        find(window)
         return points.mapValues { point in
             var hit=window.hitTest(point,with:nil);var classes=[String]()
             while let view=hit {classes.append(NSStringFromClass(type(of:view)));hit=view.superview}
@@ -350,6 +410,7 @@ struct AppHome: View {
             // The native paper completion callback releases visibility, not a timer.
         }
         Task {
+            guard transitionToken == token else { return }
             let book = await library.open(entry)
             guard transitionToken == token else { if selectedBook == nil { library.closed() }; return }
             if let book { activeBookID = book.id; selectedBook = book } else { closeBook() }
@@ -374,6 +435,7 @@ struct AppHome: View {
 
     private func closeBook(after: @escaping () -> Void = {}) {
         guard !closing else { return }
+        library.cancelOpening()
         if let book = selectedBook { library.clearJumpHistory(for: book.id) }
         activeBookID = ""
         closing = true; transitionToken = UUID()
@@ -430,8 +492,16 @@ struct BookCover: View {
             }
         }.frame(width: geometry.size.width, height: geometry.size.height).clipShape(RoundedRectangle(cornerRadius: 6))
         }.task(id: book.path) {
+            #if READER_PERFORMANCE_CHECK
+            ShelfProbeMetrics.shared.viewRequested(book.id)
+            #endif
             let loaded = await covers.image(id: book.id, path: book.path)
-            if !Task.isCancelled { image = loaded }
+            if !Task.isCancelled {
+                image = loaded
+                #if READER_PERFORMANCE_CHECK
+                if loaded != nil { ShelfProbeMetrics.shared.prepared(book.id) }
+                #endif
+            }
         }
     }
 }
@@ -464,6 +534,9 @@ struct LibraryDesignView: View {
     @State private var renaming: LibraryEntry?
     @State private var renameTitle = ""
     private var books: [LibraryEntry] {
+        #if READER_PERFORMANCE_CHECK
+        ShelfProbeMetrics.shared.ranked()
+        #endif
         let searchTerm = search.trimmingCharacters(in: .whitespacesAndNewlines)
         let ranked=sortByTitle ? library.recentBooks.sorted {$0.title.localizedCompare($1.title) == .orderedAscending} : library.recentBooks
         let ranks=Dictionary(uniqueKeysWithValues:shelfOrder.resolve(ranked.map(\.id),byTitle:sortByTitle,revision:shelfRevision).enumerated().map {($1,$0)})
@@ -598,7 +671,7 @@ struct LibraryDesignView: View {
             switch sheet {
             case .sortDisplay: LibrarySortDisplayView(sortByTitle: $sortByTitle, listMode: $listMode)
             case .archive: ArchiveLibraryView(library: library)
-            case .settings: LibrarySettingsView(releases: releases, count: library.books.count)
+            case .settings: LibrarySettingsView(releases: releases, library:library, account:account, count: library.books.count)
             case .statistics:
                 NavigationStack {
                     ReadingStatsView(library: library, syncSettings: { toolSheet = nil; openSync() })

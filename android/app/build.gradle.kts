@@ -1,8 +1,14 @@
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.OutputDirectory
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
+
+val readerNativeProfile = System.getenv("READER_RUST_PROFILE") ?: "release"
+require(readerNativeProfile in setOf("release", "release-fast")) { "Unsupported READER_RUST_PROFILE" }
 
 android {
     namespace = "com.zhongbai233.epub.reader"
@@ -17,6 +23,8 @@ android {
         versionName = (project.findProperty("APP_VERSION_NAME") as String?) ?: "1.0.0"
         // Expose version to Kotlin code via BuildConfig
         buildConfigField("String", "APP_VERSION_NAME", "\"${versionName}\"")
+        buildConfigField("String", "READER_NATIVE_PROFILE", "\"$readerNativeProfile\"")
+        buildConfigField("boolean", "READER_PERFORMANCE_CHECKS", project.hasProperty("READER_PERFORMANCE_CHECKS").toString())
 
         // NOTE: We do NOT set `ndk.abiFilters` here on purpose. AGP 8 + Gradle 9
         // refuses to start when defaultConfig.ndk.abiFilters and splits.abi
@@ -86,7 +94,8 @@ android {
         jniLibs {
             useLegacyPackaging = false
             // Ask R8/AGP to keep .so files compressed-and-page-aligned only when needed.
-            keepDebugSymbols += listOf()
+            // Cargo already strips this library. Keep its exact verified bytes.
+            keepDebugSymbols += "**/libandroid_bridge.so"
             // Do NOT bundle ONNX Runtime native libs in the APK. They are
             // downloaded on-demand to filesDir and dlopen'd by CscNativeLoader.
             // This trims ~25 MB per ABI from the install size.
@@ -177,25 +186,54 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
-// Cargo NDK Integration
-tasks.register<Exec>("cargoBuild") {
-    // Requires cargo-ndk to be installed globally on developer's machine:
-    // cargo install cargo-ndk
-    // rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
+// Publish the selected Cargo artifacts by content. cargo-ndk 4.1.2's -o
+// freshness check uses only mtime, which can skip an older cached profile.
+@org.gradle.work.DisableCachingByDefault(because = "Cargo manages native incremental state")
+abstract class ReaderCargoBuild : Exec() {
+    @get:OutputDirectory abstract val jniDirectory: DirectoryProperty
+    @get:OutputDirectory abstract val provenanceDirectory: DirectoryProperty
+}
+val rustNativeAssets = layout.buildDirectory.dir("generated/rustNativeAssets/$readerNativeProfile")
+val rustNativePublisher = rootProject.file("../scripts/android-native-artifacts.py")
+fun runRustArtifactTool(vararg arguments: String) {
+    val process = ProcessBuilder(listOf("python3", rustNativePublisher.absolutePath) + arguments)
+        .directory(rootProject.projectDir.parentFile).redirectErrorStream(true).start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }
+    check(process.waitFor() == 0) { "Rust native artifact verification failed:\n$output" }
+    if (output.isNotBlank()) logger.lifecycle(output.trimEnd())
+}
+val cargoBuild by tasks.registering(ReaderCargoBuild::class) {
+    jniDirectory.set(layout.buildDirectory.dir("generated/rustJni/$readerNativeProfile"))
+    provenanceDirectory.set(rustNativeAssets)
     workingDir = file("../../android-bridge")
     commandLine(
         "cargo", "ndk",
-        "-t", "armeabi-v7a",
-        "-t", "arm64-v8a",
-        "-t", "x86_64",
-        "-o", "../android/app/src/main/jniLibs",
-        "build", "--release", "--locked"
+        "-t", "armeabi-v7a", "-t", "arm64-v8a", "-t", "x86_64",
+        "build", "--profile", readerNativeProfile, "--locked"
     )
+    inputs.property("rustProfile", readerNativeProfile)
+    // Cargo owns Rust dependency/incremental checks. Declared outputs also
+    // invalidate Gradle's file snapshots before publishing cached libraries.
+    outputs.upToDateWhen { false }
+    doLast {
+        runRustArtifactTool("publish", "--profile", readerNativeProfile,
+            "--output", jniDirectory.get().asFile.absolutePath,
+            "--assets", provenanceDirectory.get().asFile.absolutePath)
+    }
 }
-
-tasks.whenTaskAdded {
-    if (name.startsWith("merge") && name.endsWith("JniLibFolders")) {
-        dependsOn("cargoBuild")
+// Old source-tree JNI files are retained as caches, not packaged as inputs.
+android.sourceSets["main"].jniLibs.setSrcDirs(emptyList<String>())
+androidComponents.onVariants { variant ->
+    variant.sources.jniLibs?.addGeneratedSourceDirectory(cargoBuild) { it.jniDirectory }
+    variant.sources.assets?.addGeneratedSourceDirectory(cargoBuild) { it.provenanceDirectory }
+}
+tasks.configureEach {
+    if (name == "assembleDebug" || name == "assembleRelease") {
+        val variant = if (name == "assembleDebug") "debug" else "release"
+        doLast {
+            runRustArtifactTool("verify-outputs", "--profile", readerNativeProfile,
+                "--metadata", layout.buildDirectory.file("outputs/apk/$variant/output-metadata.json").get().asFile.absolutePath)
+        }
     }
 }
 
@@ -212,3 +250,8 @@ val validateReaderTranslations by tasks.registering(Exec::class) {
     commandLine("python3", "scripts/check-i18n.py")
 }
 readerCatalogs { dependsOn(validateReaderTranslations) }
+
+// All native clients validate the same persisted-coordinate contract vectors.
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    systemProperty("reader.coordinateContract", rootProject.file("../tests/fixtures/reader-coordinates.json").absolutePath)
+}

@@ -274,26 +274,14 @@ impl ReaderApp {
             self.last_synced_block = Some(target.block);
             self.last_synced_char_offset = Some(target.char_offset);
         }
-        if let Some(path) = &self.book_path {
-            let title = Some(chapter.title.clone());
-            if kind == NavigationKind::Remote {
-                self.library.apply_position(
-                    &self.data_dir,
-                    path,
-                    target.chapter,
-                    title,
-                    target.block,
-                    target.char_offset,
-                );
-            } else {
-                self.library.update_position(
-                    &self.data_dir,
-                    path,
-                    target.chapter,
-                    title,
-                    target.block,
-                    target.char_offset,
-                );
+        if kind == NavigationKind::Remote {
+            // The producer committed the revision before this animated UI notification.
+            self.position_save_due = None;
+        } else {
+            self.position_save_modified_ms = reader_core::now_millis();
+            self.position_save_due = Some(std::time::Instant::now());
+            if let Err(error) = self.flush_reading_position_for_backup() {
+                self.error_msg = Some(error);
             }
         }
         let now = self

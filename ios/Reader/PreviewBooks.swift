@@ -60,10 +60,12 @@ final class BookChapterSource: @unchecked Sendable {
     private var order: [Int] = []
     private var costs: [Int:Int] = [:]
     init(client: CoreClient, id: String) { self.client = client; self.id = id }
-    func chapter(_ index: Int) throws -> BookChapter {
+    func chapter(_ index: Int, openToken: UInt64? = nil) throws -> BookChapter {
         lock.lock(); defer { lock.unlock() }
         if let value = cache[index] { order.removeAll {$0 == index}; order.append(index); return value }
-        let value: BookChapter = try client.call("chapter", ["id":id,"chapter":index])
+        var fields: [String:Any] = ["id":id,"chapter":index]
+        if let openToken { fields["open_token"] = openToken }
+        let value: BookChapter = try client.call("chapter", fields)
         cache[index] = value; order.append(index)
         var cost = 0
         for block in value.blocks {
@@ -92,9 +94,9 @@ struct PreviewBook: Decodable, Identifiable {
     var title: String { entry.title }
     var chapterTitles: [String] { chapters.map(\.title) }
     var loadsChapters: Bool { chapterSource != nil }
-    func chapter(at index: Int) throws -> BookChapter {
+    func chapter(at index: Int, openToken: UInt64? = nil) throws -> BookChapter {
         guard chapters.indices.contains(index) else { throw CoreFailure(message:"Reading chapter is out of range") }
-        return try chapterSource?.chapter(index) ?? chapters[index]
+        return try chapterSource?.chapter(index, openToken: openToken) ?? chapters[index]
     }
     init(entry: LibraryEntry, chapters: [BookChapter], toc: [BookTOC], cover: String?) {
         self.entry=entry;self.chapters=chapters;self.toc=toc;self.cover=cover;chapterSource=nil
@@ -128,7 +130,7 @@ struct BookTransferFailure: Decodable, Identifiable {
 }
 struct SyncSummary: Decodable {
     let uploaded: Int; let downloaded: Int; let skipped: Int; let offer: CloudProgress?
-    let failed: [BookTransferFailure]?; let next_retry_after: UInt64?; let terminal_error: String?
+    let failed: [BookTransferFailure]?; let next_retry_after: UInt64?; let terminal_error: String?; let annotation_error: String?
 }
 
 struct ArchivedEntry: Decodable, Identifiable {
@@ -164,6 +166,7 @@ struct SyncMeter: Decodable {
     @Published var busy = false
     @Published var error: String?
     @Published var errorTitle = L("common.error_operation_failed")
+    @Published var annotationSyncRevision: UInt64 = 0
     @Published var offer: CloudProgress?
     private(set) var progressRevision: UInt64 = 0
     var openPath = ""
@@ -173,12 +176,13 @@ struct SyncMeter: Decodable {
     lazy var bookSharing = BookSharing(library: self)
     @Published var receivingSharedBooks = false
     private var saveTask: Task<Void, Never>?
+    private var pendingOpenToken: UInt64?
     private var saveRevisions: [String:UInt64] = [:]
     var recent: String { recentBooks.first(where: { $0.lastOpened > 0 })?.id ?? "" }
     private(set) var recentBooks: [LibraryEntry] = []
-    init() {
+    init(rootOverride: URL? = nil) {
         let documents = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let root = documents.appendingPathComponent("ReaderLibrary", isDirectory: true)
+        let root = rootOverride ?? documents.appendingPathComponent("ReaderLibrary", isDirectory: true)
         var temporary = root.appendingPathComponent(".book-share-tmp", isDirectory: true)
         try? FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var values = URLResourceValues(); values.isExcludedFromBackup = true
@@ -225,17 +229,37 @@ struct SyncMeter: Decodable {
     func exportBooks(_ ids: [String], directory: URL) async throws -> [URL] {
         try await store.exportBooks(ids: ids, directory: directory.path).map { URL(fileURLWithPath: $0) }
     }
+    func backupDidRestore() async {
+        offer=nil; progressRevision &+= 1; annotationSyncRevision &+= 1
+        await reload()
+    }
     func open(_ entry: LibraryEntry) async -> PreviewBook? {
         guard !busy else { return nil }
         busy = true; defer { busy = false }
         do {
+            let token: UInt64 = try client.call("begin_open")
+            pendingOpenToken = token
+            defer {
+                let _: Bool? = try? client.call("finish_open", ["token": token])
+                if pendingOpenToken == token { pendingOpenToken = nil }
+            }
             await flush()
-            let book = try await store.open(id: entry.id)
+            guard pendingOpenToken == token else { return nil }
+            let book = try await store.open(id: entry.id, token: token)
+            guard pendingOpenToken == token else { return nil }
             progressRevision &+= 1 // Reopening the same page still changes recent-reading metadata.
             openPath = book.entry.path
             save(book.entry.anchor, for: book)
             return book
-        } catch { fail(error, title: L("reader.error_open_failed")); return nil }
+        } catch {
+            if (error as? CoreFailure)?.message != "Book opening cancelled" { fail(error, title: L("reader.error_open_failed")) }
+            return nil
+        }
+    }
+    func cancelOpening() {
+        guard let token = pendingOpenToken else { return }
+        let _: Bool? = try? client.call("cancel_open", ["token":token])
+        pendingOpenToken = nil
     }
     func save(_ anchor: ReadingAnchor, for book: PreviewBook) {
         guard books.contains(where: {$0.id==book.id}) else { return }

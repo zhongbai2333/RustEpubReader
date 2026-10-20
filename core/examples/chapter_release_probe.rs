@@ -1,25 +1,12 @@
 //! Offline production-core timings; does not measure platform drawing or GPU presentation.
+use reader_core::diagnostics::{peak_rss, rss};
 use reader_core::epub::{native::CssPolicy, EpubBook};
 use serde_json::json;
 use std::time::Instant;
-fn rss() -> u64 {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("ps")
-            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-            .output()
-            .ok()
-            .and_then(|v| String::from_utf8(v.stdout).ok())
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(0)
-            * 1024
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        0
-    }
-}
 fn main() {
+    if cfg!(debug_assertions) {
+        panic!("Run the performance probe with --release");
+    }
     let path = std::env::args().nth(1).expect("EPUB path");
     let dir = tempfile::tempdir().unwrap();
     let baseline = rss();
@@ -61,5 +48,5 @@ fn main() {
     let cached = EpubBook::open_cached(&path, dir.path()).unwrap();
     let cached_open_ms = t.elapsed().as_secs_f64() * 1000.;
     assert_eq!(cached.chapter_cache_stats(), (0, 0, 0));
-    println!("{}",serde_json::to_string_pretty(&json!({"profile":"release","book_sha256":EpubBook::file_hash(&path).unwrap(),"chapter_count":chapters,"cold_catalogue_ms":open_ms,"cold_stats":cold_stats,"cached_catalogue_ms":cached_open_ms,"samples":samples,"sequential_200_chapters":{"median_body_style_ms":walk[walk.len()/2],"p95_body_style_ms":walk[walk.len()*95/100],"maximum_body_style_ms":walk.last(),"cache_stats":stats},"rss_bytes":{"baseline":baseline,"catalogue":metadata_rss,"after_samples":after_samples,"after_200_chapters":walk_rss,"after_close":released_rss},"platform_first_paint_measured":false})).unwrap());
+    println!("{}",serde_json::to_string_pretty(&json!({"profile":"release","book_sha256":EpubBook::file_hash(&path).unwrap(),"chapter_count":chapters,"cold_catalogue_ms":open_ms,"cold_stats":cold_stats,"cached_catalogue_ms":cached_open_ms,"samples":samples,"sequential_200_chapters":{"median_body_style_ms":walk[walk.len()/2],"p95_body_style_ms":walk[walk.len()*95/100],"maximum_body_style_ms":walk.last(),"cache_stats":stats},"rss_bytes":{"baseline":baseline,"catalogue":metadata_rss,"after_samples":after_samples,"after_200_chapters":walk_rss,"after_close":released_rss,"peak":peak_rss()},"platform_first_paint_measured":false})).unwrap());
 }

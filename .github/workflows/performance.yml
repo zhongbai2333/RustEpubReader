@@ -1,0 +1,44 @@
+name: Release performance samples
+
+"on":
+    workflow_dispatch:
+    schedule:
+        - cron: "17 3 * * 1"
+
+permissions:
+    contents: read
+
+jobs:
+    shared-core:
+        name: Core Release corpus
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - name: Validate the benchmark tooling
+              run: |
+                  python3 scripts/test-performance.py
+                  python3 scripts/test-native-performance.py
+                  python3 scripts/test-image-bridge.py
+                  python3 scripts/test-android-native-artifacts.py
+                  python3 scripts/test-shelf-performance.py
+            - name: Generate deterministic, redistributable fixtures
+              run: python3 scripts/performance-fixtures.py target/performance-fixtures
+            - name: Build the production-core Release probe
+              run: cargo build --locked --release -p reader_core --example chapter_release_probe
+            - name: Measure repeated native-core samples
+              run: |
+                  python3 scripts/check-performance.py \
+                    --probe target/release/examples/chapter_release_probe \
+                    --fixtures target/performance-fixtures --device github-ubuntu-x64 \
+                    --output target/performance-results
+            - name: Upload reports
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: core-release-performance
+                  path: |
+                      target/performance-fixtures/manifest.json
+                      target/performance-results/*
+                  if-no-files-found: error

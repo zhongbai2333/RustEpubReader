@@ -21,6 +21,8 @@ pub(crate) struct ShelfCovers {
     pending: HashSet<String>,
     touched: HashMap<String, u64>,
     clock: u64,
+    #[cfg(feature = "performance-checks")]
+    pub(crate) seen_requests: HashSet<String>,
 }
 impl Default for ShelfCovers {
     fn default() -> Self {
@@ -62,6 +64,8 @@ impl ShelfCovers {
             pending: HashSet::new(),
             touched: HashMap::new(),
             clock: 0,
+            #[cfg(feature = "performance-checks")]
+            seen_requests: HashSet::new(),
         }
     }
     pub fn poll(
@@ -111,7 +115,13 @@ impl ShelfCovers {
             .is_ok()
         {
             self.pending.insert(path.into());
+            #[cfg(feature = "performance-checks")]
+            self.seen_requests.insert(path.into());
         }
+    }
+    #[cfg(feature = "performance-checks")]
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pending.len()
     }
     pub fn trim(&mut self, textures: &mut HashMap<String, Option<egui::TextureHandle>>) {
         if textures.len() <= 64 {

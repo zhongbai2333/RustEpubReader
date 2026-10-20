@@ -333,7 +333,12 @@ impl ReaderApp {
                 self.last_avail_width = available_width;
                 self.last_avail_height = available_height;
             }
-            let layout = reader_text_layout(available_width, available_height, self.scroll_mode);
+            let layout = reader_text_layout(
+                available_width,
+                available_height,
+                self.scroll_mode,
+                self.force_single_column,
+            );
             let dual_column = layout.is_dual_column;
 
             self.is_dual_column = dual_column;
@@ -1563,8 +1568,10 @@ impl ReaderApp {
                             // Load existing note content into edit buffer
                             if let Some(note) = cfg.notes.iter().find(|n| n.highlight_id == hl.id) {
                                 self.editing_note_buf = note.content.clone();
+                                self.editing_note_original = Some(note.content.clone());
                             } else {
                                 self.editing_note_buf.clear();
+                                self.editing_note_original = None;
                             }
                             // Position popup above the click point
                             if let Some(entry) = block_galleys.iter().find(|entry| {
@@ -1769,7 +1776,7 @@ impl ReaderApp {
                                 };
                                 if start < end {
                                     cfg.highlights.push(reader_core::library::Highlight {
-                                        id: format!("{}-{}", reader_core::now_secs(), idx),
+                                        id: reader_core::annotations::new_highlight_id(),
                                         chapter: self.current_chapter,
                                         start_block: idx,
                                         start_offset: start,
@@ -1780,7 +1787,9 @@ impl ReaderApp {
                                     });
                                 }
                             }
-                            cfg.save(&self.data_dir);
+                            if let Err(error) = cfg.save(&self.data_dir) {
+                                self.error_msg = Some(error.to_string());
+                            };
                         }
                         self.text_selection = None;
                     }
@@ -1792,7 +1801,9 @@ impl ReaderApp {
                                     && h.start_block >= sb
                                     && h.start_block <= eb)
                             });
-                            cfg.save(&self.data_dir);
+                            if let Err(error) = cfg.save(&self.data_dir) {
+                                self.error_msg = Some(error.to_string());
+                            };
                         }
                         self.text_selection = None;
                     }
@@ -1919,7 +1930,9 @@ impl ReaderApp {
                         }
                     }
                     if let Some(cfg) = &mut self.book_config {
-                        cfg.save(&self.data_dir);
+                        if let Err(error) = cfg.save(&self.data_dir) {
+                            self.error_msg = Some(error.to_string());
+                        };
                     }
                     close = true;
                 }
@@ -1970,7 +1983,9 @@ impl ReaderApp {
                                         if let Some(cfg) = &mut self.book_config {
                                             cfg.notes.retain(|n| n.highlight_id != hl_id);
                                             cfg.highlights.retain(|h| h.id != hl_id);
-                                            cfg.save(&self.data_dir);
+                                            if let Err(error) = cfg.save(&self.data_dir) {
+                                                self.error_msg = Some(error.to_string());
+                                            };
                                         }
                                         close_popup = true;
                                     }
@@ -2001,26 +2016,21 @@ impl ReaderApp {
                                         i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl
                                     }))
                             {
-                                if let Some(cfg) = &mut self.book_config {
-                                    if self.editing_note_buf.trim().is_empty() {
-                                        // Remove note if empty
-                                        cfg.notes.retain(|n| n.highlight_id != hl_id);
-                                    } else if let Some(note) =
-                                        cfg.notes.iter_mut().find(|n| n.highlight_id == hl_id)
-                                    {
-                                        note.content = self.editing_note_buf.clone();
-                                        note.updated_at = reader_core::now_secs();
-                                    } else {
-                                        cfg.notes.push(reader_core::library::Note {
-                                            highlight_id: hl_id.clone(),
-                                            content: self.editing_note_buf.clone(),
-                                            created_at: reader_core::now_secs(),
-                                            updated_at: reader_core::now_secs(),
-                                        });
+                                if let Some(id) = self.book_config.as_ref().map(|c| c.id.clone()) {
+                                    match reader_core::annotations::save_note(
+                                        &self.data_dir,
+                                        &id,
+                                        &hl_id,
+                                        &self.editing_note_buf,
+                                        Some(self.editing_note_original.as_deref()),
+                                    ) {
+                                        Ok(config) => {
+                                            self.book_config = Some(config);
+                                            close_popup = true;
+                                        }
+                                        Err(error) => self.error_msg = Some(error),
                                     }
-                                    cfg.save(&self.data_dir);
                                 }
-                                close_popup = true;
                             }
                         });
                     });
@@ -2160,7 +2170,9 @@ impl ReaderApp {
                                     status: status_str.to_string(),
                                 });
                         }
-                        cfg.save(&self.data_dir);
+                        if let Err(error) = cfg.save(&self.data_dir) {
+                            self.error_msg = Some(error.to_string());
+                        };
                     }
                     self.push_feedback_log(format!(
                         "[CSC] correction action: ch={} blk={} off={} '{}' → '{}' status={}",

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -28,7 +29,7 @@ import com.zhongbai233.epub.reader.ui.theme.ReaderGeometry
 import com.zhongbai233.epub.reader.viewmodel.ReaderViewModel
 import kotlinx.coroutines.launch
 
-private enum class LibrarySettingsPage { Home, Appearance, Language, About }
+private enum class LibrarySettingsPage { Home, Appearance, Language, About, Backup }
 
 /** One screen owns the settings back stack; the shelf remains mounted beneath it. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -36,7 +37,7 @@ private enum class LibrarySettingsPage { Home, Appearance, Language, About }
 fun LibrarySettingsScreen(vm: ReaderViewModel, onDismiss: () -> Unit) {
     @Suppress("UNUSED_VARIABLE") val languageVersion = I18n.version
     var page by rememberSaveable { mutableStateOf(LibrarySettingsPage.Home) }
-    val back = { if (page == LibrarySettingsPage.Home) onDismiss() else page = LibrarySettingsPage.Home }
+    val back = { if (!vm.backupBusy) {if (page == LibrarySettingsPage.Home) onDismiss() else page = LibrarySettingsPage.Home} }
     BackHandler(onBack = back)
     Surface(Modifier.fillMaxSize()) {
         if (page == LibrarySettingsPage.About) {
@@ -47,11 +48,17 @@ fun LibrarySettingsScreen(vm: ReaderViewModel, onDismiss: () -> Unit) {
                     title = { Text(I18n.t(when (page) {
                         LibrarySettingsPage.Home -> "settings.title"
                         LibrarySettingsPage.Appearance -> "ui.appearance"
+                        LibrarySettingsPage.Backup -> "backup.title"
                         else -> "ui.language"
                     })) },
                     navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, I18n.t("settings.back")) } },
                 )
             }) { padding ->
+                if (page == LibrarySettingsPage.Backup) {
+                    Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
+                        LibraryBackupSettings(vm, Modifier.widthIn(max = 600.dp).fillMaxHeight(), onDone = back)
+                    }
+                } else {
                 Column(
                     Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
                         .padding(horizontal = 20.dp, vertical = 16.dp),
@@ -65,6 +72,8 @@ fun LibrarySettingsScreen(vm: ReaderViewModel, onDismiss: () -> Unit) {
                                 HorizontalDivider(Modifier.padding(start = 56.dp))
                                 LibrarySettingsRow("ui.language", Icons.Default.Translate) { page = LibrarySettingsPage.Language }
                                 HorizontalDivider(Modifier.padding(start = 56.dp))
+                                LibrarySettingsRow("backup.title", Icons.Default.Save) { page = LibrarySettingsPage.Backup }
+                                HorizontalDivider(Modifier.padding(start = 56.dp))
                                 LibrarySettingsRow("about.title", Icons.Default.Info) { page = LibrarySettingsPage.About }
                             }
                             LibrarySettingsPage.Appearance -> Box(Modifier.padding(16.dp)) {
@@ -77,8 +86,10 @@ fun LibrarySettingsScreen(vm: ReaderViewModel, onDismiss: () -> Unit) {
                                 }
                             }
                             LibrarySettingsPage.About -> Unit
+                            LibrarySettingsPage.Backup -> Unit
                         }
                     }
+                }
                 }
             }
         }

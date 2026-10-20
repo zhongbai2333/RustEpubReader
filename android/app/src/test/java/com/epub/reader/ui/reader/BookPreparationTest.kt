@@ -5,6 +5,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BookPreparationTest {
+    @Test fun styledAndFallbackChaptersCannotAccumulateAnEntirePublication() {
+        val reads=mutableListOf<Int>()
+        val source=object:AbstractList<Chapter>() {
+            override val size=3000
+            override fun get(index:Int):Chapter {reads+=index; return Chapter("Chapter $index", emptyList())}
+        }
+        val styled=NativeChapterList(source,mapOf(1 to NativePresentation()))
+        for(index in 0 until 3000) {styled[index];assertTrue(styled.residentCount<=8)}
+        assertEquals(3000,reads.size)
+        styled[2999];assertEquals(3000,reads.size)
+        styled[1];assertEquals(3001,reads.size)
+        assertEquals(8,styled.residentCount)
+    }
     @Test fun stylingTheResumeChapterDoesNotReadTheWholePublication() {
         val reads=mutableListOf<Int>()
         val source=object:AbstractList<Chapter>() {

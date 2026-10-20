@@ -5,14 +5,17 @@ pub mod cloud_progress;
 pub mod cloud_recent;
 pub mod cloud_sync;
 pub mod csc;
+pub mod diagnostics;
 pub mod epub;
 pub mod export;
 #[cfg(feature = "github-sync")]
 pub mod github_sync;
 pub mod i18n;
+pub mod image_resources;
 pub mod library;
 pub mod search;
 pub mod sharing;
+pub mod storage;
 pub mod txt;
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -77,13 +80,15 @@ pub fn escape_html(s: &str) -> String {
 
 /// Compute SHA-256 hash of a file, streaming in 8 KiB chunks.
 pub fn file_hash(path: &str) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut reader = std::io::BufReader::new(file);
+    hash_reader(std::io::BufReader::new(file))
+}
+fn hash_reader(mut reader: impl std::io::Read) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
+        open_operation::check()?;
         let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
@@ -93,6 +98,40 @@ pub fn file_hash(path: &str) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+pub mod open_operation;
+
+#[cfg(test)]
+mod cancellation_io_tests {
+    #[test]
+    fn hashing_stops_after_the_inflight_chunk_and_preserves_ordinary_hashes() {
+        struct Source {
+            token: crate::open_operation::Cancellation,
+            reads: usize,
+        }
+        impl std::io::Read for Source {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                assert_eq!(self.reads, 1, "Cancelled hashing read another chunk");
+                bytes.fill(42);
+                self.token.cancel();
+                Ok(bytes.len())
+            }
+        }
+        let token = crate::open_operation::Cancellation::default();
+        let result = token.run(|| {
+            crate::hash_reader(Source {
+                token: token.clone(),
+                reads: 0,
+            })
+        });
+        assert_eq!(result.unwrap_err(), crate::open_operation::CANCELLED);
+        assert_eq!(
+            crate::hash_reader(&b"ordinary"[..]).unwrap(),
+            crate::bytes_hash(b"ordinary")
+        );
+    }
+}
+
 /// Compute SHA-256 hash of in-memory bytes.
 pub fn bytes_hash(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -100,4 +139,6 @@ pub fn bytes_hash(data: &[u8]) -> String {
     hasher.update(data);
     format!("{:x}", hasher.finalize())
 }
+pub mod annotations;
+pub mod backup;
 pub mod reading_activity;

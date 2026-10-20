@@ -28,6 +28,9 @@ pub struct PeerStore {
     pub public_key_pem: String,
     pub paired: Vec<PairedDevice>,
     pub progress: Vec<ProgressEntry>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub progress_versions:
+        std::collections::BTreeMap<String, crate::cloud_progress::ProgressVersion>,
 }
 
 impl PeerStore {
@@ -159,31 +162,104 @@ impl PeerStore {
         self.paired.len() < before
     }
 
+    pub fn progress_version(&self, hash: &str) -> crate::cloud_progress::ProgressVersion {
+        self.progress_versions
+            .get(hash)
+            .cloned()
+            .unwrap_or_else(|| crate::cloud_progress::ProgressVersion {
+                modified_ms: self
+                    .progress
+                    .iter()
+                    .find(|p| p.book_hash == hash)
+                    .map_or(0, |p| crate::cloud_recent::timestamp_millis(p.timestamp)),
+                device: "legacy-lan".into(),
+                legacy: true,
+            })
+    }
+
     pub fn merge_progress(&mut self, remote: &[ProgressEntry]) -> Vec<ProgressEntry> {
+        self.merge_progress_versioned(remote, &Default::default())
+    }
+
+    pub fn merge_progress_versioned(
+        &mut self,
+        remote: &[ProgressEntry],
+        versions: &std::collections::BTreeMap<String, crate::cloud_progress::ProgressVersion>,
+    ) -> Vec<ProgressEntry> {
         let mut changed = Vec::new();
         for r in remote {
+            if let Some(version) = versions.get(&r.book_hash) {
+                if !crate::cloud_sync::valid_hash(&r.book_hash)
+                    || !crate::cloud_sync::valid_device_id(&version.device)
+                    || r.chapter > 100_000
+                    || r.block > 10_000_000
+                    || r.char_offset > 100_000_000
+                    || r.title.len() > 4096
+                    || r.chapter_title.as_ref().is_some_and(|t| t.len() > 4096)
+                {
+                    continue;
+                }
+            }
+            let incoming = versions.get(&r.book_hash).cloned().unwrap_or_else(|| {
+                crate::cloud_progress::ProgressVersion {
+                    modified_ms: crate::cloud_recent::timestamp_millis(r.timestamp),
+                    device: "legacy-lan".into(),
+                    legacy: true,
+                }
+            });
+            let current = self.progress_version(&r.book_hash);
             if let Some(local) = self
                 .progress
                 .iter_mut()
                 .find(|p| p.book_hash == r.book_hash)
             {
-                let should_replace = r.timestamp > local.timestamp
-                    || (r.timestamp == local.timestamp
-                        && (r.chapter != local.chapter
-                            || r.block != local.block
-                            || r.char_offset != local.char_offset
-                            || (local.chapter_title.is_none() && r.chapter_title.is_some())));
-
-                if should_replace {
-                    *local = r.clone();
-                    changed.push(r.clone());
+                // Legacy peers have no author; stabilize equal-time conflicts by locator.
+                // Modern forwarded records retain the original clock and author.
+                let legacy_tie = incoming.legacy
+                    && current.legacy
+                    && incoming == current
+                    && (r.chapter, r.block, r.char_offset)
+                        > (local.chapter, local.block, local.char_offset);
+                let title_fill = incoming == current
+                    && crate::cloud_progress::same_position(local, r)
+                    && local.chapter_title.is_none()
+                    && r.chapter_title.is_some();
+                if incoming < current || (incoming == current && !legacy_tie && !title_fill) {
+                    continue;
                 }
+                *local = r.clone();
             } else {
                 self.progress.push(r.clone());
-                changed.push(r.clone());
             }
+            self.progress_versions.insert(r.book_hash.clone(), incoming);
+            changed.push(r.clone());
         }
         changed
+    }
+
+    /// Merge a completed session into the live store; do not replace concurrent local edits.
+    pub fn merge_session(&mut self, session: &Self, root: &str) {
+        self.merge_progress_versioned(&session.progress, &session.progress_versions);
+        for peer in &session.paired {
+            if !self.paired.iter().any(|p| p.device_id == peer.device_id) {
+                self.paired.push(peer.clone());
+            }
+        }
+        self.save(root);
+    }
+
+    /// Reconcile persisted edits, without treating a reopen as a new locator edit.
+    pub fn seed_progress(&mut self, root: &str) -> Result<(), String> {
+        let library = crate::library::Library::read_snapshot(root)?;
+        let mut journal = crate::cloud_sync::SyncJournal::load(root, &self.device_id);
+        for entry in &library.books {
+            journal.seed_entry(root, entry);
+        }
+        self.merge_progress_versioned(
+            &journal.own.progress.values().cloned().collect::<Vec<_>>(),
+            &journal.own.progress_versions,
+        );
+        Ok(())
     }
 }
 
@@ -641,9 +717,12 @@ fn handle_encrypted_session(
                     &mut recv_counter,
                     100 * 1024 * 1024,
                 )?;
-                validate_received_book(data_dir, &data, &hash, size)?;
-                let mut library = crate::library::Library::load_from(data_dir);
-                let entry = library.add_or_update_from_bytes(data_dir, title, &data, 0, None);
+                let entry = {
+                    let _access = crate::library::access::lock(data_dir)?;
+                    validate_received_book(data_dir, &data, &hash, size)?;
+                    let mut library = crate::library::Library::load_from(data_dir)?;
+                    library.add_or_update_from_bytes(data_dir, title, &data, 0, None)?
+                };
                 if std::path::Path::new(&entry.path).exists() {
                     crypto::write_encrypted_message(
                         stream,
@@ -656,21 +735,29 @@ fn handle_encrypted_session(
                     return Err("Failed to persist received book".into());
                 }
             }
-            Message::SyncProgress { entries, activity } => {
+            Message::SyncProgress {
+                entries,
+                activity,
+                versions,
+            } => {
                 let device = store.lock().map_err(|e| e.to_string())?.device_id.clone();
                 crate::reading_activity::import(data_dir, &device, &activity)?;
-                let all_progress = {
+                let mut seeded = store.lock().map_err(|e| e.to_string())?.clone();
+                seeded.seed_progress(data_dir)?;
+                let (all_progress, all_versions) = {
                     let mut s = store
                         .lock()
                         .map_err(|e| format!("PeerStore lock poisoned: {}", e))?;
-                    s.merge_progress(&entries);
+                    s.merge_progress_versioned(&seeded.progress, &seeded.progress_versions);
+                    s.merge_progress_versioned(&entries, &versions);
                     s.save(data_dir);
-                    s.progress.clone()
+                    (s.progress.clone(), s.progress_versions.clone())
                 };
                 crypto::write_encrypted_message(
                     stream,
                     &Message::ProgressResponse {
                         entries: all_progress,
+                        versions: all_versions,
                         activity: crate::reading_activity::snapshots(data_dir, &device)?,
                     },
                     &aes_key,
@@ -944,10 +1031,12 @@ pub fn auto_sync_session(
         "SYNC: starting auto_sync, progress entries={}",
         store.progress.len()
     );
+    store.seed_progress(data_dir)?;
     crypto::write_encrypted_message(
         stream,
         &Message::SyncProgress {
             entries: store.progress.clone(),
+            versions: store.progress_versions.clone(),
             activity: crate::reading_activity::snapshots(data_dir, &store.device_id)?,
         },
         aes_key,
@@ -956,10 +1045,14 @@ pub fn auto_sync_session(
     dbg_log!("SYNC: SyncProgress sent, waiting for ProgressResponse...");
 
     let changed_progress = match crypto::read_encrypted_message(stream, aes_key, recv_ctr)? {
-        Message::ProgressResponse { entries, activity } => {
+        Message::ProgressResponse {
+            entries,
+            activity,
+            versions,
+        } => {
             crate::reading_activity::import(data_dir, &store.device_id, &activity)?;
             dbg_log!("SYNC: got ProgressResponse with {} entries", entries.len());
-            let changed = store.merge_progress(&entries);
+            let changed = store.merge_progress_versioned(&entries, &versions);
             store.save(data_dir);
             dbg_log!("SYNC: progress merged, {} changed", changed.len());
             changed
@@ -1008,10 +1101,13 @@ pub fn auto_sync_session(
                             if hash != rb.hash {
                                 return Err("Downloaded book hash mismatch".into());
                             }
-                            validate_received_book(data_dir, &data, &hash, size)?;
-                            let mut library = crate::library::Library::load_from(data_dir);
-                            let _ =
-                                library.add_or_update_from_bytes(data_dir, title, &data, 0, None);
+                            {
+                                let _access = crate::library::access::lock(data_dir)?;
+                                validate_received_book(data_dir, &data, &hash, size)?;
+                                let mut library = crate::library::Library::load_from(data_dir)?;
+                                let _ = library
+                                    .add_or_update_from_bytes(data_dir, title, &data, 0, None)?;
+                            }
                             crypto::write_encrypted_message(
                                 stream,
                                 &Message::BookReceived {

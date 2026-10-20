@@ -532,3 +532,35 @@ fn archived_copy_requires_actual_cloud_bytes_before_local_release() {
         server.join().unwrap();
     }
 }
+
+#[test]
+fn bulk_failure_delivers_staged_metadata_without_claiming_transfer_success_or_losing_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let queue = staged::RetryQueue::load(root, "tester", "local").unwrap();
+    let mut own = DeviceSnapshot::new("local".into());
+    let hash = "a".repeat(64);
+    own.progress.insert(
+        hash.clone(),
+        crate::sharing::ProgressEntry {
+            book_hash: hash.clone(),
+            title: "Book".into(),
+            chapter: 9,
+            block: 3,
+            char_offset: 2,
+            chapter_title: None,
+            timestamp: 50,
+        },
+    );
+    let result =
+        staged::finish_file_phase(&own, &queue, None, Err("Cannot reach GitHub".into())).unwrap();
+    assert_eq!(result.own.progress[&hash].chapter, 9);
+    assert!(result.downloaded.is_empty());
+    assert_eq!(result.uploaded, 0);
+    assert_eq!(
+        result.terminal_error.as_deref(),
+        Some("Cannot reach GitHub")
+    );
+    assert_eq!(result.next_retry_after, Some(30));
+    assert!(staged::finish_file_phase(&own, &queue, None, Err("Sync cancelled".into())).is_err());
+}

@@ -1,4 +1,5 @@
 //! Library management, book cataloging, and metadata parsing.
+pub mod access;
 pub mod archive;
 pub mod covers;
 mod types;
@@ -61,6 +62,15 @@ pub struct Library {
 }
 
 impl Library {
+    // The root lease serializes mutations, but a previously loaded UI snapshot
+    // can still be stale. Refresh before changing membership or locators.
+    fn refresh_current(&mut self, data_dir: &str) -> Result<(), String> {
+        if let Some(current) = crate::storage::load::<Self>(&library_path(data_dir))? {
+            *self = current;
+            self.rebuild_index();
+        }
+        Ok(())
+    }
     /// Rebuild the path_index from the current books vec.
     fn rebuild_index(&mut self) {
         self.path_index.clear();
@@ -77,6 +87,7 @@ impl Library {
 impl Library {
     /// Sharing reads a frozen catalog without running migration or rewriting configs.
     pub fn read_snapshot(data_dir: &str) -> Result<Self, String> {
+        let _access = access::lock(data_dir)?;
         let data = match std::fs::read(library_path(data_dir)) {
             Ok(data) => data,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -89,42 +100,17 @@ impl Library {
         library.rebuild_index();
         Ok(library)
     }
-    pub fn load_from(data_dir: &str) -> Self {
-        let path = library_path(data_dir);
-        let mut library = if let Ok(data) = std::fs::read_to_string(&path) {
-            serde_json::from_str(&data).unwrap_or_default()
-        } else {
-            Self::default()
-        };
-
-        library.migrate_to_uuid_storage(data_dir);
+    pub fn load_from(data_dir: &str) -> Result<Self, String> {
+        let _access = access::lock(data_dir)?;
+        let mut library: Self = crate::storage::load(&library_path(data_dir))?.unwrap_or_default();
+        library.migrate_to_uuid_storage(data_dir)?;
         library.rebuild_index();
-        library
+        Ok(library)
     }
 
-    pub fn save_to(&self, data_dir: &str) {
-        let dir = PathBuf::from(data_dir);
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("[Library] failed to create data dir {:?}: {}", dir, e);
-            return;
-        }
-        let path = library_path(data_dir);
-        match serde_json::to_string_pretty(self) {
-            Ok(data) => {
-                if let Err(e) = std::fs::write(&path, data) {
-                    eprintln!("[Library] failed to write {:?}: {}", path, e);
-                }
-            }
-            Err(e) => eprintln!("[Library] failed to serialize library: {}", e),
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(mut perm) = std::fs::metadata(&path).map(|m| m.permissions()) {
-                perm.set_mode(0o600);
-                let _ = std::fs::set_permissions(&path, perm);
-            }
-        }
+    pub fn save_to(&self, data_dir: &str) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        crate::storage::save(&library_path(data_dir), self)
     }
 
     pub fn add_or_update(
@@ -134,10 +120,11 @@ impl Library {
         source_path: String,
         chapter: usize,
         chapter_title: Option<String>,
-    ) -> BookEntry {
-        if let Err(e) = std::fs::create_dir_all(books_dir(data_dir)) {
-            eprintln!("[Library] failed to create books dir: {}", e);
-        }
+    ) -> Result<BookEntry, String> {
+        let _access = access::lock(data_dir)?;
+        std::fs::create_dir_all(books_dir(data_dir))
+            .map_err(|e| format!("Cannot create storage: {e}"))?;
+        self.refresh_current(data_dir)?;
         let now = now_secs();
 
         let incoming_hash = file_hash(&source_path);
@@ -158,7 +145,12 @@ impl Library {
                     Some(existing.id.clone())
                 }
             })
-            .or_else(|| derive_id_from_path(&source_path))
+            .or_else(|| {
+                derive_id_from_path(&source_path).filter(|id| {
+                    Path::new(&source_path) == epub_path_for(data_dir, id)
+                        && !self.books.iter().any(|entry| &entry.id == id)
+                })
+            })
             .unwrap_or_else(generate_book_id);
         if !is_uuid_like(&id) {
             id = generate_book_id();
@@ -168,13 +160,10 @@ impl Library {
         let source = PathBuf::from(&source_path);
         let managed_epub_str = managed_epub.to_string_lossy().to_string();
 
-        if source.exists() && source != managed_epub {
-            if let Err(e) = std::fs::copy(&source, &managed_epub) {
-                eprintln!(
-                    "[Library] failed to copy {:?} -> {:?}: {}",
-                    source, managed_epub, e
-                );
-            }
+        if source != managed_epub {
+            crate::storage::copy_file(&source, &managed_epub)?;
+        } else if !source.is_file() {
+            return Err("Cannot read selected book".into());
         }
 
         let final_path = if managed_epub.exists() {
@@ -185,17 +174,12 @@ impl Library {
 
         if let Some(idx) = existing_idx {
             let entry = &mut self.books[idx];
-            if entry.last_chapter != chapter {
-                entry.last_block = 0;
-                entry.last_char_offset = 0;
-            }
             entry.id = id.clone();
             if entry.title.trim().is_empty() {
                 entry.title = title;
             }
             entry.path = final_path;
-            entry.last_chapter = chapter;
-            if chapter_title.is_some() {
+            if entry.last_chapter == chapter && chapter_title.is_some() {
                 entry.last_chapter_title = chapter_title;
             }
         } else {
@@ -214,10 +198,10 @@ impl Library {
         let idx = self.books.len().saturating_sub(1);
         let idx = existing_idx.unwrap_or(idx);
         let entry = self.books[idx].clone();
-        self.write_book_config(data_dir, &entry, Some(now));
+        self.write_book_config(data_dir, &entry, Some(now))?;
         self.rebuild_index();
-        self.save_to(data_dir);
-        entry
+        self.save_to(data_dir)?;
+        Ok(entry)
     }
 
     pub fn add_or_update_from_bytes(
@@ -227,10 +211,11 @@ impl Library {
         bytes: &[u8],
         chapter: usize,
         chapter_title: Option<String>,
-    ) -> BookEntry {
-        if let Err(e) = std::fs::create_dir_all(books_dir(data_dir)) {
-            eprintln!("[Library] failed to create books dir: {}", e);
-        }
+    ) -> Result<BookEntry, String> {
+        let _access = access::lock(data_dir)?;
+        std::fs::create_dir_all(books_dir(data_dir))
+            .map_err(|e| format!("Cannot create storage: {e}"))?;
+        self.refresh_current(data_dir)?;
         let now = now_secs();
         let incoming_hash = bytes_hash(bytes);
 
@@ -252,23 +237,16 @@ impl Library {
             .unwrap_or_else(generate_book_id);
 
         let managed_epub = epub_path_for(data_dir, &id);
-        if let Err(e) = std::fs::write(&managed_epub, bytes) {
-            eprintln!("[Library] failed to write epub {:?}: {}", managed_epub, e);
-        }
+        crate::storage::replace(&managed_epub, bytes)?;
 
         if let Some(idx) = existing_idx {
             let entry = &mut self.books[idx];
-            if entry.last_chapter != chapter {
-                entry.last_block = 0;
-                entry.last_char_offset = 0;
-            }
             entry.id = id.clone();
             if entry.title.trim().is_empty() {
                 entry.title = title;
             }
             entry.path = managed_epub.to_string_lossy().to_string();
-            entry.last_chapter = chapter;
-            if chapter_title.is_some() {
+            if entry.last_chapter == chapter && chapter_title.is_some() {
                 entry.last_chapter_title = chapter_title;
             }
         } else {
@@ -287,42 +265,66 @@ impl Library {
         let idx = self.books.len().saturating_sub(1);
         let idx = existing_idx.unwrap_or(idx);
         let entry = self.books[idx].clone();
-        self.write_book_config(data_dir, &entry, Some(now));
+        self.write_book_config(data_dir, &entry, Some(now))?;
         self.rebuild_index();
-        self.save_to(data_dir);
-        entry
+        self.save_to(data_dir)?;
+        Ok(entry)
     }
 
-    pub fn hide_by_path(&mut self, data_dir: &str, path: &str) {
+    pub fn hide_by_path(&mut self, data_dir: &str, path: &str) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
         self.hide_paths(
             data_dir,
             &std::collections::HashSet::from([path.to_owned()]),
-        );
+        )?;
+        Ok(())
     }
-    pub fn hide_paths(&mut self, data_dir: &str, paths: &std::collections::HashSet<String>) {
+    pub fn hide_paths(
+        &mut self,
+        data_dir: &str,
+        paths: &std::collections::HashSet<String>,
+    ) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         let before = self.books.len();
         self.books.retain(|e| !paths.contains(&e.path));
         if self.books.len() != before {
             self.rebuild_index();
-            self.save_to(data_dir);
+            self.save_to(data_dir)?;
         }
+        Ok(())
     }
-    pub fn restore_entry(&mut self, data_dir: &str, entry: BookEntry) {
+    pub fn restore_entry(&mut self, data_dir: &str, entry: BookEntry) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         if !self.books.iter().any(|e| e.id == entry.id) {
-            self.write_book_config(data_dir, &entry, None);
+            self.write_book_config(data_dir, &entry, None)?;
             self.books.push(entry);
         }
         self.rebuild_index();
-        self.save_to(data_dir);
+        self.save_to(data_dir)?;
+        Ok(())
     }
 
-    pub fn remove(&mut self, data_dir: &str, idx: usize) {
+    pub fn remove(&mut self, data_dir: &str, idx: usize) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        let target = self.books.get(idx).map(|entry| entry.id.clone());
+        self.refresh_current(data_dir)?;
+        let Some(idx) = target.and_then(|id| self.books.iter().position(|entry| entry.id == id))
+        else {
+            return Ok(());
+        };
         if idx < self.books.len() {
             let entry = self.books.remove(idx);
-            self.remove_entry_files(data_dir, &entry);
             self.rebuild_index();
-            self.save_to(data_dir);
+            if let Err(error) = self.save_to(data_dir) {
+                self.books.insert(idx, entry);
+                self.rebuild_index();
+                return Err(error);
+            }
+            self.remove_entry_files(data_dir, &entry);
         }
+        Ok(())
     }
 
     /// Change the display title while retaining storage identity and reading data.
@@ -332,6 +334,8 @@ impl Library {
         id: &str,
         title: &str,
     ) -> Result<BookEntry, String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         let title = title.trim();
         if title.is_empty() {
             return Err("Book name cannot be empty".into());
@@ -347,13 +351,11 @@ impl Library {
         renamed.books[idx].title = title.to_owned();
         config.title = title.to_owned();
         config.updated_at = now_secs();
-        let library_data = serde_json::to_vec_pretty(&renamed).map_err(|e| e.to_string())?;
-        let config_data = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
         let config_path = config_path_for(data_dir, id);
         let old_config = std::fs::read(&config_path).map_err(|e| e.to_string())?;
         let result = (|| {
-            write_rename_file(&config_path, &config_data)?;
-            if let Err(e) = write_rename_file(&library_path(data_dir), &library_data) {
+            crate::storage::save(&config_path, &config)?;
+            if let Err(e) = renamed.save_to(data_dir) {
                 let _ = write_rename_file(&config_path, &old_config);
                 return Err(e.to_string());
             }
@@ -370,6 +372,7 @@ impl Library {
         data_dir: &str,
         incoming: &[(String, String, PathBuf)],
     ) -> Result<(Vec<BookEntry>, usize), String> {
+        let _access = access::lock(data_dir)?;
         self.import_shared_books_checked(data_dir, incoming, || Ok(()), |_| {})
     }
     pub fn import_shared_books_checked(
@@ -379,6 +382,8 @@ impl Library {
         check: impl Fn() -> Result<(), String>,
         copied: impl Fn(u64),
     ) -> Result<(Vec<BookEntry>, usize), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         use sha2::{Digest, Sha256};
         use std::io::{Read, Write};
         let checked_hash = |path: &Path| -> Result<String, String> {
@@ -461,7 +466,7 @@ impl Library {
                     last_opened: 0,
                 };
                 next.books.push(entry.clone());
-                next.write_book_config(data_dir, &entry, None);
+                next.write_book_config(data_dir, &entry, None)?;
                 check()?;
                 let cfg = Self::read_book_config(data_dir, &entry.id)
                     .ok_or("Cannot save received book configuration")?;
@@ -471,12 +476,12 @@ impl Library {
                 imported.push(entry);
             }
             check()?;
-            let bytes = serde_json::to_vec_pretty(&next).map_err(|_| "Cannot save library")?;
-            write_rename_file(&library_path(data_dir), &bytes)
+            next.save_to(data_dir)
         })();
         if let Err(error) = result {
             for (epub, config) in created {
                 let _ = std::fs::remove_file(epub);
+                let _ = std::fs::remove_file(crate::storage::backup_path(&config));
                 let _ = std::fs::remove_file(config);
             }
             return Err(error);
@@ -486,13 +491,20 @@ impl Library {
         Ok((imported, skipped))
     }
 
-    pub fn remove_by_path(&mut self, data_dir: &str, path: &str) {
+    pub fn remove_by_path(&mut self, data_dir: &str, path: &str) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         if let Some(idx) = self.find_by_path(path) {
             let entry = self.books.remove(idx);
-            self.remove_entry_files(data_dir, &entry);
             self.rebuild_index();
-            self.save_to(data_dir);
+            if let Err(error) = self.save_to(data_dir) {
+                self.books.insert(idx, entry);
+                self.rebuild_index();
+                return Err(error);
+            }
+            self.remove_entry_files(data_dir, &entry);
         }
+        Ok(())
     }
 
     pub fn update_chapter(
@@ -501,8 +513,10 @@ impl Library {
         path: &str,
         chapter: usize,
         chapter_title: Option<String>,
-    ) {
-        self.update_position(data_dir, path, chapter, chapter_title, 0, 0);
+    ) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.update_position(data_dir, path, chapter, chapter_title, 0, 0)?;
+        Ok(())
     }
 
     pub fn update_position(
@@ -513,17 +527,33 @@ impl Library {
         chapter_title: Option<String>,
         block: usize,
         char_offset: usize,
-    ) {
+    ) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         let changed = self.find_by_path(path).is_some_and(|i| {
             let e = &self.books[i];
             (e.last_chapter, e.last_block, e.last_char_offset) != (chapter, block, char_offset)
         });
+        let edited_ms = crate::now_millis();
         if changed {
             if let Some(idx) = self.find_by_path(path) {
-                self.books[idx].last_opened = crate::now_millis();
+                self.books[idx].last_opened = self.books[idx].last_opened.max(edited_ms);
             }
         }
-        self.apply_position(data_dir, path, chapter, chapter_title, block, char_offset);
+        self.apply_current_position(
+            data_dir,
+            path,
+            chapter,
+            chapter_title,
+            block,
+            char_offset,
+            changed.then(|| crate::cloud_progress::ProgressVersion {
+                modified_ms: edited_ms,
+                device: String::new(),
+                legacy: false,
+            }),
+        )?;
+        Ok(())
     }
 
     /// Applying a locator from another device must not create a reading event.
@@ -535,7 +565,115 @@ impl Library {
         chapter_title: Option<String>,
         block: usize,
         char_offset: usize,
-    ) {
+    ) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
+        self.apply_current_position(
+            data_dir,
+            path,
+            chapter,
+            chapter_title,
+            block,
+            char_offset,
+            None,
+        )
+    }
+    /// Apply a selected reading edit with its captured clock, never a sync/save clock.
+    /// Late queued edits cannot replace a newer persisted locator revision.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_position_at(
+        &mut self,
+        data_dir: &str,
+        path: &str,
+        chapter: usize,
+        chapter_title: Option<String>,
+        block: usize,
+        char_offset: usize,
+        modified_ms: u64,
+    ) -> Result<bool, String> {
+        let record = crate::cloud_progress::VersionedProgress {
+            progress: crate::sharing::ProgressEntry {
+                book_hash: String::new(),
+                title: String::new(),
+                chapter,
+                block,
+                char_offset,
+                chapter_title,
+                timestamp: modified_ms / 1000,
+            },
+            version: crate::cloud_progress::ProgressVersion {
+                modified_ms,
+                device: String::new(),
+                legacy: false,
+            },
+        };
+        self.apply_versioned_position(data_dir, path, &record)
+    }
+
+    /// Publish a selected edit without changing its original author or precision.
+    /// Membership and version are rechecked under the same root lease as the write.
+    pub fn apply_versioned_position(
+        &mut self,
+        data_dir: &str,
+        path: &str,
+        record: &crate::cloud_progress::VersionedProgress,
+    ) -> Result<bool, String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
+        let Some(index) = self.find_by_path(path) else {
+            return Ok(false);
+        };
+        let stored = Self::load_book_config(data_dir, &self.books[index].id)?;
+        if stored
+            .as_ref()
+            .and_then(BookConfig::reading_version)
+            .is_some_and(|version| version > record.version)
+        {
+            return Ok(false);
+        }
+        let p = &record.progress;
+        let entry = &self.books[index];
+        if stored.as_ref().is_some_and(|config| {
+            config.reading_version().as_ref() == Some(&record.version)
+                && (
+                    config.last_chapter,
+                    config.last_block,
+                    config.last_char_offset,
+                ) == (p.chapter, p.block, p.char_offset)
+        }) && (entry.last_chapter, entry.last_block, entry.last_char_offset)
+            == (p.chapter, p.block, p.char_offset)
+            && p.chapter_title
+                .as_ref()
+                .is_none_or(|title| entry.last_chapter_title.as_ref() == Some(title))
+        {
+            return Ok(true);
+        }
+        self.books[index].last_opened = self.books[index]
+            .last_opened
+            .max(record.version.modified_ms);
+        self.apply_current_position(
+            data_dir,
+            path,
+            p.chapter,
+            p.chapter_title.clone(),
+            p.block,
+            p.char_offset,
+            Some(record.version.clone()),
+        )?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_current_position(
+        &mut self,
+        data_dir: &str,
+        path: &str,
+        chapter: usize,
+        chapter_title: Option<String>,
+        block: usize,
+        char_offset: usize,
+        version: Option<crate::cloud_progress::ProgressVersion>,
+    ) -> Result<(), String> {
         if let Some(idx) = self.find_by_path(path) {
             let entry = &mut self.books[idx];
             entry.last_chapter = chapter;
@@ -545,21 +683,30 @@ impl Library {
                 entry.last_chapter_title = chapter_title;
             }
             let entry_snapshot = entry.clone();
-            self.write_book_config(data_dir, &entry_snapshot, None);
-            self.save_to(data_dir);
+            self.write_book_config_with_clock(data_dir, &entry_snapshot, None, version)?;
+            self.save_to(data_dir)?;
         }
+        Ok(())
     }
 
     /// The caller supplies the originating reading time, never the sync time.
-    pub fn set_last_opened(&mut self, data_dir: &str, path: &str, at_ms: u64) {
+    pub fn set_last_opened(
+        &mut self,
+        data_dir: &str,
+        path: &str,
+        at_ms: u64,
+    ) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         if let Some(idx) = self.find_by_path(path) {
-            if self.books[idx].last_opened == at_ms {
-                return;
+            if self.books[idx].last_opened >= at_ms {
+                return Ok(());
             }
             self.books[idx].last_opened = at_ms;
-            self.write_book_config(data_dir, &self.books[idx], None);
-            self.save_to(data_dir);
+            self.write_book_config(data_dir, &self.books[idx], None)?;
+            self.save_to(data_dir)?;
         }
+        Ok(())
     }
 
     /// Batch remote history projection: write the catalog once, not once per book.
@@ -567,20 +714,23 @@ impl Library {
         &mut self,
         data_dir: &str,
         times: &std::collections::BTreeMap<String, u64>,
-    ) {
+    ) -> Result<(), String> {
+        let _access = access::lock(data_dir)?;
+        self.refresh_current(data_dir)?;
         let mut changed = false;
         for (path, at) in times {
             if let Some(idx) = self.find_by_path(path) {
-                if self.books[idx].last_opened != *at {
+                if self.books[idx].last_opened < *at {
                     self.books[idx].last_opened = *at;
-                    self.write_book_config(data_dir, &self.books[idx], None);
+                    self.write_book_config(data_dir, &self.books[idx], None)?;
                     changed = true;
                 }
             }
         }
         if changed {
-            self.save_to(data_dir);
+            self.save_to(data_dir)?;
         }
+        Ok(())
     }
 
     pub fn sorted_indices_by_recent(&self) -> Vec<usize> {
@@ -595,16 +745,18 @@ impl Library {
     }
 
     pub fn read_book_config(data_dir: &str, id: &str) -> Option<BookConfig> {
-        let path = config_path_for(data_dir, id);
-        let data = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        Self::load_book_config(data_dir, id).ok().flatten()
     }
 
-    fn migrate_to_uuid_storage(&mut self, data_dir: &str) {
+    pub fn load_book_config(data_dir: &str, id: &str) -> Result<Option<BookConfig>, String> {
+        let _access = access::lock(data_dir)?;
+        crate::annotations::load_config(data_dir, id)
+    }
+
+    fn migrate_to_uuid_storage(&mut self, data_dir: &str) -> Result<(), String> {
         let mut changed = false;
-        if let Err(e) = std::fs::create_dir_all(books_dir(data_dir)) {
-            eprintln!("[Library] failed to create books dir: {}", e);
-        }
+        std::fs::create_dir_all(books_dir(data_dir))
+            .map_err(|e| format!("Cannot create storage: {e}"))?;
 
         let mut seen_ids: HashSet<String> = HashSet::new();
         let mut seen_paths: HashSet<String> = HashSet::new();
@@ -617,26 +769,30 @@ impl Library {
             } else {
                 derive_id_from_path(&entry.path).unwrap_or_else(generate_book_id)
             };
-
-            while !seen_ids.insert(id.clone()) {
+            let current = PathBuf::from(&entry.path);
+            // An old catalog is not authority to overwrite an orphaned managed
+            // book. Allocate another identity when those bytes differ.
+            loop {
+                let destination = epub_path_for(data_dir, &id);
+                let occupied_by_other_bytes = current != destination
+                    && current.is_file()
+                    && destination.is_file()
+                    && crate::file_hash(&current.to_string_lossy())?
+                        != crate::file_hash(&destination.to_string_lossy())?;
+                if !seen_ids.contains(&id) && !occupied_by_other_bytes {
+                    break;
+                }
                 id = generate_book_id();
             }
+            seen_ids.insert(id.clone());
             if id != entry.id {
                 entry.id = id.clone();
                 changed = true;
             }
-
             let managed_epub = epub_path_for(data_dir, &id);
-            let current = PathBuf::from(&entry.path);
-
             if current != managed_epub {
                 if current.exists() {
-                    if let Err(e) = std::fs::copy(&current, &managed_epub) {
-                        eprintln!(
-                            "[Library] migration copy {:?} -> {:?} failed: {}",
-                            current, managed_epub, e
-                        );
-                    }
+                    crate::storage::copy_file(&current, &managed_epub)?;
                 }
                 if managed_epub.exists() {
                     entry.path = managed_epub.to_string_lossy().to_string();
@@ -659,26 +815,37 @@ impl Library {
                 || original.last_opened != entry.last_opened
                 || !config_path_for(data_dir, &entry.id).exists()
             {
-                self.write_book_config(data_dir, &entry, None);
+                self.write_book_config(data_dir, &entry, None)?;
             }
             migrated.push(entry);
         }
 
         self.books = migrated;
         if changed {
-            self.save_to(data_dir);
+            self.save_to(data_dir)?;
         }
+        Ok(())
     }
 
-    fn write_book_config(&self, data_dir: &str, entry: &BookEntry, created_at_hint: Option<u64>) {
-        if let Err(e) = std::fs::create_dir_all(books_dir(data_dir)) {
-            eprintln!("[Library] failed to create books dir: {}", e);
-        }
-        let config_path = config_path_for(data_dir, &entry.id);
+    fn write_book_config(
+        &self,
+        data_dir: &str,
+        entry: &BookEntry,
+        created_at_hint: Option<u64>,
+    ) -> Result<(), String> {
+        self.write_book_config_with_clock(data_dir, entry, created_at_hint, None)
+    }
+    fn write_book_config_with_clock(
+        &self,
+        data_dir: &str,
+        entry: &BookEntry,
+        created_at_hint: Option<u64>,
+        version: Option<crate::cloud_progress::ProgressVersion>,
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(books_dir(data_dir))
+            .map_err(|e| format!("Cannot create storage: {e}"))?;
 
-        let existing = std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<BookConfig>(&s).ok());
+        let existing = Self::load_book_config(data_dir, &entry.id)?;
 
         let created_at = existing
             .as_ref()
@@ -720,7 +887,12 @@ impl Library {
             .unwrap_or_default();
         let reading_stats = existing.as_ref().and_then(|c| c.reading_stats.clone());
 
-        let cfg = BookConfig {
+        let mut cfg = BookConfig {
+            annotation_state: existing
+                .as_ref()
+                .map(|c| c.annotation_state.clone())
+                .unwrap_or_default(),
+            persisted: existing.as_ref().and_then(|c| c.persisted.clone()),
             id: entry.id.clone(),
             title: entry.title.clone(),
             epub_path: entry.path.clone(),
@@ -729,6 +901,13 @@ impl Library {
             last_char_offset: entry.last_char_offset,
             last_chapter_title: entry.last_chapter_title.clone(),
             last_opened: entry.last_opened,
+            position_modified_ms: version.as_ref().map(|v| v.modified_ms).unwrap_or_else(|| {
+                existing
+                    .as_ref()
+                    .map_or(0, |config| config.position_modified_ms)
+            }),
+            position_version: version
+                .or_else(|| existing.as_ref().and_then(|c| c.position_version.clone())),
             created_at,
             updated_at: now_secs(),
             settings,
@@ -744,19 +923,7 @@ impl Library {
                 .map_or(0, |c| c.last_contribute_prompt_count),
         };
 
-        if let Ok(data) = serde_json::to_string_pretty(&cfg) {
-            if let Err(e) = std::fs::write(&config_path, &data) {
-                eprintln!("[Library] failed to write config {:?}: {}", config_path, e);
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(mut perm) = std::fs::metadata(&config_path).map(|m| m.permissions()) {
-                    perm.set_mode(0o600);
-                    let _ = std::fs::set_permissions(&config_path, perm);
-                }
-            }
-        }
+        cfg.save(data_dir)
     }
 
     fn remove_entry_files(&self, data_dir: &str, entry: &BookEntry) {
@@ -774,7 +941,9 @@ impl Library {
         };
 
         if !id.is_empty() {
-            let _ = std::fs::remove_file(config_path_for(data_dir, &id));
+            let config = config_path_for(data_dir, &id);
+            let _ = std::fs::remove_file(crate::storage::backup_path(&config));
+            let _ = std::fs::remove_file(config);
             let managed_epub = epub_path_for(data_dir, &id);
             if managed_epub != epub_path {
                 let _ = std::fs::remove_file(managed_epub);
@@ -784,30 +953,162 @@ impl Library {
 }
 
 fn write_rename_file(path: &Path, data: &[u8]) -> Result<(), String> {
-    let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-    let result = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary)?;
-        file.write_all(data)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    result.map_err(|e| e.to_string())
+    crate::storage::replace(path, data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_entry(id: &str, path: &Path) -> BookEntry {
+        BookEntry {
+            id: id.into(),
+            title: "Legacy book".into(),
+            path: path.to_string_lossy().into(),
+            last_chapter: 0,
+            last_block: 0,
+            last_char_offset: 0,
+            last_chapter_title: None,
+            last_opened: 0,
+        }
+    }
+    #[test]
+    fn migration_preserves_an_existing_managed_file_with_different_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let id = "f55b0ce4-7b45-4e58-83f1-164dfb8b19ee";
+        std::fs::create_dir_all(books_dir(root)).unwrap();
+        let external = dir.path().join("legacy.epub");
+        std::fs::write(&external, b"legacy bytes").unwrap();
+        let occupied = epub_path_for(root, id);
+        std::fs::write(&occupied, b"owned bytes").unwrap();
+        let mut library = Library::default();
+        library.books.push(legacy_entry(id, &external));
+        library.save_to(root).unwrap();
+        let migrated = Library::load_from(root).unwrap();
+        assert_eq!(migrated.books.len(), 1);
+        assert_ne!(migrated.books[0].id, id);
+        assert_eq!(std::fs::read(&occupied).unwrap(), b"owned bytes");
+        assert_eq!(
+            std::fs::read(&migrated.books[0].path).unwrap(),
+            b"legacy bytes"
+        );
+        assert_eq!(std::fs::read(&external).unwrap(), b"legacy bytes");
+        assert_eq!(
+            Library::load_from(root).unwrap().books[0].id,
+            migrated.books[0].id
+        );
+    }
+    #[test]
+    fn migration_copy_failure_is_returned_and_catalog_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let id = "ab09de94-45b4-48f6-9ad8-7c1a13400df5";
+        std::fs::create_dir_all(books_dir(root)).unwrap();
+        let external = dir.path().join("legacy.epub");
+        std::fs::write(&external, b"retained bytes").unwrap();
+        // A directory at the destination makes atomic publication fail without
+        // relying on platform-specific permissions or exhausting the device.
+        let destination = epub_path_for(root, id);
+        std::fs::create_dir(&destination).unwrap();
+        let mut library = Library::default();
+        library.books.push(legacy_entry(id, &external));
+        library.save_to(root).unwrap();
+        let before = std::fs::read(library_path(root)).unwrap();
+        assert!(Library::load_from(root).is_err());
+        assert_eq!(std::fs::read(library_path(root)).unwrap(), before);
+        assert_eq!(std::fs::read(&external).unwrap(), b"retained bytes");
+        assert!(destination.is_dir());
+        assert!(!config_path_for(root, id).exists());
+    }
+
+    #[test]
+    fn external_uuid_filename_cannot_overwrite_another_owned_book() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut library = Library::load_from(root).unwrap();
+        let original = library
+            .add_or_update_from_bytes(root, "Original".into(), b"original bytes", 0, None)
+            .unwrap();
+        let incoming = dir.path().join(format!("{}.epub", original.id));
+        std::fs::write(&incoming, b"different bytes").unwrap();
+        let added = library
+            .add_or_update(
+                root,
+                "Incoming".into(),
+                incoming.to_string_lossy().into_owned(),
+                0,
+                None,
+            )
+            .unwrap();
+        assert_ne!(original.id, added.id);
+        assert_eq!(std::fs::read(&original.path).unwrap(), b"original bytes");
+        assert_eq!(std::fs::read(added.path).unwrap(), b"different bytes");
+        assert_eq!(Library::load_from(root).unwrap().books.len(), 2);
+    }
+
+    #[test]
+    fn corrupt_catalog_recovers_annotations_and_never_becomes_an_empty_shelf() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut library = Library::load_from(root).unwrap();
+        let entry = library
+            .add_or_update_from_bytes(root, "Saved".into(), b"owned book", 0, None)
+            .unwrap();
+        let mut config = Library::load_book_config(root, &entry.id).unwrap().unwrap();
+        config.bookmarks.push(Bookmark {
+            chapter: 0,
+            block: 1,
+            created_at: 1,
+        });
+        config.save(root).unwrap();
+        config.notes.push(Note {
+            highlight_id: "saved".into(),
+            content: "retained".into(),
+            created_at: 1,
+            updated_at: 1,
+        });
+        config.save(root).unwrap();
+        std::fs::write(library_path(root), b"interrupted catalog").unwrap();
+        std::fs::write(config_path_for(root, &entry.id), b"interrupted annotations").unwrap();
+        let restored = Library::load_from(root).unwrap();
+        assert_eq!(restored.books.len(), 1);
+        let restored = Library::load_book_config(root, &entry.id).unwrap().unwrap();
+        assert_eq!(restored.bookmarks.len(), 1);
+        assert!(restored.notes.is_empty()); // The last complete backup precedes the final edit.
+        assert_eq!(std::fs::read(entry.path).unwrap(), b"owned book");
+    }
+
+    #[test]
+    fn unrecoverable_catalog_refuses_import_without_writing_owned_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(library_path(root), b"damaged").unwrap();
+        assert!(Library::load_from(root).is_err());
+        let mut library = Library::default();
+        assert!(library
+            .add_or_update_from_bytes(root, "New".into(), b"book", 0, None)
+            .is_err());
+        assert!(library.books.is_empty());
+        assert_eq!(std::fs::read(library_path(root)).unwrap(), b"damaged");
+        assert_eq!(std::fs::read_dir(books_dir(root)).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn failed_catalog_save_cannot_delete_a_book_or_its_annotations() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut library = Library::load_from(root).unwrap();
+        let entry = library
+            .add_or_update_from_bytes(root, "Saved".into(), b"owned book", 0, None)
+            .unwrap();
+        std::fs::remove_file(crate::storage::backup_path(&library_path(root))).unwrap();
+        std::fs::create_dir(crate::storage::backup_path(&library_path(root))).unwrap();
+        assert!(library.remove(root, 0).is_err());
+        assert_eq!(library.books.len(), 1);
+        assert!(config_path_for(root, &entry.id).is_file());
+        assert_eq!(std::fs::read(entry.path).unwrap(), b"owned book");
+    }
 
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -842,14 +1143,18 @@ mod tests {
         std::fs::write(&source, b"unchanged epub contents").unwrap();
         let root = dir.to_string_lossy().to_string();
         let mut library = Library::default();
-        let entry = library.add_or_update(
-            &root,
-            "Original".into(),
-            source.to_string_lossy().into(),
-            2,
-            None,
-        );
-        library.update_position(&root, &entry.path, 2, Some("Chapter".into()), 9, 3);
+        let entry = library
+            .add_or_update(
+                &root,
+                "Original".into(),
+                source.to_string_lossy().into(),
+                2,
+                None,
+            )
+            .unwrap();
+        library
+            .update_position(&root, &entry.path, 2, Some("Chapter".into()), 9, 3)
+            .unwrap();
         let before =
             serde_json::to_value(Library::read_book_config(&root, &entry.id).unwrap()).unwrap();
         let renamed = library
@@ -865,9 +1170,10 @@ mod tests {
         after["title"] = before["title"].clone();
         after["updated_at"] = before["updated_at"].clone();
         assert_eq!(after, before);
-        let mut reloaded = Library::load_from(&root);
-        let reopened =
-            reloaded.add_or_update(&root, "Original".into(), entry.path.clone(), 2, None);
+        let mut reloaded = Library::load_from(&root).unwrap();
+        let reopened = reloaded
+            .add_or_update(&root, "Original".into(), entry.path.clone(), 2, None)
+            .unwrap();
         assert_eq!(reopened.title, "中文 Book 📚");
         assert_eq!(
             std::fs::read(&entry.path).unwrap(),
@@ -876,6 +1182,236 @@ mod tests {
         assert!(reloaded.rename_book(&root, &entry.id, "  ").is_err());
         assert_eq!(reloaded.books[0].title, "中文 Book 📚");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn add_snapshot_book(library: &mut Library, root: &str, name: &str) -> BookEntry {
+        library
+            .add_or_update_from_bytes(root, name.into(), name.as_bytes(), 0, None)
+            .unwrap()
+    }
+    #[test]
+    fn reopening_or_reimporting_from_a_stale_snapshot_keeps_the_latest_locator() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut stale = Library::load_from(root).unwrap();
+        let entry = add_snapshot_book(&mut stale, root, "alpha");
+        let mut current = Library::load_from(root).unwrap();
+        current
+            .apply_position_at(root, &entry.path, 7, Some("Latest".into()), 3, 8, 2000)
+            .unwrap();
+        let reopened = stale
+            .add_or_update(
+                root,
+                "alpha".into(),
+                entry.path.clone(),
+                0,
+                Some("Old".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.last_chapter,
+                reopened.last_block,
+                reopened.last_char_offset
+            ),
+            (7, 3, 8)
+        );
+        assert_eq!(reopened.last_chapter_title.as_deref(), Some("Latest"));
+        let duplicate = stale
+            .add_or_update_from_bytes(root, "alpha".into(), b"alpha", 0, None)
+            .unwrap();
+        assert_eq!(
+            (
+                duplicate.last_chapter,
+                duplicate.last_block,
+                duplicate.last_char_offset
+            ),
+            (7, 3, 8)
+        );
+    }
+
+    #[test]
+    fn typed_reading_versions_resolve_ties_and_legacy_future_clocks_without_reopen_promotion() {
+        use crate::{
+            cloud_progress::{ProgressVersion, VersionedProgress},
+            cloud_sync::SyncJournal,
+            sharing::ProgressEntry,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut library = Library::load_from(root).unwrap();
+        let entry = add_snapshot_book(&mut library, root, "alpha");
+        let hash = Library::read_book_config(root, &entry.id)
+            .unwrap()
+            .file_hash
+            .unwrap();
+        let mut record = VersionedProgress {
+            progress: ProgressEntry {
+                book_hash: hash.clone(),
+                title: "Alpha".into(),
+                chapter: 9,
+                block: 0,
+                char_offset: 0,
+                chapter_title: None,
+                timestamp: 9999999999,
+            },
+            version: ProgressVersion {
+                modified_ms: 9999999999000,
+                device: "old-device".into(),
+                legacy: true,
+            },
+        };
+        assert!(library
+            .apply_versioned_position(root, &entry.path, &record)
+            .unwrap());
+        record.version = ProgressVersion {
+            modified_ms: 2000,
+            device: "A".into(),
+            legacy: false,
+        };
+        record.progress.chapter = 2;
+        assert!(
+            library
+                .apply_versioned_position(root, &entry.path, &record)
+                .unwrap(),
+            "Real reading must supersede inflated legacy clock"
+        );
+        record.version.device = "B".into();
+        record.progress.chapter = 3;
+        assert!(library
+            .apply_versioned_position(root, &entry.path, &record)
+            .unwrap());
+        let winner = record.clone();
+        record.version.device = "A".into();
+        record.progress.chapter = 8;
+        assert!(!library
+            .apply_versioned_position(root, &entry.path, &record)
+            .unwrap());
+        library
+            .set_last_opened(root, &entry.path, 9999999999999)
+            .unwrap();
+        let mut journal = SyncJournal::load(root, "relay");
+        journal.seed_entry(root, &library.books[0]);
+        assert_eq!(journal.own.progress_version(&hash), winner.version);
+        assert_eq!(journal.own.progress[&hash].chapter, 3);
+    }
+
+    #[test]
+    fn position_edit_clock_is_independent_from_reopen_time_and_rejects_delayed_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_str().unwrap();
+        let mut library = Library::default();
+        let entry = add_snapshot_book(&mut library, root, "alpha");
+        assert!(library
+            .apply_position_at(root, &entry.path, 1, None, 2, 3, 1000)
+            .unwrap());
+        library.set_last_opened(root, &entry.path, 9000).unwrap();
+        let config = Library::load_book_config(root, &entry.id).unwrap().unwrap();
+        assert_eq!(
+            (config.position_modified_ms, config.last_opened),
+            (1000, 9000)
+        );
+        assert!(!library
+            .apply_position_at(root, &entry.path, 9, None, 9, 9, 500)
+            .unwrap());
+        let config = Library::load_book_config(root, &entry.id).unwrap().unwrap();
+        assert_eq!(config.last_chapter, 1);
+        assert!(library
+            .apply_position_at(root, &entry.path, 2, None, 3, 4, 2000)
+            .unwrap());
+        let config = Library::load_book_config(root, &entry.id).unwrap().unwrap();
+        assert_eq!(
+            (config.position_modified_ms, config.last_opened),
+            (2000, 9000)
+        );
+        library
+            .update_position(root, &entry.path, 2, None, 3, 4)
+            .unwrap();
+        assert_eq!(
+            Library::load_book_config(root, &entry.id)
+                .unwrap()
+                .unwrap()
+                .position_modified_ms,
+            2000,
+            "Reflowing the same locator cannot create a new edit"
+        );
+    }
+
+    #[test]
+    fn stale_reader_mutation_preserves_background_imports_and_cannot_resurrect_a_removed_book() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_str().unwrap();
+        let mut writer = Library::default();
+        let first = add_snapshot_book(&mut writer, root, "alpha");
+        let mut stale = writer.clone();
+        let second = add_snapshot_book(&mut writer, root, "beta");
+        stale
+            .update_position(root, &first.path, 2, None, 3, 4)
+            .unwrap();
+        let live = Library::load_from(root).unwrap();
+        assert_eq!(live.books.len(), 2);
+        assert!(live.books.iter().any(|entry| entry.id == second.id));
+        assert_eq!(
+            live.books
+                .iter()
+                .find(|entry| entry.id == first.id)
+                .unwrap()
+                .last_block,
+            3
+        );
+        writer.remove_by_path(root, &first.path).unwrap();
+        stale
+            .update_position(root, &first.path, 9, None, 9, 9)
+            .unwrap();
+        let live = Library::load_from(root).unwrap();
+        assert_eq!(live.books.len(), 1);
+        assert_eq!(live.books[0].id, second.id);
+        assert!(stale
+            .rename_book(root, &first.id, "Do not resurrect")
+            .is_err());
+    }
+    #[test]
+    fn a_stale_display_index_removes_its_original_identity_after_another_snapshot_changes_membership(
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_str().unwrap();
+        let mut writer = Library::default();
+        let first = add_snapshot_book(&mut writer, root, "alpha");
+        let second = add_snapshot_book(&mut writer, root, "beta");
+        let mut stale = writer.clone();
+        writer.hide_by_path(root, &first.path).unwrap();
+        let third = add_snapshot_book(&mut writer, root, "gamma");
+        stale.remove(root, 1).unwrap();
+        let live = Library::load_from(root).unwrap();
+        assert_eq!(live.books.len(), 1);
+        assert_eq!(live.books[0].id, third.id);
+        assert!(std::path::Path::new(&third.path).exists());
+        assert!(!std::path::Path::new(&second.path).exists());
+    }
+    #[test]
+    fn two_concurrent_loaded_snapshots_import_without_losing_each_others_catalog_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_string_lossy().into_owned();
+        let mut initial = Library::default();
+        add_snapshot_book(&mut initial, &root, "alpha");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = ["beta", "gamma"]
+            .into_iter()
+            .map(|name| {
+                let mut snapshot = initial.clone();
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    add_snapshot_book(&mut snapshot, &root, name)
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let live = Library::load_from(&root).unwrap();
+        assert_eq!(live.books.len(), 3);
     }
 
     #[test]
@@ -889,16 +1425,20 @@ mod tests {
         let path = epub.to_string_lossy().to_string();
 
         let mut library = Library::default();
-        let entry = library.add_or_update(
-            &data_dir,
-            "Book".into(),
-            path.clone(),
-            2,
-            Some("Chapter".into()),
-        );
-        library.update_position(&data_dir, &entry.path, 2, Some("Chapter".into()), 9, 3);
+        let entry = library
+            .add_or_update(
+                &data_dir,
+                "Book".into(),
+                path.clone(),
+                2,
+                Some("Chapter".into()),
+            )
+            .unwrap();
+        library
+            .update_position(&data_dir, &entry.path, 2, Some("Chapter".into()), 9, 3)
+            .unwrap();
 
-        let reloaded = Library::load_from(&data_dir);
+        let reloaded = Library::load_from(&data_dir).unwrap();
         assert_eq!(reloaded.books[0].last_block, 9);
         assert_eq!(reloaded.books[0].last_char_offset, 3);
         let config = Library::read_book_config(&data_dir, &entry.id).unwrap();
