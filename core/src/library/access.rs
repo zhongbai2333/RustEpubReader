@@ -137,7 +137,10 @@ mod tests {
             let _guard = lock(root).unwrap();
             panic!("isolated unwind");
         });
-        let _guard = lock(root).unwrap();
+        let guard = lock(root).unwrap();
+        // Windows byte-range locks also block reads through another file handle.
+        // Reacquire after the unwind, then release before checking retained bytes.
+        drop(guard);
         assert_eq!(
             std::fs::read(dir.path().join(".library-access.lock")).unwrap(),
             b"retained"

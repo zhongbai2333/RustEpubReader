@@ -379,7 +379,7 @@ struct ReadingWorkspace: View {
     private var introductionReady: Bool {
         prepared && contentVisible && scenePhase == .active && !introductionSeen && panel == nil && passage == nil && publicationNote == nil && !quickMenuOpen
     }
-    var body: some View {
+    private var readingLifecycle: some View {
         readingPanels
         .task(id: introductionReady) {
             if introductionReady { tools = true; introductionPresented = true }
@@ -408,6 +408,9 @@ struct ReadingWorkspace: View {
             Task { _ = await annotations.perform() }
         }
         .onChange(of: annotations.revision) { _, _ in speech.refreshText(corrections: annotations.value.corrections ?? []) }
+    }
+    private var readingActivity: some View {
+        readingLifecycle
         .task {
             while !Task.isCancelled {
                 activity.sample(reading: prepared && !introductionPresented && scenePhase == .active && !quickMenuOpen && panel == nil && passage == nil && publicationNote == nil, listening: speech.audible)
@@ -419,29 +422,11 @@ struct ReadingWorkspace: View {
         .onChange(of: panel) { _, value in activity.touch(); if value != nil { activity.sample(reading: false, listening: speech.audible) } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { speech.pause(); activity.stop() } else {activity.touch()} }
         .onDisappear { navigationClosed = true; activity.stop();publicationLinkTask?.cancel();navigationPreparation?.cancel() }
+    }
+    private var nativeReading: some View {
+        readingActivity
         .task(id: "\(cssPolicy)/\(scriptsEnabled)/\(current.chapter)/\(nativeEvents)") {
-            let client=library.client, id=book.id, mode=cssPolicy, enabled=scriptsEnabled, events=nativeEvents
-            let indices=Array(max(0,current.chapter-2)..<min(book.chapters.count,current.chapter+3))
-            let chapter=current.chapter
-            let first=await Task.detached { () -> NativePresentation in
-                _ = try? book.chapter(at:chapter)
-                return (try? client.call("native_presentation",["id":id,"chapter":chapter,"policy":mode,"scripts":enabled,"events":(events[chapter] ?? []).map {["node":$0]}],as:NativePresentation.self)) ?? NativePresentation(styles:[],errors:[])
-            }.value
-            guard !Task.isCancelled else {return}
-            nativeStyles[chapter]=first.styles; nativeRevision += 1
-            // Optional neighbour styles must not trigger a second first-screen layout.
-            while !prepared && !Task.isCancelled { try? await Task.sleep(for:.milliseconds(16)) }
-            guard !Task.isCancelled else {return}
-            let result=await Task.detached {
-                indices.filter {$0 != chapter}.reduce(into:[Int:NativePresentation]()) { result,index in
-                    _ = try? book.chapter(at:index)
-                    result[index]=try? client.call("native_presentation",["id":id,"chapter":index,"policy":mode,"scripts":enabled,"events":(events[index] ?? []).map {["node":$0]}],as:NativePresentation.self)
-                }
-            }.value
-            guard !Task.isCancelled else {return}
-            var styles = nativeStyles.filter { indices.contains($0.key) || $0.key == jump?.chapter }
-            for (index, value) in result { styles[index] = value.styles }
-            if styles != nativeStyles { nativeStyles = styles; nativeRevision += 1 }
+            await prepareNativePresentation()
         }
         .onChange(of: cssPolicy) { _,_ in nativeStyles=[:] }
         .onChange(of: scriptsEnabled) { _,_ in nativeStyles=[:];nativeEvents=[:] }
@@ -450,9 +435,37 @@ struct ReadingWorkspace: View {
             guard let offer=library.offer else { return }
             navigate(to: offer.anchor, remote: true); library.offer=nil
         }
+    }
+    var body: some View {
+        nativeReading
         .alert(LM(library.errorTitle), isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) {
             Button(L("manage.done"), role: .cancel) { library.error = nil }
         } message: { Text(LM(library.error ?? "")) }
+    }
+
+    @MainActor private func prepareNativePresentation() async {
+        let client=library.client, id=book.id, mode=cssPolicy, enabled=scriptsEnabled, events=nativeEvents
+        let indices=Array(max(0,current.chapter-2)..<min(book.chapters.count,current.chapter+3))
+        let chapter=current.chapter
+        let first=await Task.detached { () -> NativePresentation in
+            _ = try? book.chapter(at:chapter)
+            return (try? client.call("native_presentation",["id":id,"chapter":chapter,"policy":mode,"scripts":enabled,"events":(events[chapter] ?? []).map {["node":$0]}],as:NativePresentation.self)) ?? NativePresentation(styles:[],errors:[])
+        }.value
+        guard !Task.isCancelled else {return}
+        nativeStyles[chapter]=first.styles; nativeRevision += 1
+        // Optional neighbour styles must not trigger a second first-screen layout.
+        while !prepared && !Task.isCancelled { try? await Task.sleep(for:.milliseconds(16)) }
+        guard !Task.isCancelled else {return}
+        let result=await Task.detached {
+            indices.filter {$0 != chapter}.reduce(into:[Int:NativePresentation]()) { result,index in
+                _ = try? book.chapter(at:index)
+                result[index]=try? client.call("native_presentation",["id":id,"chapter":index,"policy":mode,"scripts":enabled,"events":(events[index] ?? []).map {["node":$0]}],as:NativePresentation.self)
+            }
+        }.value
+        guard !Task.isCancelled else {return}
+        var styles = nativeStyles.filter { indices.contains($0.key) || $0.key == jump?.chapter }
+        for (index, value) in result { styles[index] = value.styles }
+        if styles != nativeStyles { nativeStyles = styles; nativeRevision += 1 }
     }
 
 }
