@@ -35,6 +35,15 @@ class ReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "isolated iOS"):
                 runtime.ios(SimpleNamespace(app=app))
 
+    def test_ipad_baseline_is_stable_across_xcode_device_order(self):
+        prefix="com.apple.CoreSimulator.SimDeviceType."
+        def tablet(name,minimum=0):return dict(identifier=prefix+name,productFamily="iPad",minRuntimeVersion=minimum,maxRuntimeVersion=0xffffffff)
+        devices=[tablet("iPad-Pro-13-inch-M5-16GB"),tablet("iPad-10th-generation"),tablet("iPad-A16")]
+        for order in (devices,list(reversed(devices))):
+            self.assertEqual(runtime.compatible_tablet(order,"26.2"),prefix+"iPad-A16")
+        devices[-1]["minRuntimeVersion"]=28 << 16
+        self.assertEqual(runtime.compatible_tablet(devices,"26.2"),prefix+"iPad-10th-generation")
+
     def test_artifact_identity_detects_changed_bytes_paths_and_absent_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); binary = root / "binary"; binary.write_bytes(b"owned fixture")
@@ -87,7 +96,9 @@ class IOSLifecycleTests(unittest.TestCase):
             self.assertEqual(set(result), set(runtime.CASES))
             launches = [c for c in calls if c[0] == "launch"]
             self.assertEqual(len(launches), len(runtime.CASES))
-            self.assertTrue(all(c[1:4] == ("--terminate-running-process", "owned-device", "local.reader.columns") for c in launches))
+            self.assertEqual(launches[0][1:3],("owned-device","local.reader.columns"))
+            self.assertNotIn("--terminate-running-process",launches[0])
+            self.assertTrue(all(c[1:4] == ("--terminate-running-process", "owned-device", "local.reader.columns") for c in launches[1:]))
             self.assertEqual(calls[-2:], [("shutdown", "owned-device"), ("delete", "owned-device")])
 
     def test_cleanup_attempts_delete_after_shutdown_timeout_and_preserves_original_error(self):
@@ -113,6 +124,29 @@ class IOSLifecycleTests(unittest.TestCase):
             rows = [json.loads(line) for line in (output / "simulator-commands.jsonl").read_text().splitlines()]
             self.assertEqual([r["status"] for r in rows], ["started", "failed"])
             self.assertEqual(rows[-1]["stderr"], "simulator unavailable")
+
+    def test_launch_timeout_retains_native_report_and_diagnostics_without_passing_or_retrying(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);args,listing=self.fixture(root);calls=[]
+            cache=root/"container/Library/Caches";cache.mkdir(parents=True)
+            def device(output,*command,**kwargs):
+                calls.append(command)
+                if command[0]=="create":return b"owned-device\n"
+                if command[0]=="get_app_container":return str(root/"container").encode()
+                if command[0]=="launch":
+                    (cache/"single-column-verification.json").write_text('{"passed":true}')
+                    raise subprocess.TimeoutExpired(command,180)
+                if command[0] in ("spawn","io"):
+                    self.assertEqual(kwargs["timeout"],15)
+                    return b"owned simulator diagnostics"
+                return b""
+            with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device):
+                with self.assertRaises(subprocess.TimeoutExpired):runtime.ios(args)
+            self.assertEqual(len([c for c in calls if c[0]=="launch"]),1)
+            self.assertTrue((args.output/"single-column-verification.json").is_file())
+            self.assertTrue((args.output/"simulator-processes.txt").is_file())
+            self.assertTrue((args.output/"simulator-recent.log").is_file())
+            self.assertEqual(calls[-2:],[("shutdown","owned-device"),("delete","owned-device")])
 
 
 class CorpusCoverageTests(unittest.TestCase):

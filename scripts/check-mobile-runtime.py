@@ -201,14 +201,35 @@ def cleanup_ios_simulator(output, identifier):
     return errors
 
 
+def capture_ios_failure(output, identifier, bundle):
+    """Collect bounded diagnostics before the owned simulator is deleted."""
+    predicate = 'process == "SpringBoard" OR process == "runningboardd" OR eventMessage CONTAINS[c] "' + bundle + '"'
+    commands = [
+        ("simulator-processes.txt", ("spawn", identifier, "launchctl", "list")),
+        ("simulator-recent.log", ("spawn", identifier, "log", "show", "--style", "compact", "--last", "3m", "--predicate", predicate)),
+        ("simulator-failure-screen.log", ("io", identifier, "screenshot", "--type=png", str((output / "simulator-failure.png").resolve()))),
+    ]
+    for filename, command in commands:
+        try:
+            data = ios_simctl(output, *command, timeout=15)
+            (output / filename).write_bytes(data)
+        except (OSError, subprocess.SubprocessError) as error:
+            (output / (filename + ".error.txt")).write_text(str(error) + "\n")
+
+
 def compatible_tablet(types, version):
     parts = [int(x) for x in version.split(".")]
     parts = (parts + [0, 0])[:3]
     encoded = (parts[0] << 16) | (parts[1] << 8) | parts[2]
-    for device in types:
-        if (device.get("productFamily") == "iPad"
-                and device.get("minRuntimeVersion", 0) <= encoded <= device.get("maxRuntimeVersion", 0)):
-            return device["identifier"]
+    compatible = [device for device in types if device.get("productFamily") == "iPad"
+                  and device.get("minRuntimeVersion", 0) <= encoded <= device.get("maxRuntimeVersion", 0)]
+    # Keep the CI baseline independent of Xcode's newest-device-first order.
+    for model in ("iPad-A16", "iPad-10th-generation", "iPad-Air-11-inch-M2"):
+        for device in compatible:
+            if device["identifier"] == "com.apple.CoreSimulator.SimDeviceType." + model:
+                return device["identifier"]
+    if compatible:
+        return compatible[0]["identifier"]
     raise ValueError("No iPad device type supports the selected Simulator runtime")
 
 
@@ -511,14 +532,15 @@ def ios(args):
         caches.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "ios/Tests/fixtures/native-reading-modes.epub", documents / "reading-modes.epub")
         results = {}
-        for case, report in CASES.items():
+        for index, (case, report) in enumerate(CASES.items()):
             path = caches / report
             path.unlink(missing_ok=True)
             flag = "--verify-single-column" if case == "single-column" else "--verify-navigation"
-            # This also replaces an existing instance between cases, without a
-            # separate terminate request for the never-launched first instance.
-            ios_simctl(args.output, "launch", "--terminate-running-process", identifier, bundle, "--verify-reading-modes", flag)
             try:
+                # A freshly installed app has no instance to terminate. Only
+                # subsequent cases replace a process that this collector started.
+                options = () if index == 0 else ("--terminate-running-process",)
+                ios_simctl(args.output, "launch", *options, identifier, bundle, "--verify-reading-modes", flag)
                 results[case] = wait_report(path, args.timeout)
             finally:
                 if path.is_file():
@@ -532,8 +554,8 @@ def ios(args):
             (documents / "corpus-cases.json").write_text(json.dumps(CORPUS_CASES, indent=2))
             path = caches / "native-verification.json"
             path.unlink(missing_ok=True)
-            ios_simctl(args.output, "launch", "--terminate-running-process", identifier, bundle, "--verify-native", "--book-share-preview")
             try:
+                ios_simctl(args.output, "launch", "--terminate-running-process", identifier, bundle, "--verify-native", "--book-share-preview")
                 results["corpus"] = validate_corpus(wait_report(path, args.timeout), "ios")
             finally:
                 if path.is_file(): shutil.copyfile(path, args.output / path.name)
@@ -546,6 +568,9 @@ def ios(args):
             results["selection"] = collect_ios_selection(args, identifier, bundle)
         completed = True
         return results
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError):
+        capture_ios_failure(args.output, identifier, bundle)
+        raise
     finally:
         cleanup_errors = cleanup_ios_simulator(args.output, identifier)
         if completed and cleanup_errors:
