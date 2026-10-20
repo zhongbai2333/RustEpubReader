@@ -263,6 +263,18 @@ def compatible_tablet(types, version, requested=None):
     raise ValueError("No iPad device type supports the selected Simulator runtime")
 
 
+def select_ios_runtime(runtimes, requested=None):
+    available = [r for r in runtimes if r.get("isAvailable") and ".iOS-" in r["identifier"]]
+    if requested is not None:
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", requested):
+            raise ValueError("Expected an iOS runtime version such as 26.4")
+        prefix = tuple(map(int, requested.split(".")))
+        available = [r for r in available if tuple(map(int, r["version"].split(".")))[:len(prefix)] == prefix]
+    if not available:
+        raise ValueError("No available iOS Simulator runtime matches: " + str(requested))
+    return max(available, key=lambda r: tuple(map(int, r["version"].split("."))))
+
+
 def validate_report(data):
     value = json.loads(data)
     if not isinstance(value, dict) or value.get("passed") is not True:
@@ -553,10 +565,7 @@ def ios(args):
     if getattr(args, "with_selection", False):
         ios_selection_inputs(args.app, args.xctestrun)
     runtimes = json.loads(run("xcrun", "simctl", "list", "runtimes", "-j"))["runtimes"]
-    available = [r for r in runtimes if r.get("isAvailable") and ".iOS-" in r["identifier"]]
-    if not available:
-        raise ValueError("No available iOS Simulator runtime")
-    runtime = max(available, key=lambda r: tuple(map(int, r["version"].split("."))))
+    runtime = select_ios_runtime(runtimes, getattr(args,"ios_runtime_version",None))
     types = json.loads(run("xcrun", "simctl", "list", "devicetypes", "-j"))["devicetypes"]
     device_type = compatible_tablet(types, runtime["version"])
     identifier = ios_simctl(args.output, "create", "ReaderCI-" + str(uuid.uuid4()),
@@ -632,6 +641,7 @@ def main():
     parser.add_argument("--with-selection", action="store_true", help="Native selection gestures, persisted scalar ranges, and real system Reduce Motion checks")
     parser.add_argument("--xctestrun", type=Path, help="Pinned ReaderUITests manifest, required for iOS selection")
     parser.add_argument("--show-simulator", action="store_true", help="Attach the selected Xcode Simulator UI to this run's owned iPad")
+    parser.add_argument("--ios-runtime-version", help="Require an installed iOS runtime version (major.minor or major.minor.patch)")
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -641,6 +651,8 @@ def main():
         parser.error("--with-book-opening is only supported for Android emulators")
     if args.show_simulator and args.platform != "ios":
         parser.error("--show-simulator is only supported for iOS simulators")
+    if args.ios_runtime_version and args.platform != "ios":
+        parser.error("--ios-runtime-version is only supported for iOS simulators")
     if args.platform == "android" and args.tests is None:
         parser.error("--tests is required for Android")
     ui_runner = ios_selection_inputs(args.app, args.xctestrun) if args.with_selection and args.platform == "ios" else None

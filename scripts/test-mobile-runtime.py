@@ -17,6 +17,16 @@ SPEC.loader.exec_module(runtime)
 
 
 class ReportTests(unittest.TestCase):
+    def test_requested_ios_runtime_does_not_drift_to_another_installed_sdk(self):
+        def item(version,available=True):
+            return dict(identifier="com.apple.CoreSimulator.SimRuntime.iOS-"+version.replace(".","-"),version=version,isAvailable=available)
+        runtimes=[item("26.2"),item("26.4.1"),item("26.4.2"),item("26.5"),item("26.40"),item("27.0",False)]
+        self.assertEqual(runtime.select_ios_runtime(runtimes,"26.4")["version"],"26.4.2")
+        self.assertEqual(runtime.select_ios_runtime(runtimes,"26.4.1")["version"],"26.4.1")
+        for request in ("26.3","27.0","26","26.4x"):
+            with self.subTest(request=request),self.assertRaises(ValueError):runtime.select_ios_runtime(runtimes,request)
+        self.assertEqual(runtime.select_ios_runtime(runtimes)["version"],"26.40")
+
     def test_command_timeout_defaults_and_explicit_bounds_are_not_duplicated(self):
         with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(stdout=b"ok")) as process:
             self.assertEqual(runtime.run("owned-tool"),b"ok")
@@ -119,6 +129,13 @@ class IOSLifecycleTests(unittest.TestCase):
             self.assertLess(calls.index(("launch","owned-device","com.apple.Preferences")), next(i for i,c in enumerate(calls) if c[0]=="install"))
             self.assertFalse(any(c[0]=="terminate" for c in calls))
             self.assertEqual(calls[-2:], [("shutdown", "owned-device"), ("delete", "owned-device")])
+
+    def test_missing_requested_runtime_fails_before_creating_a_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,listing=self.fixture(Path(directory));args.ios_runtime_version="26.4"
+            with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl") as device:
+                with self.assertRaisesRegex(ValueError,"runtime matches"):runtime.ios(args)
+            device.assert_not_called()
 
     def test_cleanup_attempts_delete_after_shutdown_timeout_and_preserves_original_error(self):
         with tempfile.TemporaryDirectory() as directory:

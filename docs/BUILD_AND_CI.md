@@ -88,12 +88,20 @@ Legacy raw executable replacement remains available on Windows/Linux.
 
 ## iOS environment and artifacts
 
-The iOS workflow uses `macos-15` (arm64) and explicitly selects Xcode 26.3.
+The iOS workflow uses `macos-26` (arm64) and explicitly selects Xcode 26.4.1
+and an installed iOS 26.4 runtime. It fails if that runtime is absent rather
+than silently selecting another version from the runner image.
 The [runner label table](https://github.com/actions/runner-images#available-images)
-and [installed tools](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md)
+and [installed tools](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)
 are the source for this choice. Do not rely on the runner's default Xcode: the
 source references SDK 26 APIs behind runtime availability checks. The minimum
 deployment target remains iOS 17.
+
+Xcode 26.4 includes fixes for Simulator cache creation and `simctl` hangs
+([Apple release notes](https://developer.apple.com/documentation/xcode-release-notes/xcode-26_4-release-notes),
+170836966 and 172343027). Runtime cache preparation and a system-app launch
+probe run before admitting the reader tests; the reader's own launch or test
+failures remain failures. Different Xcode/host combinations use separate caches.
 
 Rustup installs `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The build phase
 preserves the selected Rust toolchain and honors Cargo's target directory.

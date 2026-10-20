@@ -23,13 +23,13 @@ permissions:
 jobs:
     build-ios:
         name: Swift checks / simulator / unsigned device IPA
-        runs-on: macos-15
+        runs-on: macos-26
         timeout-minutes: 60
         defaults:
             run:
                 shell: bash
         env:
-            DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+            DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
             BUILD_VERSION: ${{ inputs.version || github.sha }}
         steps:
             - name: Checkout
@@ -63,9 +63,9 @@ jobs:
                       target/aarch64-apple-ios
                       target/aarch64-apple-ios-sim
                       target/ios-ci/Packages
-                  key: ios-arm64-xcode26.3-${{ hashFiles('Cargo.lock', 'ios/**/Package.resolved') }}
+                  key: ios-arm64-macos26-xcode26.4.1-${{ hashFiles('Cargo.lock', 'ios/**/Package.resolved') }}
                   restore-keys: |
-                      ios-arm64-xcode26.3-
+                      ios-arm64-macos26-xcode26.4.1-
 
             - name: Verify shared core and native layout / OAuth
               run: |
@@ -105,7 +105,7 @@ jobs:
                   READER_UI_MANIFEST="$(python3 -c 'import glob; paths=glob.glob("target/ios-ci/Simulator/Build/Products/ReaderUITests_*.xctestrun"); assert len(paths)==1, paths; print(paths[0])')"
                   python3 scripts/check-mobile-runtime.py ios \
                     --app target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
-                    --timeout 240 --output target/ios-ci/runtime --with-corpus --with-selection --show-simulator \
+                    --timeout 240 --output target/ios-ci/runtime --with-corpus --with-selection --show-simulator --ios-runtime-version 26.4 \
                     --xctestrun "$READER_UI_MANIFEST"
 
             - name: Archive unsigned iPhone / iPad Release
