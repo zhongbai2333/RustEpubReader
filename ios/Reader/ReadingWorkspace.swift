@@ -419,6 +419,7 @@ struct ReadingWorkspace: View {
         }
         .onChange(of: current) { _, _ in if !speech.following || speech.state == .idle {activity.touch()} }
         .onChange(of: quickMenuOpen) { _, open in if open {activity.sample(reading:false,listening:speech.audible)} }
+        .onChange(of: showTools) { _, visible in if !visible {quickMenuOpen = false} }
         .onChange(of: panel) { _, value in activity.touch(); if value != nil { activity.sample(reading: false, listening: speech.audible) } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { speech.pause(); activity.stop() } else {activity.touch()} }
         .onDisappear { navigationClosed = true; activity.stop();publicationLinkTask?.cancel();navigationPreparation?.cancel() }

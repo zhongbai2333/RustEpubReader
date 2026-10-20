@@ -343,10 +343,10 @@ class SelectionTests(unittest.TestCase):
 class ReducedMotionTests(unittest.TestCase):
     @staticmethod
     def ios_report():
-        return dict(passed=True,system_reduce_motion=True,reduced_motion_geometry_checks=15,automatic_remote_offer=True,no_local_echo=True,cases=[dict(mode=mode,cross_chapter=True,same_chapter_offset=True,precise_return=True,reflow=True) for mode in ("none","curl","slide","cover","scroll")])
+        return dict(passed=True,system_reduce_motion=True,reduced_motion_geometry_checks=15,automatic_remote_offer=True,no_local_echo=True,quick_menu_teardown=True,cases=[dict(mode=mode,cross_chapter=True,same_chapter_offset=True,precise_return=True,reflow=True) for mode in ("none","curl","slide","cover","scroll")])
     def test_real_system_policy_and_full_coverage_are_required(self):
         good=self.ios_report();self.assertEqual(runtime.validate_reduced_motion(good,"ios"),good)
-        for key,value in (("system_reduce_motion",False),("reduced_motion_geometry_checks",0),("reduced_motion_geometry_checks",True),("cases",[]),("cases",[None]*5),("no_local_echo",False)):
+        for key,value in (("system_reduce_motion",False),("reduced_motion_geometry_checks",0),("reduced_motion_geometry_checks",True),("cases",[]),("cases",[None]*5),("no_local_echo",False),("quick_menu_teardown",False),("quick_menu_teardown",None)):
             bad=self.ios_report();bad[key]=value
             with self.assertRaises(RuntimeError):runtime.validate_reduced_motion(bad,"ios")
         android=SelectionTests.report("android");android["system_animators_enabled"]=False

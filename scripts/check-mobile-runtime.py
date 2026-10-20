@@ -55,6 +55,8 @@ def validate_reduced_motion(report, platform):
             raise RuntimeError("iOS Reduce Motion navigation coverage incomplete")
         if report.get("automatic_remote_offer") is not True or report.get("no_local_echo") is not True:
             raise RuntimeError("iOS Reduce Motion remote progress checks missing")
+        if report.get("quick_menu_teardown") is not True:
+            raise RuntimeError("iOS reading menu teardown check missing")
     return report
 
 

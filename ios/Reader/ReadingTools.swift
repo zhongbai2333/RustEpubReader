@@ -35,15 +35,20 @@ struct ReadingToolsMenu: UIViewRepresentable {
         if !button.menuVisible { button.menu = context.coordinator.menu(for: button) }
     }
     static func dismantleUIView(_ button: ReaderMenuButton, coordinator: ReaderQuickMenuCoordinator) {
-        button.cancelMenu()
+        button.dismantleMenu()
     }
 }
 final class ReaderMenuButton: UIButton {
     var visibility: ((Bool) -> Void)?
     private(set) var menuVisible = false
-    func cancelMenu() {
+    func dismantleMenu() {
+        // SwiftUI may already be destroying the state captured by this callback.
+        // Disconnect before UIKit dismisses: its end/completion can also arrive
+        // synchronously or after the representable has been removed.
+        visibility = nil
         contextMenuInteraction?.dismissMenu()
-        menuVisible = false; visibility?(false)
+        menuVisible = false
+        menu = nil
     }
     override func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
         willDisplayMenuFor configuration: UIContextMenuConfiguration, animator: UIContextMenuInteractionAnimating?) {

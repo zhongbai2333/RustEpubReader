@@ -357,6 +357,7 @@ enum ReadingModesRuntimeCheck {
 
     @MainActor private static func verifyNavigation(scene: UIWindowScene, book: PreviewBook, requireReducedMotion:Bool=false) async throws -> [String: Any] {
         func require(_ value: Bool, _ message: String) throws { if !value { throw CoreFailure(message: message) } }
+        try await verifyQuickMenuTeardown(scene: scene)
         let host = UIViewController(), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true }
@@ -453,7 +454,40 @@ enum ReadingModesRuntimeCheck {
         // Wait for both the disclosure and the system glass transition to settle.
         try await Task.sleep(for: .milliseconds(4000))
         try snapshot("navigation-reader.png")
-        return ["cases": cases, "reduced_motion_geometry_checks":motionChecks, "queued_slide_jumps":queuedSlideJumps, "persistent_history": true, "automatic_remote_offer": true, "no_local_echo": true, "preview_id": preview.id, "preview_anchor": [25, 3, 8]]
+        return ["cases": cases, "quick_menu_teardown":true, "reduced_motion_geometry_checks":motionChecks, "queued_slide_jumps":queuedSlideJumps, "persistent_history": true, "automatic_remote_offer": true, "no_local_echo": true, "preview_id": preview.id, "preview_anchor": [25, 3, 8]]
+    }
+
+    @MainActor private static func verifyQuickMenuTeardown(scene: UIWindowScene) async throws {
+        var visibilityChanges = [Bool]()
+        let menu = ReadingToolsMenu(tint:.black, contents:{}, settings:{}, speech:{}, annotations:{}, correction:{}, search:{}, statistics:{}, night:false, dayNight:{}, visibility:{visibilityChanges.append($0)})
+        let window = UIWindow(windowScene:scene)
+        window.rootViewController = UIHostingController(rootView:menu.frame(width:44,height:44))
+        window.makeKeyAndVisible()
+        defer {window.isHidden = true; window.rootViewController = nil}
+        func findButton(_ view:UIView)->ReaderMenuButton? {
+            if let button = view as? ReaderMenuButton {return button}
+            return view.subviews.lazy.compactMap(findButton).first
+        }
+        window.layoutIfNeeded()
+        for _ in 0..<100 {
+            if findButton(window) != nil {break}
+            try await Task.sleep(for:.milliseconds(20))
+        }
+        guard let button = findButton(window), button.menu != nil, button.visibility != nil else {
+            throw CoreFailure(message:"Reading menu was not mounted for teardown check")
+        }
+        // Remove a real representable through SwiftUI. Teardown must detach its
+        // state callback even when no menu was opened, and release its actions.
+        window.rootViewController = UIViewController()
+        for _ in 0..<100 {
+            if button.visibility == nil && button.menu == nil {break}
+            try await Task.sleep(for:.milliseconds(20))
+        }
+        guard visibilityChanges.isEmpty, button.visibility == nil, button.menu == nil, !button.menuVisible else {
+            throw CoreFailure(message:"Reading menu teardown called a removed view or retained menu callbacks")
+        }
+        button.dismantleMenu()
+        guard visibilityChanges.isEmpty else {throw CoreFailure(message:"Repeated menu teardown notified removed state")}
     }
 
     @MainActor private static func verifyChainedSlideNavigation(host:UIViewController,book:PreviewBook) async throws -> Int {
