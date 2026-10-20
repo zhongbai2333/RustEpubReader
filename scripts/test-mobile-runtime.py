@@ -533,6 +533,29 @@ class FailureEvidenceTests(unittest.TestCase):
             self.assertTrue(runtime.collect_android_result(device,"accessibility","accessibility.json",root)["passed"])
             self.assertFalse((root/"accessibility-failure.png").exists())
 
+    def test_navigation_failure_collects_its_own_screen_without_hiding_the_error(self):
+        for valid in (True,False):
+            with self.subTest(valid=valid),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                def device(*args):
+                    if args[-1]=="cache/navigation-failure.png":return b"\x89PNG\r\n\x1a\nreader before cleanup" if valid else b"missing image"
+                    if args==("exec-out","screencap","-p"):return b"\x89PNG\r\n\x1a\nlauncher"
+                    return b'{"passed":false,"error":"restart did not restore position"}'
+                with self.assertRaisesRegex(RuntimeError,"restart did not restore position"):
+                    runtime.collect_android_result(device,"navigation","navigation.json",root)
+                self.assertEqual((root/"navigation-failure.png").exists(),valid)
+                self.assertEqual((root/"navigation-failure-screenshot-error.txt").exists(),not valid)
+
+    def test_navigation_success_never_collects_a_stale_failure_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            def device(*args):
+                if args==("exec-out","screencap","-p"):return b"\x89PNG\r\n\x1a\nreader"
+                self.assertNotEqual(args[-1],"cache/navigation-failure.png")
+                return b'{"passed":true}'
+            self.assertTrue(runtime.collect_android_result(device,"navigation","navigation.json",root)["passed"])
+            self.assertFalse((root/"navigation-failure.png").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

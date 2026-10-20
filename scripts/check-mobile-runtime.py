@@ -364,16 +364,16 @@ def collect_android_result(device, case, report, output):
         original = error
         raise
     finally:
-        if original is not None and case == "accessibility":
+        if original is not None and case in ("accessibility", "navigation"):
             # The instrumentation captures this before finishing its Activity;
             # the later screen can already be the launcher or TalkBack setup.
             try:
-                png = device("exec-out", "run-as", ANDROID_PACKAGE, "cat", "cache/accessibility-failure.png")
+                png = device("exec-out", "run-as", ANDROID_PACKAGE, "cat", "cache/" + case + "-failure.png")
                 if not png.startswith(b"\x89PNG\r\n\x1a\n"):
-                    raise RuntimeError("Invalid accessibility failure screenshot")
-                (output / "accessibility-failure.png").write_bytes(png)
+                    raise RuntimeError("Invalid " + case + " failure screenshot")
+                (output / (case + "-failure.png")).write_bytes(png)
             except Exception as error:
-                (output / "accessibility-failure-screenshot-error.txt").write_text(str(error) + "\n")
+                (output / (case + "-failure-screenshot-error.txt")).write_text(str(error) + "\n")
         try:
             png = device("exec-out", "screencap", "-p")
             if not png.startswith(b"\x89PNG\r\n\x1a\n"):

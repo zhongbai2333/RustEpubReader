@@ -17,13 +17,32 @@ import com.zhongbai233.epub.reader.model.*
 import com.zhongbai233.epub.reader.viewmodel.ReaderViewModel
 import java.io.File
 import org.json.JSONObject
+import org.json.JSONArray
 
 internal object ReaderNavigationRuntimeChecks {
     fun run(test: Instrumentation) {
         val context = test.targetContext
         check(context.packageName in setOf("local.reader.navigation", "local.reader.columns")) { "Use the isolated navigation package" }
         val report = JSONObject()
+        val states = JSONArray()
+        var activeActivity: MainActivity? = null
+        var activeModel: ReaderViewModel? = null
+        File(context.cacheDir,"navigation-failure.png").delete()
         val preferences = context.getSharedPreferences("reader_settings", 0)
+        fun record(label: String) {
+            val vm=activeModel
+            val uri=preferences.getString("last_book_uri",null)
+            val progress=JSONArray(RustBridge.getSyncedProgress(context.filesDir.path))
+            val saved=(0 until progress.length()).map {progress.getJSONObject(it)}.firstOrNull {it.optString("path")==uri}
+            states.put(JSONObject().put("event",label).put("activity_destroyed",activeActivity?.isDestroyed)
+                .put("has_book",vm?.currentBook!=null).put("loading",vm?.isLoading)
+                .put("chapter",vm?.currentChapter).put("block",vm?.currentBlock).put("offset",vm?.currentCharOffset)
+                .put("error",vm?.errorMessage).put("saved_uri",uri)
+                .put("saved_chapter",preferences.getInt("last_book_chapter",-1))
+                .put("committed_chapter",saved?.optInt("chapter",-1))
+                .put("committed_block",saved?.optInt("block",-1))
+                .put("committed_offset",saved?.optInt("char_offset",-1)))
+        }
         fun await(message: String, condition: () -> Boolean) {
             repeat(200) { test.waitForIdleSync(); if(condition()) return; Thread.sleep(50) }; error(message)
         }
@@ -41,6 +60,7 @@ internal object ReaderNavigationRuntimeChecks {
             val activity = test.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
             lateinit var vm: ReaderViewModel
             test.runOnMainSync { vm = ViewModelProvider(activity)[ReaderViewModel::class.java] }
+            activeActivity=activity;activeModel=vm
             return activity to vm
         }
         try {
@@ -112,10 +132,16 @@ internal object ReaderNavigationRuntimeChecks {
             }) { "Receiving peer progress changed its original revision" }
             val remoteVersionText = remoteVersion.toString()
             check(vm.returnHistory.last().location.chapter == 20)
+            record("before restart")
+            val previousActivity=activity
+            val previousModel=vm
             test.runOnMainSync { vm.persistReadingSession(); activity.finish() }
-            Thread.sleep(300)
+            await("Previous reader Activity did not finish destruction") {previousActivity.isDestroyed}
+            record("previous Activity destroyed")
             val restarted = start(); activity = restarted.first; vm = restarted.second
+            check(activity!==previousActivity && vm!==previousModel) {"Restart reused the destroyed reader"}
             await("Restart did not reopen reader") { vm.currentBook != null && !vm.isLoading && vm.currentChapter == 21 }
+            record("reader restored")
             check(vm.currentBlock == 3 && vm.currentCharOffset == 3)
             check(vm.returnHistory.last().location.chapter == 20)
             check(remoteVersionText == JSONObject(journal.readText()).getJSONObject("own").optJSONObject("progress_versions").toString()) { "Remote position created local edit" }
@@ -143,11 +169,22 @@ internal object ReaderNavigationRuntimeChecks {
             test.runOnMainSync { vm.goBackChapter() }
             await("Continuous reader return failed") { vm.currentChapter == 20 }
             test.runOnMainSync { vm.updateScrollMode(false); vm.closeBook(); activity.finish() }
+            await("Closed reader Activity did not finish destruction") {activity.isDestroyed}
             val closed = start().second
             Thread.sleep(700)
             check(closed.currentBook == null) { "Explicit close reopened reader" }
             report.put("passed",true).put("exact_startup_resume",true).put("cross_and_same_chapter_return",true).put("sequential_turn_has_no_history",true).put("remote_jump",true).put("encrypted_peer_progress",true).put("restart_history",true).put("explicit_close",true).put("long_press_location",true).put("round_button_click",true).put("continuous_reader",true)
-        } catch (failure: Throwable) { report.put("passed",false).put("error",failure.stackTraceToString()) }
+        } catch (failure: Throwable) {
+            report.put("passed",false).put("error",failure.stackTraceToString())
+            runCatching {record("failure")}.onFailure {report.put("state_capture_error",it.toString())}
+            runCatching {
+                test.uiAutomation.takeScreenshot()?.let {image->
+                    try {File(context.cacheDir,"navigation-failure.png").outputStream().use {image.compress(Bitmap.CompressFormat.PNG,100,it)}}
+                    finally {image.recycle()}
+                }
+            }.onFailure {report.put("screenshot_error",it.toString())}
+        }
+        report.put("states",states)
         File(context.cacheDir,"navigation-verification.json").writeText(report.toString(2))
         test.finish(if(report.optBoolean("passed")) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {putString("stream",report.toString(2))})
     }
