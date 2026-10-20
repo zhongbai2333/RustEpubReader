@@ -150,7 +150,7 @@ struct ReaderMotionUITestHost:UIViewControllerRepresentable {
     private var started=false
     override func viewDidLoad() {
         super.viewDidLoad();view.backgroundColor = .white
-        status.accessibilityIdentifier="motion-status";status.numberOfLines=0
+        status.accessibilityIdentifier="motion-status";status.numberOfLines=0;status.isAccessibilityElement=true
         status.text="Checking native reduced motion";status.textColor = .black
         view.addSubview(status)
     }
@@ -159,11 +159,16 @@ struct ReaderMotionUITestHost:UIViewControllerRepresentable {
         super.viewDidAppear(animated)
         guard !started else{return};started=true
         guard ["local.reader.ui-files","local.reader.columns"].contains(Bundle.main.bundleIdentifier ?? "") else {status.text="Failed: diagnostic bundle required";return}
-        let window=view.window
-        ReadingModesRuntimeCheck.run(reducedMotion:true) {[weak self,weak window] report in
-            window?.makeKeyAndVisible()
-            self?.status.text = report["passed"] as? Bool == true ? "Passed native reduced motion" : "Failed native reduced motion"
-            if let data=try? JSONSerialization.data(withJSONObject:report,options:.sortedKeys) {self?.status.accessibilityValue=String(data:data,encoding:.utf8)}
+        guard let window=view.window else {status.text="Failed: diagnostic window missing";return}
+        // The suite temporarily makes its own UIKit windows key. Keep this host
+        // alive until it returns and explicitly refresh accessibility on iOS 26.
+        ReadingModesRuntimeCheck.run(reducedMotion:true) {[self,window] report in
+            let message = report["passed"] as? Bool == true ? "Passed native reduced motion" : "Failed native reduced motion"
+            status.text=message;status.accessibilityLabel=message
+            if let data=try? JSONSerialization.data(withJSONObject:report,options:.sortedKeys) {status.accessibilityValue=String(data:data,encoding:.utf8)}
+            window.makeKeyAndVisible()
+            view.setNeedsLayout();view.layoutIfNeeded()
+            UIAccessibility.post(notification:.screenChanged,argument:status)
         }
     }
 }

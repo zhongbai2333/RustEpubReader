@@ -152,6 +152,43 @@ class CorpusCoverageTests(unittest.TestCase):
                 with self.subTest(platform=platform, field=field), self.assertRaises(RuntimeError): runtime.validate_corpus(report, platform)
 
 
+class ImmersiveConfirmationTests(unittest.TestCase):
+    class Device:
+        def __init__(self, before="null", emulator=True, reject_setup=False):
+            self.value=before;self.emulator=emulator;self.mutations=0;self.reject_setup=reject_setup
+        def __call__(self,*args):
+            if args[:3]==("shell","getprop","ro.kernel.qemu"):return b"1" if self.emulator else b"0"
+            if args[:4]==("shell","settings","get","secure"):return self.value.encode()
+            self.mutations+=1
+            if args[2]=="delete":self.value="null"
+            elif not (self.reject_setup and args[-1]=="confirmed"):self.value=shlex.split(args[-1])[0]
+            return b""
+
+    def test_first_run_and_preexisting_settings_are_restored_exactly(self):
+        for before in ("null","","confirmed","prior;setting"):
+            with self.subTest(before=before):
+                device=self.Device(before);state={}
+                with runtime.immersive_confirmation_session(device,state):self.assertEqual(device.value,"confirmed")
+                self.assertEqual(device.value,before);self.assertTrue(state["restored"])
+                if before=="confirmed":self.assertEqual(device.mutations,0)
+
+    def test_failed_native_case_still_restores_the_first_run_state(self):
+        device=self.Device();state={}
+        with self.assertRaisesRegex(RuntimeError,"actual native failure"):
+            with runtime.immersive_confirmation_session(device,state):raise RuntimeError("actual native failure")
+        self.assertEqual(device.value,"null");self.assertTrue(state["restored"])
+
+    def test_refuses_physical_device_and_failed_setup_cannot_run_the_case(self):
+        device=self.Device(emulator=False)
+        with self.assertRaisesRegex(ValueError,"emulator"):
+            with runtime.immersive_confirmation_session(device,{}):self.fail("Physical device admitted")
+        self.assertEqual(device.mutations,0)
+        device=self.Device(reject_setup=True)
+        with self.assertRaisesRegex(RuntimeError,"Could not prepare"):
+            with runtime.immersive_confirmation_session(device,{}):self.fail("Unprepared device admitted")
+        self.assertEqual(device.value,"null")
+
+
 class TalkBackRestorationTests(unittest.TestCase):
     class Device:
         def __init__(self, emulator=True, fail_activation=False):
@@ -254,6 +291,7 @@ class SelectionTests(unittest.TestCase):
             def execute(*args,**kwargs):
                 nonlocal ran
                 ran=True
+                self.assertGreaterEqual(kwargs["timeout"],600,"Allow cold XCTest setup and the six cases to complete cleanup")
                 (cache/"reduced-motion-verification.json").write_text(json.dumps(ReducedMotionTests.ios_report()))
                 for row in self.report("ios")["cases"]:
                     (cache/("selection-ui-"+row["mode"]+".json")).write_text(json.dumps(dict(row,passed=True)))
@@ -314,6 +352,32 @@ class ReducedMotionTests(unittest.TestCase):
 
 
 class FailureEvidenceTests(unittest.TestCase):
+    def test_opening_failure_retains_the_screen_before_activity_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            def device(*args):
+                if args[-1].endswith("failed-before-cleanup.png"):return b"\x89PNG\r\n\x1a\nsystem tutorial"
+                raise RuntimeError("case stopped before this screenshot")
+            runtime.collect_android_opening_screens(device,root,required=False)
+            self.assertTrue((root/"book-opening-runtime/failed-before-cleanup.png").is_file())
+            self.assertTrue((root/"book-opening-runtime/shelf-screenshot-error.txt").is_file())
+
+    def test_passed_opening_case_still_requires_all_three_proof_screens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError,"Missing opening-cancellation screenshot: shelf"):
+                runtime.collect_android_opening_screens(lambda *args:b"not a PNG",Path(directory),required=True)
+
+    def test_failed_xctest_cannot_be_replaced_by_a_passed_native_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);output=root/"output";output.mkdir()
+            cache=root/"container/Library/Caches";cache.mkdir(parents=True)
+            (cache/"reduced-motion-verification.json").write_text('{"passed":true}')
+            args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
+            with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,"ios_simctl",return_value=str(root/"container").encode()):
+                with self.assertRaisesRegex(RuntimeError,"Native selection XCTest failed"):
+                    runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
+            self.assertTrue((output/"reduced-motion-verification.json").is_file())
+
     def test_native_failure_or_missing_report_still_captures_the_screen(self):
         for missing in (False,True):
             with tempfile.TemporaryDirectory() as directory:

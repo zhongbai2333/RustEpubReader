@@ -82,8 +82,16 @@ internal object BookOpeningRuntimeChecks {
                     var ready = false
                     test.runOnMainSync {
                         ready = activity?.hasWindowFocus() == true && activity?.onBackPressedDispatcher?.hasEnabledCallbacks() == true
+                        report.put("back_wait_state", JSONObject()
+                            .put("window_focus", activity?.hasWindowFocus())
+                            .put("enabled_callbacks", activity?.onBackPressedDispatcher?.hasEnabledCallbacks())
+                            .put("lifecycle", activity?.lifecycle?.currentState?.name)
+                            .put("finishing", activity?.isFinishing)
+                            .put("book_loaded", vm.currentBook != null).put("loading", vm.isLoading))
                     }
-                    ready && test.uiAutomation.rootInActiveWindow?.packageName?.toString() == context.packageName
+                    val activePackage = test.uiAutomation.rootInActiveWindow?.packageName?.toString()
+                    report.getJSONObject("back_wait_state").put("active_package", activePackage)
+                    ready && activePackage == context.packageName
                 }
                 if (!report.has("reader_ready_at_back")) {
                     report.put("reader_ready_at_back", vm.currentBook != null && !vm.isLoading)
@@ -130,7 +138,15 @@ internal object BookOpeningRuntimeChecks {
             report.put("passed", true).put("shelf_click", true).put("system_back", true)
                 .put("late_completion_observed_ms", 900).put("reopen_exact_book", true)
                 .put("physical_device", false).put("inflight_core_cancellation_proven", false)
-        } catch (error: Throwable) { report.put("passed", false).put("error", error.stackTraceToString()) }
+        } catch (error: Throwable) {
+            report.put("passed", false).put("error", error.stackTraceToString())
+            runCatching {
+                test.uiAutomation.takeScreenshot()?.let { bitmap ->
+                    File(output, "failed-before-cleanup.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    bitmap.recycle()
+                }
+            }
+        }
         finally { activity?.let { test.runOnMainSync { it.finish() } } }
         File(output, "summary.json").writeText(report.toString(2))
         test.finish(if (report.optBoolean("passed")) Activity.RESULT_OK else Activity.RESULT_CANCELED,

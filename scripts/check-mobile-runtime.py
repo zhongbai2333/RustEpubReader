@@ -92,7 +92,10 @@ def collect_ios_selection(args, identifier, bundle):
                "-parallel-testing-enabled", "NO", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
     try:
         with (args.output / "selection-ui.log").open("wb") as log:
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(240, args.timeout))
+            # Six XCTest cases include cold runner setup and restoring Settings.
+            # Keep per-case assertions bounded; allow the suite to finish them
+            # and write a complete XCResult instead of killing its cleanup.
+            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(600, args.timeout))
         if result.returncode != 0:
             raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
     finally:
@@ -321,6 +324,47 @@ def collect_android_result(device, case, report, output):
                 raise
 
 
+def collect_android_opening_screens(device, output, required):
+    folder = output / "book-opening-runtime"
+    folder.mkdir(exist_ok=True)
+    for name in ("shelf", "before-back", "returned-shelf", "reopened", "failed-before-cleanup"):
+        try:
+            png = device("exec-out", "run-as", ANDROID_PACKAGE, "cat", "cache/book-opening-runtime/" + name + ".png")
+            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise RuntimeError("Missing opening-cancellation screenshot: " + name)
+            (folder / (name + ".png")).write_bytes(png)
+        except Exception as error:
+            (folder / (name + "-screenshot-error.txt")).write_text(str(error) + "\n")
+            if required and name in ("shelf", "returned-shelf", "reopened"):
+                raise
+
+
+@contextmanager
+def immersive_confirmation_session(device, state):
+    """Use an onboarded emulator for input tests, then restore its exact setting."""
+    if device("shell", "getprop", "ro.kernel.qemu").strip() != b"1":
+        raise ValueError("Immersive tutorial setup requires an emulator")
+    key = "immersive_mode_confirmations"
+    def current():
+        return device("shell", "settings", "get", "secure", key).decode().strip()
+    before = state["before"] = current()
+    try:
+        if before != "confirmed":
+            device("shell", "settings", "put", "secure", key, "confirmed")
+        state["during"] = current()
+        if state["during"] != "confirmed":
+            raise RuntimeError("Could not prepare the emulator immersive tutorial state")
+        yield
+    finally:
+        if before != "confirmed":
+            if before == "null": device("shell", "settings", "delete", "secure", key)
+            else: device("shell", "settings", "put", "secure", key, shlex.quote(before))
+        state["after"] = current()
+        state["restored"] = state["after"] == before
+        if not state["restored"]:
+            raise RuntimeError("Could not restore the emulator immersive tutorial state")
+
+
 def android(args):
     sdk = Path(os.environ.get("ANDROID_HOME", os.environ.get("ANDROID_SDK_ROOT", "")))
     adb = sdk / "platform-tools/adb"
@@ -338,6 +382,17 @@ def android(args):
         if f"name='{expected}'" not in first:
             raise ValueError(f"Refusing APK with unexpected package: {first}")
         device("install", "-r", str(apk))
+    state = {}
+    try:
+        with immersive_confirmation_session(device, state):
+            results = android_checks(args, device)
+        results["immersive_confirmation_settings"] = state
+        return results
+    finally:
+        (args.output / "immersive-confirmation-settings.json").write_text(json.dumps(state, indent=2) + "\n")
+
+
+def android_checks(args, device):
     fixture = ROOT / "ios/Tests/fixtures/native-reading-modes.epub"
     remote = "/data/local/tmp/reader-runtime.epub"
     device("push", str(fixture), remote)
@@ -359,12 +414,12 @@ def android(args):
         # from each execution are copied out before another execution can run.
         device("shell", "run-as", ANDROID_PACKAGE, "rm", "-rf", "cache/book-opening-runtime")
         (args.output / "book-opening-runtime").mkdir()
-        sample("book-opening", "book-opening-runtime/summary.json", "book-opening.epub")
-        for name in ("shelf", "returned-shelf", "reopened"):
-            png = device("exec-out", "run-as", ANDROID_PACKAGE, "cat", "cache/book-opening-runtime/" + name + ".png")
-            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise RuntimeError("Missing opening-cancellation screenshot")
-            (args.output / "book-opening-runtime" / (name + ".png")).write_bytes(png)
+        opening_passed = False
+        try:
+            sample("book-opening", "book-opening-runtime/summary.json", "book-opening.epub")
+            opening_passed = True
+        finally:
+            collect_android_opening_screens(device, args.output, required=opening_passed)
     if getattr(args, "with_corpus", False):
         device("shell", "run-as", ANDROID_PACKAGE, "mkdir", "-p", "cache/corpus")
         remote_corpus = "/data/local/tmp/reader-ci-corpus"
