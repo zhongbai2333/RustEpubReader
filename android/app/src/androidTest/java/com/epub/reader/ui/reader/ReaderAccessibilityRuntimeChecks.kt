@@ -29,6 +29,7 @@ internal object ReaderAccessibilityRuntimeChecks {
         val events=JSONArray()
         var activity:MainActivity?=null
         val automation=test.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        ReaderAccessibilityTurnTrace.start()
         fun await(message:String,condition:()->Boolean) {
             repeat(200) {test.waitForIdleSync();if(condition())return;Thread.sleep(50)}
             error(message)
@@ -60,6 +61,7 @@ internal object ReaderAccessibilityRuntimeChecks {
             lateinit var vm:ReaderViewModel
             test.runOnMainSync {vm=ViewModelProvider(host)[ReaderViewModel::class.java];vm.updateForceSingleColumn(true)}
             await("Reader did not open") {vm.currentBook!=null && !vm.isLoading && vm.currentChapter==1}
+            test.runOnMainSync {vm.updateFontSize(24f);vm.updateLineSpacing(1.5f)}
             fun location()=ReaderLocation(vm.currentChapter,vm.currentBlock,vm.currentCharOffset)
             fun record(event:String) {
                 events.put(JSONObject().put("event",event).put("mode",vm.readerPageAnimation)
@@ -73,7 +75,10 @@ internal object ReaderAccessibilityRuntimeChecks {
                 // Retry only rejected commands; after acceptance never issue a
                 // second turn, and independently assert the resulting location.
                 await("Accessible action not accepted: $label") {
-                    action(label)?.let {(node,command)->node.performAction(command.id)} == true
+                    action(label)?.let {(node,command)->
+                        ReaderAccessibilityTurnTrace.record("instrumentation action=$label id=${command.id} node=${node.viewIdResourceName}")
+                        node.performAction(command.id)
+                    } == true
                 }
             }
             for(mode in listOf("Realistic","Slide","Cover","None")) {
@@ -82,27 +87,51 @@ internal object ReaderAccessibilityRuntimeChecks {
                 Thread.sleep(350) // Let the production opening/reflow gate release; not timing data.
                 val origin=location()
                 record("origin")
-                val text=nodes().firstOrNull {it.isVisibleToUser && it.packageName?.toString()==context.packageName && (it.text?.length?:0)>24}
-                    ?:error("No readable native text node: $mode")
-                text.performAction(AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS)
-                check(text.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)) {"Native text cannot receive accessibility focus: $mode"}
+                var text:AccessibilityNodeInfo?=null
+                await("No readable native text node: $mode") {
+                    text=nodes().firstOrNull {it.isVisibleToUser && it.packageName?.toString()==context.packageName && (it.text?.length?:0)>24}
+                    text!=null
+                }
+                checkNotNull(text).performAction(AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS)
+                check(checkNotNull(text).performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)) {"Native text cannot receive accessibility focus: $mode"}
                 perform(I18n.t("reader.next_page"))
                 await("Accessible next did not move: $mode") {location()!=origin}
                 record("next settled")
+                var outgoing:AccessibilityNodeInfo?=null
+                if(mode=="Cover") await("Missing outgoing synthetic page text") {
+                    outgoing=nodes().firstOrNull {it.isVisibleToUser && it.packageName?.toString()==context.packageName && it.text?.contains("第6段")==true}
+                    outgoing!=null
+                }
                 perform(I18n.t("reader.previous_page"))
                 record("previous accepted")
+                var outgoingShowAccepted=false
+                outgoing?.let {oldParagraph->
+                    // TalkBack can ask to reveal its old focused paragraph while
+                    // a custom page return is running. Exercise that exact race.
+                    Thread.sleep(50)
+                    outgoingShowAccepted=oldParagraph.performAction(android.R.id.accessibilityActionShowOnScreen)
+                    ReaderAccessibilityTurnTrace.record("instrumentation outgoing SHOW_ON_SCREEN accepted=$outgoingShowAccepted")
+                    record("outgoing focus visibility request")
+                }
                 var last=location()
                 await("Accessible previous did not return: $mode, origin=$origin") {
                     if(location()!=last) {last=location();record("previous position changed")}
                     location()==origin
                 }
                 record("returned")
-                cases.put(JSONObject().put("mode",mode).put("native_text_focus",true).put("custom_actions",true).put("exact_return",true))
+                check(!outgoingShowAccepted) {"Outgoing focus must not restart a page scroll: $mode"}
+                cases.put(JSONObject().put("mode",mode).put("native_text_focus",true).put("custom_actions",true).put("exact_return",true)
+                    .put("outgoing_focus_scroll_rejected",!outgoingShowAccepted))
             }
             report.put("passed",true)
         } catch(error:Throwable) {
             report.put("error",error.toString())
             report.put("failure_active_package",automation.rootInActiveWindow?.packageName?.toString())
+            report.put("failure_visible_nodes",JSONArray(nodes().filter {it.isVisibleToUser && it.packageName?.toString()==context.packageName}.map {node->
+                val bounds=android.graphics.Rect();node.getBoundsInScreen(bounds)
+                JSONObject().put("text",node.text?.toString()).put("description",node.contentDescription?.toString())
+                    .put("focused",node.isAccessibilityFocused).put("bounds",bounds.toShortString())
+            }))
             try {
                 automation.takeScreenshot()?.let { image ->
                     try {File(context.cacheDir,"accessibility-failure.png").outputStream().use {image.compress(Bitmap.CompressFormat.PNG,100,it)}}
@@ -111,6 +140,7 @@ internal object ReaderAccessibilityRuntimeChecks {
             } catch(captureError:Throwable) {report.put("failure_screenshot_error",captureError.toString())}
         }
         finally {
+            report.put("turn_trace",JSONArray(ReaderAccessibilityTurnTrace.finish()))
             activity?.let {host->test.runOnMainSync {host.finish()}}
         }
         report.put("cases",cases).put("events",events)

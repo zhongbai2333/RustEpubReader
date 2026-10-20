@@ -33,6 +33,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.ScrollAxisRange
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.semantics.horizontalScrollAxisRange
 import androidx.compose.ui.semantics.scrollBy
 import androidx.compose.ui.semantics.semantics
@@ -83,7 +85,7 @@ internal class PageTurnController {
 }
 
 @Composable
-@OptIn(ExperimentalPageCurlApi::class)
+@OptIn(ExperimentalPageCurlApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 internal fun PageModeContent(
     chapter: Chapter,
     currentChapter: Int,
@@ -440,11 +442,21 @@ internal fun PageModeContent(
             if(pageAnimation=="None")pagerState.scrollToPage(target) else pagerState.animateScrollToPage(target)
         }
     }
-    fun accessibilityPageTurn(forward: Boolean): Boolean {
+    fun accessibilityPageTurn(forward: Boolean, source: String = "custom"): Boolean {
+        ReaderAccessibilityTurnTrace.record("request source=$source mode=$pageAnimation forward=$forward page=${pagerState.currentPage} settled=${pagerState.settledPage} reset=$chapterJumpTriggered active=${flipJob?.isActive} scrolling=${pagerState.isScrollInProgress}")
         if (chapterJumpTriggered || flipJob?.isActive == true || pagerState.isScrollInProgress) return false
         val current=if(pageAnimation=="Realistic") (if(isBookSpread)bookSpreadPageCurlState.current else pageCurlState.current) else pagerState.currentPage
         if ((forward && current >= totalSlots-1) || (!forward && current <= 0)) return false
-        flipJob=coroutineScope.launch {performPageTurn(forward)}
+        flipJob=coroutineScope.launch {
+            ReaderAccessibilityTurnTrace.record("start source=$source mode=$pageAnimation forward=$forward page=${pagerState.currentPage}")
+            try { performPageTurn(forward) }
+            catch (error: kotlinx.coroutines.CancellationException) {
+                ReaderAccessibilityTurnTrace.record("cancel source=$source mode=$pageAnimation forward=$forward reason=$error")
+                throw error
+            } finally {
+                ReaderAccessibilityTurnTrace.record("finish source=$source mode=$pageAnimation forward=$forward page=${pagerState.currentPage} settled=${pagerState.settledPage}")
+            }
+        }
         return true
     }
     androidx.compose.runtime.SideEffect {
@@ -456,6 +468,7 @@ internal fun PageModeContent(
 
     // 章节切换时重置页码
     LaunchedEffect(currentChapter, pageAnimation, positionRevision, layoutTag) {
+        ReaderAccessibilityTurnTrace.record("reset chapter=$currentChapter mode=$pageAnimation revision=$positionRevision layout=$layoutTag")
         val isRealChapterChange = prevChapterKey != currentChapter
         // 立即阻断边界检测，防止切换期间级联跳章
         chapterJumpTriggered = true
@@ -530,6 +543,7 @@ internal fun PageModeContent(
                         slot in leadingVirtual until (leadingVirtual + pairedPages.size)
                 ) {
                     lastReported=slot
+                    ReaderAccessibilityTurnTrace.record("position mode=$pageAnimation chapter=$currentChapter slot=$slot")
                     val pageIndex=(slot-leadingVirtual).coerceAtLeast(0)*(if(isTwoColumn) 2 else 1)
                     val first=pages.getOrNull(pageIndex)?.firstOrNull()
                     onPositionChange(first?.sourceBlockIndex ?: blockForSlot(slot),first?.sourceCharOffset ?: 0)
@@ -616,7 +630,7 @@ internal fun PageModeContent(
                     )
                     scrollBy {x,y ->
                         val direction=if(x.absoluteValue>=y.absoluteValue) x else y
-                        direction != 0f && accessibilityPageTurn(direction>0f)
+                        direction != 0f && accessibilityPageTurn(direction>0f,"scrollBy($x,$y)")
                     }
                 }
                 .graphicsLayer {
@@ -960,7 +974,12 @@ internal fun PageModeContent(
         } else {
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier.weight(1f).background(bgColor),
+                modifier = Modifier.weight(1f).background(bgColor).semantics {
+                    // TalkBack SHOW_ON_SCREEN targets this nearest scrollable
+                    // ancestor. Its native scrollBy would otherwise interrupt
+                    // our accepted return animation through MutatorMutex.
+                    scrollBy { x, _ -> x != 0f && accessibilityPageTurn(x > 0f, "pagerScrollBy($x)") }
+                },
             ) { pageIndex ->
                 val actualPageIndex = pageIndex - leadingVirtual
                 val isLeadingVirtual = leadingVirtual > 0 && actualPageIndex < 0
@@ -1048,6 +1067,7 @@ internal fun PageModeContent(
                     modifier =
                         Modifier.fillMaxSize()
                             .background(bgColor)
+                            .then(if(pageIndex != pagerState.currentPage) Modifier.clearAndSetSemantics { invisibleToUser() } else Modifier)
                             .pointerInput(blockLayoutRegistry) {
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = {

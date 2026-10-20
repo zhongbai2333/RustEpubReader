@@ -112,6 +112,11 @@ iterations with parallel execution disabled. This is repetition, not retry on
 failure: any failed iteration rejects the run. Touches require hittable targets;
 selection uses a held slow drag, and Settings uses its nested switch control.
 Failed cases retain explicit screenshots/hierarchies and native gesture traces.
+The command-line diagnostic process exits before XCTest takes ownership; XCTest
+also waits for process exit and the Home workspace before each debug launch.
+Android TalkBack checks include an outgoing paragraph's Show on Screen request
+during a Cover return. Pager accessibility scrolls share the reader's turn gate,
+and noncurrent pages do not expose readable descendants.
 
 Rustup installs `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The build phase
 preserves the selected Rust toolchain and honors Cargo's target directory.

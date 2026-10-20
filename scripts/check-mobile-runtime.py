@@ -91,6 +91,10 @@ def ios_selection_inputs(app, manifest):
 
 
 def collect_ios_selection(args, identifier, bundle):
+    # The command-line corpus/navigation app is still running after writing its
+    # report. Hand off an exited process to XCTest rather than combining its
+    # termination and debug launch in one SpringBoard request (which can be Busy).
+    ios_simctl(args.output, "terminate", identifier, bundle)
     command = ["xcodebuild", "test-without-building", "-xctestrun", str(args.xctestrun.resolve()), "-destination", "id=" + identifier,
                "-parallel-testing-enabled", "NO", "-test-iterations", "3", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
     try:
@@ -399,6 +403,21 @@ def collect_android_result(device, case, report, output):
                 raise
 
 
+def validate_accessibility(value):
+    expected = {"Realistic", "Slide", "Cover", "None"}
+    cases = value.get("cases")
+    if (value.get("touch_exploration") is not True or
+        value.get("dont_suppress_accessibility_services") is not True or
+        not isinstance(cases, list) or len(cases) != len(expected) or
+        any(not isinstance(c, dict) for c in cases) or
+        {c.get("mode") for c in cases} != expected or
+        any(c.get(key) is not True for c in cases for key in ("native_text_focus", "custom_actions", "exact_return"))):
+        raise RuntimeError("Incomplete TalkBack/native page-turn coverage")
+    if next(c for c in cases if c["mode"] == "Cover").get("outgoing_focus_scroll_rejected") is not True:
+        raise RuntimeError("Missing TalkBack outgoing-page focus regression")
+    return value
+
+
 def collect_android_opening_screens(device, output, required):
     folder = output / "book-opening-runtime"
     folder.mkdir(exist_ok=True)
@@ -547,10 +566,7 @@ def android_checks(args, device):
         try:
             with talkback_session(device, state):
                 sample("accessibility", "accessibility-verification.json", "accessibility.epub")
-                value = results["accessibility"]
-                expected = {"Realistic", "Slide", "Cover", "None"}
-                if value.get("touch_exploration") is not True or value.get("dont_suppress_accessibility_services") is not True or {c.get("mode") for c in value.get("cases", [])} != expected:
-                    raise RuntimeError("Incomplete TalkBack/native page-turn coverage")
+                validate_accessibility(results["accessibility"])
         finally:
             (args.output / "accessibility-settings.json").write_text(json.dumps(state, indent=2) + "\n")
     return results

@@ -393,6 +393,23 @@ class TalkBackRestorationTests(unittest.TestCase):
         self.assertEqual(device.mutations,0)
 
 
+class AccessibilityCoverageTests(unittest.TestCase):
+    @staticmethod
+    def report():
+        return dict(touch_exploration=True,dont_suppress_accessibility_services=True,cases=[dict(mode=mode,native_text_focus=True,custom_actions=True,exact_return=True,outgoing_focus_scroll_rejected=True) for mode in ("Realistic","Slide","Cover","None")])
+
+    def test_requires_native_turns_and_outgoing_focus_regression(self):
+        good=self.report();self.assertIs(runtime.validate_accessibility(good),good)
+        for value in (None,False):
+            bad=self.report();bad['cases'][2]['outgoing_focus_scroll_rejected']=value
+            with self.assertRaisesRegex(RuntimeError,"outgoing-page"):runtime.validate_accessibility(bad)
+
+    def test_rejects_duplicate_missing_and_failed_native_cases(self):
+        for change in (lambda v:v['cases'].pop(),lambda v:v['cases'].__setitem__(0,v['cases'][1]),lambda v:v['cases'][0].update(exact_return=False),lambda v:v['cases'][1].update(native_text_focus=False),lambda v:v.update(touch_exploration=False),lambda v:v.update(cases=[None]*4)):
+            bad=self.report();change(bad)
+            with self.assertRaises(RuntimeError):runtime.validate_accessibility(bad)
+
+
 class SelectionTests(unittest.TestCase):
     @staticmethod
     def report(platform):
@@ -457,6 +474,10 @@ class SelectionTests(unittest.TestCase):
                     (cache/("selection-ui-"+row["mode"]+".json")).write_text(json.dumps(dict(row,passed=True)))
                 return SimpleNamespace(returncode=0)
             def lookup(output, *args):
+                if args[0]=="terminate":
+                    self.assertFalse(ran,"Stop the command-line app before XCTest starts")
+                    self.assertEqual(args,("terminate","owned-device","local.reader.columns"))
+                    return b""
                 self.assertTrue(ran,"Container path must be resolved after XCTest runs")
                 self.assertEqual(args[:1],("get_app_container",))
                 return str(current).encode()
@@ -465,6 +486,13 @@ class SelectionTests(unittest.TestCase):
                 value=runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue(value["passed"]);self.assertEqual(len(list(output.glob("selection-ui-*.json"))),5)
             self.assertEqual(json.loads((output/"selection-gesture-slide.json").read_text())["events"],[{"state":1},{"state":3}])
+
+    def test_xctest_handoff_timeout_is_a_failure_and_does_not_start_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);args=SimpleNamespace(output=root,xctestrun=root/"owned.xctestrun",timeout=1)
+            with patch.object(runtime,"ios_simctl",side_effect=subprocess.TimeoutExpired(["simctl","terminate"],180)),patch.object(runtime.subprocess,"run") as execute:
+                with self.assertRaises(subprocess.TimeoutExpired):runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
+            execute.assert_not_called()
 
 
 class ReducedMotionTests(unittest.TestCase):

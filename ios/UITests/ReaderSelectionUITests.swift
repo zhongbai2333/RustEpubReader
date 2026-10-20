@@ -14,10 +14,18 @@ final class ReaderSelectionUITests:XCTestCase {
         expectation(for:NSPredicate {_,_ in element.exists && element.isHittable},evaluatedWith:element)
         waitForExpectations(timeout:timeout)
     }
+    private func launchAfterExit(_ app:XCUIApplication) {
+        if app.state != .notRunning {app.terminate()}
+        XCTAssertTrue(app.wait(for:.notRunning,timeout:20),"Previous process must exit before another debug launch")
+        XCUIDevice.shared.press(.home)
+        let home=XCUIApplication(bundleIdentifier:"com.apple.springboard")
+        XCTAssertTrue(home.wait(for:.runningForeground,timeout:20),"Wait for the system workspace before launching")
+        app.launch()
+    }
     private func select(_ mode:String) throws {
         let app=XCUIApplication()
         app.launchArguments=["--verify-selection-ui","--selection-mode",mode,"--selection-run",UUID().uuidString,"--book-share-preview","-reader.language","en"]
-        app.launch()
+        launchAfterExit(app)
         let status=app.staticTexts["selection-status"]
         XCTAssertTrue(status.waitForExistence(timeout:30))
         let paper=app.descendants(matching:.any).matching(identifier:"native-selection-paper").firstMatch
@@ -44,6 +52,7 @@ final class ReaderSelectionUITests:XCTestCase {
         XCTAssertEqual(value["text"] as? String,"文字 😀 中文")
         let image=XCTAttachment(screenshot:app.screenshot());image.name="native-selection-"+mode;image.lifetime = .keepAlways;add(image)
         app.terminate()
+        XCTAssertTrue(app.wait(for:.notRunning,timeout:20))
     }
     func testNoAnimationSelection() throws {try select("none")}
     func testCurlSelection() throws {try select("curl")}
@@ -53,7 +62,7 @@ final class ReaderSelectionUITests:XCTestCase {
     func testSystemReducedMotionNavigation() throws {
         let settings=XCUIApplication(bundleIdentifier:"com.apple.Preferences")
         settings.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_US"]
-        settings.launch()
+        launchAfterExit(settings)
         let accessibility=settings.cells.staticTexts["Accessibility"].firstMatch
         if !accessibility.waitForExistence(timeout:5) {settings.swipeUp()}
         XCTAssertTrue(accessibility.waitForExistence(timeout:10),settings.debugDescription);accessibility.tap()
@@ -88,7 +97,7 @@ final class ReaderSelectionUITests:XCTestCase {
         let setting=XCTAttachment(screenshot:settings.screenshot());setting.name="system-reduce-motion-enabled";setting.lifetime = .keepAlways;add(setting)
         let app=XCUIApplication()
         app.launchArguments=["--verify-reduced-motion-ui","--book-share-preview","-reader.language","en"]
-        app.launch()
+        launchAfterExit(app)
         let status=app.staticTexts["motion-status"]
         XCTAssertTrue(status.waitForExistence(timeout:30))
         expectation(for:NSPredicate(format:"label == %@","Passed native reduced motion"),evaluatedWith:status)
