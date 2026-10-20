@@ -49,6 +49,9 @@ import kotlinx.coroutines.CancellationException
 data class TxtChapterPreview(val title: String, val lineStart: Int, val charCount: Int)
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
+    // Resume may follow a cached library load without suspending. Its session
+    // must exist before any startup coroutine can call openFromPath().
+    private val openingSession = BookOpeningSession { RustBridge.cancelBookOpen(it) }
 
     val activityTracker by lazy { com.zhongbai233.epub.reader.util.ReadingActivityTracker(dataDir) }
     var showStatistics by mutableStateOf(false)
@@ -466,7 +469,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         if (autoStartSharing) {
             try { startSharingServer() } catch (_: Exception) { }
         }
-        libraryStartup = viewModelScope.launch {
+        // Dispatch rather than running Main.immediate inside this constructor:
+        // cached IO can otherwise return inline before later fields are ready.
+        libraryStartup = viewModelScope.launch(Dispatchers.Main) {
             try {
                 withContext(Dispatchers.IO) { library.reload(); scanBooksDir() }
                 loadLibrary()
@@ -892,7 +897,6 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private val openingSession = BookOpeningSession { RustBridge.cancelBookOpen(it) }
     fun cancelPendingBookOpen() {
         openingSession.cancel()
         isLoading=false; loadingMessage=null
