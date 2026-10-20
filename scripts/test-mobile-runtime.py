@@ -105,16 +105,18 @@ class IOSLifecycleTests(unittest.TestCase):
                 calls.append(command)
                 if command[0] == "create": return b"owned-device\n"
                 if command[0] == "get_app_container": return str(root / "container").encode()
-                self.assertNotEqual(command[0], "terminate", "A never-launched app must not receive a terminate request")
+                if command == ("launch","owned-device","com.apple.Preferences"): return b"com.apple.Preferences: 123\n"
+                if command[0] == "terminate": self.assertEqual(command,("terminate","owned-device","com.apple.Preferences"))
                 return b""
             with patch.object(runtime, "run", side_effect=listing), patch.object(runtime, "ios_simctl", side_effect=device), patch.object(runtime, "wait_report", return_value={"passed": True}):
                 result = runtime.ios(args)
             self.assertEqual(set(result), set(runtime.CASES))
-            launches = [c for c in calls if c[0] == "launch"]
+            launches = [c for c in calls if c[0] == "launch" and "local.reader.columns" in c]
             self.assertEqual(len(launches), len(runtime.CASES))
             self.assertEqual(launches[0][1:3],("owned-device","local.reader.columns"))
             self.assertNotIn("--terminate-running-process",launches[0])
             self.assertTrue(all(c[1:4] == ("--terminate-running-process", "owned-device", "local.reader.columns") for c in launches[1:]))
+            self.assertLess(calls.index(("terminate","owned-device","com.apple.Preferences")), next(i for i,c in enumerate(calls) if c[0]=="install"))
             self.assertEqual(calls[-2:], [("shutdown", "owned-device"), ("delete", "owned-device")])
 
     def test_cleanup_attempts_delete_after_shutdown_timeout_and_preserves_original_error(self):
@@ -149,6 +151,7 @@ class IOSLifecycleTests(unittest.TestCase):
                 calls.append(command)
                 if command[0]=="create":return b"owned-device\n"
                 if command[0]=="get_app_container":return str(root/"container").encode()
+                if command==("launch","owned-device","com.apple.Preferences"):return b"com.apple.Preferences: 123\n"
                 if command[0]=="launch":
                     (cache/"single-column-verification.json").write_text('{"passed":true}')
                     raise subprocess.TimeoutExpired(command,180)
@@ -158,10 +161,39 @@ class IOSLifecycleTests(unittest.TestCase):
                 return b""
             with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device):
                 with self.assertRaises(subprocess.TimeoutExpired):runtime.ios(args)
-            self.assertEqual(len([c for c in calls if c[0]=="launch"]),1)
+            self.assertEqual(len([c for c in calls if c[0]=="launch" and "local.reader.columns" in c]),1)
             self.assertTrue((args.output/"single-column-verification.json").is_file())
             self.assertTrue((args.output/"simulator-processes.txt").is_file())
             self.assertTrue((args.output/"simulator-recent.log").is_file())
+            self.assertEqual(calls[-2:],[("shutdown","owned-device"),("delete","owned-device")])
+
+    def test_ui_readiness_requires_a_system_app_process_and_terminates_only_that_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)
+            with patch.object(runtime,"ios_simctl",side_effect=[b"com.apple.Preferences: 123\n",b""]) as device:
+                runtime.prepare_ios_ui(output,"owned-device")
+            self.assertEqual(device.call_args_list[0].args,(output,"launch","owned-device","com.apple.Preferences"))
+            self.assertEqual(device.call_args_list[1].args,(output,"terminate","owned-device","com.apple.Preferences"))
+            self.assertEqual(device.call_args_list[1].kwargs,{"timeout":30})
+            for reply in (b"",b"com.apple.Preferences: 0",b"other.app: 123",b"com.apple.Preferences: -1"):
+                with self.subTest(reply=reply),patch.object(runtime,"ios_simctl",return_value=reply) as device:
+                    with self.assertRaisesRegex(RuntimeError,"readiness probe"):runtime.prepare_ios_ui(output,"owned-device")
+                    self.assertEqual(device.call_count,1)
+
+    def test_ui_readiness_timeout_stops_before_install_and_retains_failure_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,listing=self.fixture(Path(directory));calls=[]
+            def device(output,*command,**kwargs):
+                calls.append(command)
+                if command[0]=="create":return b"owned-device\n"
+                if command==("launch","owned-device","com.apple.Preferences"):
+                    raise subprocess.TimeoutExpired(command,180)
+                self.assertNotIn(command[0],("install","get_app_container"))
+                return b"owned environment diagnostics"
+            with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device):
+                with self.assertRaises(subprocess.TimeoutExpired):runtime.ios(args)
+            self.assertEqual(len([c for c in calls if c[0]=="launch"]),1)
+            self.assertTrue((args.output/"simulator-processes.txt").is_file())
             self.assertEqual(calls[-2:],[("shutdown","owned-device"),("delete","owned-device")])
 
 

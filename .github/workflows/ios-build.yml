@@ -99,6 +99,10 @@ jobs:
 
             - name: Run native iPad reading smoke checks
               run: |
+                  # Complete runtime preparation before the first app launch.
+                  # bootstatus alone does not exercise the UI launch service.
+                  xcrun simctl runtime dyld_shared_cache update --all
+                  open -a "$DEVELOPER_DIR/Applications/Simulator.app"
                   READER_UI_MANIFEST="$(python3 -c 'import glob; paths=glob.glob("target/ios-ci/Simulator/Build/Products/ReaderUITests_*.xctestrun"); assert len(paths)==1, paths; print(paths[0])')"
                   python3 scripts/check-mobile-runtime.py ios \
                     --app target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \

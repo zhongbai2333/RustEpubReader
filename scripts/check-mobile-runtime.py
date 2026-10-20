@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import shlex
 import subprocess
@@ -202,6 +203,18 @@ def cleanup_ios_simulator(output, identifier):
         except (OSError, subprocess.SubprocessError) as error:
             errors.append(str(error))
     return errors
+
+
+def prepare_ios_ui(output, identifier):
+    """Exercise system UI launch services before admitting the test app."""
+    bundle = "com.apple.Preferences"
+    reply = ios_simctl(output, "launch", identifier, bundle).decode().strip()
+    # A booted SpringBoard or an installed icon does not establish that an
+    # application can start. Require a real system-app PID, then close only
+    # that process on this collector's disposable device.
+    if not re.fullmatch(re.escape(bundle) + r":\s*[1-9][0-9]*", reply):
+        raise RuntimeError("iOS UI readiness probe did not return a process: " + repr(reply))
+    ios_simctl(output, "terminate", identifier, bundle, timeout=30)
 
 
 def capture_ios_failure(output, identifier, bundle):
@@ -542,6 +555,7 @@ def ios(args):
     try:
         ios_simctl(args.output, "boot", identifier)
         ios_simctl(args.output, "bootstatus", identifier, "-b")
+        prepare_ios_ui(args.output, identifier)
         ios_simctl(args.output, "install", identifier, str(args.app))
         container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
         documents, caches = container / "Documents", container / "Library/Caches"
