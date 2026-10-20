@@ -121,6 +121,8 @@ container paths, executable checksum and inode must remain unchanged across
 XCTest. The generated test products contain only a byte-identical runner, with
 the reader removed from deployment dependencies and product search paths.
 The runner waits for process exit and Home before each launch.
+Reduce Motion restoration reopens its Settings page after deliberately terminating
+Settings, and still requires the original switch value to be restored.
 Android TalkBack checks include an outgoing paragraph's Show on Screen request
 during a Cover return. Pager accessibility scrolls share the reader's turn gate,
 and noncurrent pages do not expose readable descendants.

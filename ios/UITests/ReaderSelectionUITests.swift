@@ -71,18 +71,26 @@ final class ReaderSelectionUITests:XCTestCase {
     func testSystemReducedMotionNavigation() throws {
         let settings=XCUIApplication(bundleIdentifier:"com.apple.Preferences")
         settings.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_US"]
-        launchAfterExit(settings)
-        let accessibility=settings.cells.staticTexts["Accessibility"].firstMatch
-        if !accessibility.waitForExistence(timeout:5) {settings.swipeUp()}
-        XCTAssertTrue(accessibility.waitForExistence(timeout:10),settings.debugDescription);accessibility.tap()
-        let motion=settings.cells.staticTexts["Motion"].firstMatch
-        XCTAssertTrue(motion.waitForExistence(timeout:10),settings.debugDescription);motion.tap()
-        let toggle=settings.switches["Reduce Motion"].firstMatch
-        XCTAssertTrue(toggle.waitForExistence(timeout:10),settings.debugDescription)
+        func openMotionSwitch()->XCUIElement {
+            launchAfterExit(settings)
+            let toggle=settings.switches["Reduce Motion"].firstMatch
+            // Settings can be reclaimed while the reader is foreground. A new
+            // process may return to its root instead of the previous subpage.
+            if !toggle.waitForExistence(timeout:2) {
+                let accessibility=settings.cells.staticTexts["Accessibility"].firstMatch
+                if !accessibility.waitForExistence(timeout:5) {settings.swipeUp()}
+                XCTAssertTrue(accessibility.waitForExistence(timeout:10),settings.debugDescription);accessibility.tap()
+                let motion=settings.cells.staticTexts["Motion"].firstMatch
+                XCTAssertTrue(motion.waitForExistence(timeout:10),settings.debugDescription);motion.tap()
+            }
+            XCTAssertTrue(toggle.waitForExistence(timeout:10),settings.debugDescription)
+            return toggle
+        }
+        let toggle=openMotionSwitch()
         // Settings exposes both a row-sized switch and its actual UISwitch.
         // Touch the real control, not a guessed percentage of the row frame.
         // A short held touch remains a tap while surviving host scheduling gaps.
-        func tapSwitch() {
+        func tapSwitch(_ toggle:XCUIElement) {
             let knob=toggle.switches.firstMatch
             let target=knob.exists ? knob:toggle
             waitForTouchTarget(target)
@@ -92,14 +100,14 @@ final class ReaderSelectionUITests:XCTestCase {
         let original=try XCTUnwrap(toggle.value as? String)
         XCTAssertTrue(["0","1"].contains(original))
         defer {
-            settings.activate()
-            if toggle.waitForExistence(timeout:10),toggle.value as? String != original {tapSwitch()}
-            expectation(for:NSPredicate(format:"value == %@",original),evaluatedWith:toggle)
+            let restored=openMotionSwitch()
+            if restored.value as? String != original {tapSwitch(restored)}
+            expectation(for:NSPredicate(format:"value == %@",original),evaluatedWith:restored)
             waitForExpectations(timeout:10)
-            XCTAssertEqual(toggle.value as? String,original,"Restore the owned simulator setting")
+            XCTAssertEqual(restored.value as? String,original,"Restore the owned simulator setting")
             settings.terminate()
         }
-        if original=="0" {tapSwitch()}
+        if original=="0" {tapSwitch(toggle)}
         expectation(for:NSPredicate(format:"value == %@","1"),evaluatedWith:toggle)
         waitForExpectations(timeout:10)
         XCTAssertEqual(toggle.value as? String,"1")
@@ -118,5 +126,8 @@ final class ReaderSelectionUITests:XCTestCase {
         XCTAssertEqual(value["reduced_motion_geometry_checks"] as? Int,15)
         let image=XCTAttachment(screenshot:app.screenshot());image.name="system-reduced-motion";image.lifetime = .keepAlways;add(image)
         app.terminate()
+        // Exercise restoration after process loss on every iteration, instead
+        // of relying on Settings retaining its navigation state in background.
+        settings.terminate()
     }
 }
