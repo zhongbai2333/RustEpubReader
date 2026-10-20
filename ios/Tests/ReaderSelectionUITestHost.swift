@@ -50,11 +50,13 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
                   let identity=value("--selection-run"),UUID(uuidString:identity) != nil else {throw CoreFailure(message:"Missing selection UI case")}
             mode=parsed;runID=identity
             let files=FileManager.default
-            let documents=files.urls(for:.documentDirectory,in:.userDomainMask)[0]
             let cache=files.urls(for:.cachesDirectory,in:.userDomainMask)[0]
+            guard let encoded=ProcessInfo.processInfo.environment["READER_SELECTION_EPUB_BASE64"],let fixture=Data(base64Encoded:encoded),!fixture.isEmpty else {throw CoreFailure(message:"Missing selection fixture from XCTest")}
+            let input=cache.appendingPathComponent("selection.epub")
+            try fixture.write(to:input,options:.atomic)
             root=cache.appendingPathComponent("SelectionLibrary-"+runID)
             let library=PreviewLibrary(rootOverride:root!)
-            let entry:LibraryEntry=try library.client.call("import",["path":documents.appendingPathComponent("selection.epub").path])
+            let entry:LibraryEntry=try library.client.call("import",["path":input.path])
             let book:PreviewBook=try library.client.call("open",["id":entry.id])
             let source=try book.chapter(at:0)
             guard let index=source.blocks.firstIndex(where:{($0.spans ?? []).map(\.text).joined().contains(expectedText)}) else {throw CoreFailure(message:"Selection source prefix missing")}
@@ -184,6 +186,12 @@ struct ReaderMotionUITestHost:UIViewControllerRepresentable {
         guard !started else{return};started=true
         guard ["local.reader.ui-files","local.reader.columns"].contains(Bundle.main.bundleIdentifier ?? "") else {status.text="Failed: diagnostic bundle required";return}
         guard let window=view.window else {status.text="Failed: diagnostic window missing";return}
+        do {
+            guard let encoded=ProcessInfo.processInfo.environment["READER_NAVIGATION_EPUB_BASE64"],let fixture=Data(base64Encoded:encoded),!fixture.isEmpty else {throw CoreFailure(message:"Missing navigation fixture from XCTest")}
+            let documents=FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
+            try FileManager.default.createDirectory(at:documents,withIntermediateDirectories:true)
+            try fixture.write(to:documents.appendingPathComponent("reading-modes.epub"),options:.atomic)
+        } catch {status.text="Failed: \(error)";return}
         // The suite temporarily makes its own UIKit windows key. Keep this host
         // alive until it returns and explicitly refresh accessibility on iOS 26.
         ReadingModesRuntimeCheck.run(reducedMotion:true) {[self,window] report in

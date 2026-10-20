@@ -455,7 +455,25 @@ class SelectionTests(unittest.TestCase):
             value=plistlib.loads(manifest.read_bytes());value["ReaderUITests"]["TestHostPath"]="__TESTROOT__/../outside.app";manifest.write_bytes(plistlib.dumps(value))
             with self.assertRaisesRegex(ValueError,"escapes"):runtime.ios_selection_inputs(app,manifest)
 
-    def test_selection_results_use_the_container_after_xctest_reinstallation(self):
+    def test_selection_manifest_seeds_fixture_without_mutating_or_installing_build_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);app,runner,manifest=self.products(root)
+            output=root/'reports';output.mkdir();original=manifest.read_bytes()
+            before=(runtime.artifact_hash(app),runtime.artifact_hash(runner))
+            with patch.object(runtime,'ios_simctl') as simctl:
+                path=runtime.ios_selection_manifest(SimpleNamespace(app=app,xctestrun=manifest,output=output))
+            simctl.assert_not_called()
+            case=plistlib.loads(path.read_bytes())['ReaderUITests']
+            import base64
+            self.assertEqual(base64.b64decode(case['UITargetAppEnvironmentVariables']['READER_SELECTION_EPUB_BASE64']),(runtime.ROOT/'core/tests/fixtures/native-typography.epub').read_bytes())
+            self.assertEqual(base64.b64decode(case['UITargetAppEnvironmentVariables']['READER_NAVIGATION_EPUB_BASE64']),(runtime.ROOT/'ios/Tests/fixtures/native-reading-modes.epub').read_bytes())
+            self.assertEqual(case['UITargetAppPath'],str(app.resolve()))
+            self.assertEqual(case['TestHostPath'],str(runner.resolve()))
+            self.assertEqual(case['TestBundlePath'],'__TESTHOST__/PlugIns/ReaderUITests.xctest')
+            self.assertEqual(manifest.read_bytes(),original)
+            self.assertEqual(before,(runtime.artifact_hash(app),runtime.artifact_hash(runner)))
+
+    def test_selection_results_use_the_container_installed_by_xctest(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);output=root/"output";output.mkdir()
             current=root/"new-container";cache=current/"Library/Caches";cache.mkdir(parents=True)
@@ -465,6 +483,7 @@ class SelectionTests(unittest.TestCase):
                 ran=True
                 self.assertGreaterEqual(kwargs["timeout"],1200,"Allow three complete suites including cold XCTest setup and cleanup")
                 command=args[0]
+                self.assertEqual(command[command.index('-xctestrun')+1],str(root/'selection-inputs.xctestrun'))
                 self.assertEqual(command[command.index("-test-iterations")+1],"3")
                 self.assertNotIn("-retry-tests-on-failure",command)
                 self.assertNotIn("-run-tests-until-failure",command)
@@ -474,25 +493,50 @@ class SelectionTests(unittest.TestCase):
                     (cache/("selection-ui-"+row["mode"]+".json")).write_text(json.dumps(dict(row,passed=True)))
                 return SimpleNamespace(returncode=0)
             def lookup(output, *args):
-                if args[0]=="terminate":
-                    self.assertFalse(ran,"Stop the command-line app before XCTest starts")
-                    self.assertEqual(args,("terminate","owned-device","local.reader.columns"))
-                    return b""
                 self.assertTrue(ran,"Container path must be resolved after XCTest runs")
                 self.assertEqual(args[:1],("get_app_container",))
                 return str(current).encode()
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
-            with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,"ios_simctl",side_effect=lookup):
+            with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,"ios_simctl",side_effect=lookup),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 value=runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue(value["passed"]);self.assertEqual(len(list(output.glob("selection-ui-*.json"))),5)
             self.assertEqual(json.loads((output/"selection-gesture-slide.json").read_text())["events"],[{"state":1},{"state":3}])
 
-    def test_xctest_handoff_timeout_is_a_failure_and_does_not_start_tests(self):
+    def test_invalid_selection_inputs_do_not_start_xctest(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);args=SimpleNamespace(output=root,xctestrun=root/"owned.xctestrun",timeout=1)
-            with patch.object(runtime,"ios_simctl",side_effect=subprocess.TimeoutExpired(["simctl","terminate"],180)),patch.object(runtime.subprocess,"run") as execute:
-                with self.assertRaises(subprocess.TimeoutExpired):runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
+            with patch.object(runtime,'ios_selection_manifest',side_effect=ValueError('wrong admitted app')),patch.object(runtime.subprocess,"run") as execute:
+                with self.assertRaisesRegex(ValueError,'wrong admitted app'):runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             execute.assert_not_called()
+
+    def test_xctest_owns_first_install_and_failure_cannot_fall_through_to_cli(self):
+        for failed in (False,True):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);app,runner,manifest=self.products(root)
+                (app/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'local.reader.columns','CFBundleSupportedPlatforms':['iPhoneSimulator']}))
+                commands=[];selected=False
+                def simctl(output,*args,**kwargs):
+                    commands.append(args)
+                    if args[0]=='create':return b'owned-device'
+                    if args[0]=='get_app_container':
+                        self.assertTrue(selected);return str(root/'container').encode()
+                    if args[0]=='launch':
+                        self.assertTrue(selected);self.assertEqual(args[1],'--terminate-running-process')
+                    self.assertNotEqual(args[0],'install','XCTest must own target installation')
+                    return b''
+                def selection(*args):
+                    nonlocal selected
+                    self.assertFalse(any(c[0] in ('install','launch','get_app_container') for c in commands))
+                    selected=True
+                    if failed:raise RuntimeError('native XCTest failed')
+                    return {'passed':True}
+                args=SimpleNamespace(app=app,xctestrun=manifest,output=root/'reports',with_selection=True,with_corpus=False,timeout=1)
+                with patch.object(runtime,'run',side_effect=[b'{"runtimes":[]}',b'{"devicetypes":[]}']),patch.object(runtime,'select_ios_runtime',return_value={'identifier':'owned.runtime','version':'26.4.1'}),patch.object(runtime,'compatible_tablet',return_value='owned.ipad'),patch.object(runtime,'ios_simctl',side_effect=simctl),patch.object(runtime,'prepare_ios_ui'),patch.object(runtime,'collect_ios_selection',side_effect=selection),patch.object(runtime,'wait_report',return_value={'passed':True}),patch.object(runtime,'capture_ios_failure'),patch.object(runtime,'cleanup_ios_simulator',return_value=[]):
+                    if failed:
+                        with self.assertRaisesRegex(RuntimeError,'native XCTest failed'):runtime.ios(args)
+                        self.assertFalse(any(c[0] in ('install','launch','get_app_container') for c in commands))
+                    else:
+                        self.assertTrue(runtime.ios(args)['selection']['passed'])
 
 
 class ReducedMotionTests(unittest.TestCase):
@@ -563,7 +607,7 @@ class FailureEvidenceTests(unittest.TestCase):
             (cache/"reduced-motion-verification.json").write_text('{"passed":true}')
             (cache/"selection-gesture-slide.json").write_text('{"events":[]}')
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
-            with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,"ios_simctl",return_value=str(root/"container").encode()):
+            with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,"ios_simctl",return_value=str(root/"container").encode()),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 with self.assertRaisesRegex(RuntimeError,"Native selection XCTest failed"):
                     runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue((output/"reduced-motion-verification.json").is_file())

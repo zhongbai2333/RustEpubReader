@@ -112,8 +112,11 @@ iterations with parallel execution disabled. This is repetition, not retry on
 failure: any failed iteration rejects the run. Touches require hittable targets;
 selection uses a held slow drag, and Settings uses its nested switch control.
 Failed cases retain explicit screenshots/hierarchies and native gesture traces.
-The command-line diagnostic process exits before XCTest takes ownership; XCTest
-also waits for process exit and the Home workspace before each debug launch.
+XCTest owns the target app's first installation and launch on a new simulator;
+command-line diagnostics run afterward. The synthetic selection fixture arrives
+through the generated XCTest environment, so seeding it never requires an
+earlier target installation. The original build manifest remains unchanged.
+XCTest also waits for process exit and the Home workspace before each debug launch.
 Android TalkBack checks include an outgoing paragraph's Show on Screen request
 during a Cover return. Pager accessibility scrolls share the reader's turn gate,
 and noncurrent pages do not expose readable descendants.

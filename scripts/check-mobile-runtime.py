@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run real native smoke checks on disposable mobile installations, without accounts."""
 import argparse
+import base64
 from contextlib import contextmanager
 import hashlib
 import json
@@ -90,12 +91,34 @@ def ios_selection_inputs(app, manifest):
     return runner
 
 
+def ios_selection_manifest(args):
+    """Seed the synthetic fixture without installing/launching the target first."""
+    ios_selection_inputs(args.app, args.xctestrun)
+    with args.xctestrun.open("rb") as stream:
+        values = plistlib.load(stream)
+    environment = values["ReaderUITests"].setdefault("UITargetAppEnvironmentVariables", {})
+    for key, fixture in (("READER_SELECTION_EPUB_BASE64", ROOT / "core/tests/fixtures/native-typography.epub"),
+                         ("READER_NAVIGATION_EPUB_BASE64", ROOT / "ios/Tests/fixtures/native-reading-modes.epub")):
+        environment[key] = base64.b64encode(fixture.read_bytes()).decode("ascii")
+    def absolute_products(value):
+        if isinstance(value, str):
+            return value.replace("__TESTROOT__", str(args.xctestrun.resolve().parent))
+        if isinstance(value, list):
+            return [absolute_products(item) for item in value]
+        if isinstance(value, dict):
+            return {key: absolute_products(item) for key, item in value.items()}
+        return value
+    path = args.output / "selection-inputs.xctestrun"
+    path.write_bytes(plistlib.dumps(absolute_products(values)))
+    return path.resolve()
+
+
 def collect_ios_selection(args, identifier, bundle):
-    # The command-line corpus/navigation app is still running after writing its
-    # report. Hand off an exited process to XCTest rather than combining its
-    # termination and debug launch in one SpringBoard request (which can be Busy).
-    ios_simctl(args.output, "terminate", identifier, bundle)
-    command = ["xcodebuild", "test-without-building", "-xctestrun", str(args.xctestrun.resolve()), "-destination", "id=" + identifier,
+    # XCTest owns the first installation and launch on this fresh simulator.
+    # Do not preinstall the target: its first launch otherwise replaces that
+    # installation while SpringBoard is still registering the update.
+    manifest = ios_selection_manifest(args)
+    command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest), "-destination", "id=" + identifier,
                "-parallel-testing-enabled", "NO", "-test-iterations", "3", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
     try:
         with (args.output / "selection-ui.log").open("wb") as log:
@@ -598,13 +621,16 @@ def ios(args):
         # first boot a separate bounded budget; app launches keep 180 seconds.
         ios_simctl(args.output, "bootstatus", identifier, "-b", timeout=600)
         prepare_ios_ui(args.output, identifier)
-        ios_simctl(args.output, "install", identifier, str(args.app))
+        results = {}
+        if getattr(args, "with_selection", False):
+            results["selection"] = collect_ios_selection(args, identifier, bundle)
+        else:
+            ios_simctl(args.output, "install", identifier, str(args.app))
         container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
         documents, caches = container / "Documents", container / "Library/Caches"
         documents.mkdir(parents=True, exist_ok=True)
         caches.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "ios/Tests/fixtures/native-reading-modes.epub", documents / "reading-modes.epub")
-        results = {}
         for index, (case, report) in enumerate(CASES.items()):
             path = caches / report
             path.unlink(missing_ok=True)
@@ -612,7 +638,7 @@ def ios(args):
             try:
                 # A freshly installed app has no instance to terminate. Only
                 # subsequent cases replace a process that this collector started.
-                options = () if index == 0 else ("--terminate-running-process",)
+                options = () if index == 0 and "selection" not in results else ("--terminate-running-process",)
                 ios_simctl(args.output, "launch", *options, identifier, bundle, "--verify-reading-modes", flag)
                 results[case] = wait_report(path, args.timeout)
             finally:
@@ -633,12 +659,6 @@ def ios(args):
             finally:
                 if path.is_file(): shutil.copyfile(path, args.output / path.name)
                 for screenshot in caches.glob("corpus-*.png"): shutil.copyfile(screenshot, args.output / screenshot.name)
-        if getattr(args, "with_selection", False):
-            shutil.copyfile(ROOT / "core/tests/fixtures/native-typography.epub", documents / "selection.epub")
-            for mode in ("none", "curl", "slide", "cover", "scroll"):
-                (caches / ("selection-ui-" + mode + ".json")).unlink(missing_ok=True)
-            # Each XCTest calls XCUIApplication.launch() with its own arguments.
-            results["selection"] = collect_ios_selection(args, identifier, bundle)
         completed = True
         return results
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError):
