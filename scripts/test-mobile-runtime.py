@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import unittest
+import uuid
 from unittest.mock import MagicMock, patch
 
 SPEC = importlib.util.spec_from_file_location("runtime", Path(__file__).with_name("check-mobile-runtime.py"))
@@ -535,6 +536,7 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(base64.b64decode(case['EnvironmentVariables']['READER_SELECTION_EPUB_BASE64']),(runtime.ROOT/'core/tests/fixtures/native-typography.epub').read_bytes())
             self.assertEqual(base64.b64decode(case['EnvironmentVariables']['READER_NAVIGATION_EPUB_BASE64']),(runtime.ROOT/'ios/Tests/fixtures/native-reading-modes.epub').read_bytes())
             self.assertEqual(case['EnvironmentVariables']['READER_UI_TARGET_BUNDLE'],'local.reader.columns')
+            self.assertEqual(case['EnvironmentVariables']['READER_SELECTION_IGNORE_FOCUS_PROBES'],'0')
             self.assertNotIn('UITargetAppPath',case)
             staged=root/'reports-xctest-products/Debug-iphonesimulator/ReaderUITests-Runner.app'
             self.assertEqual(case['TestHostPath'],str(staged.resolve()))
@@ -563,6 +565,7 @@ class SelectionTests(unittest.TestCase):
                 (cache/"selection-gesture-slide.json").write_text('{"events":[{"state":1},{"state":3}]}')
                 for row in self.report("ios")["cases"]:
                     (cache/("selection-ui-"+row["mode"]+".json")).write_text(json.dumps(dict(row,passed=True)))
+                IOSInputEvidenceTests.populate(cache)
                 return SimpleNamespace(returncode=0)
             state={'app':'/owned.app','data':str(current),'binary_sha256':'admitted','binary_inode':1}
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
@@ -571,6 +574,7 @@ class SelectionTests(unittest.TestCase):
             self.assertTrue(value["passed"]);self.assertEqual(len(list(output.glob("selection-ui-*.json"))),5)
             self.assertEqual(json.loads((output/"selection-gesture-slide.json").read_text())["events"],[{"state":1},{"state":3}])
             self.assertTrue(json.loads((output/'xctest-installation.json').read_text())['unchanged'])
+            self.assertEqual(value['input_readiness']['runs'],15)
 
     def test_installed_binary_must_match_admitted_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -699,12 +703,15 @@ class FailureEvidenceTests(unittest.TestCase):
             cache=root/"container/Library/Caches";cache.mkdir(parents=True)
             (cache/"reduced-motion-verification.json").write_text('{"passed":true}')
             (cache/"selection-gesture-slide.json").write_text('{"events":[]}')
+            failed_run=cache/f"selection-run-{str(uuid.uuid4()).upper()}-cover.json"
+            failed_run.write_text('{"events":[],"focus":{"confirmed":false}}')
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
             with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,'ios_installed_target',return_value={'data':str(root/'container'),'app':'/owned.app'}),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 with self.assertRaisesRegex(RuntimeError,"Native selection XCTest failed"):
                     runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue((output/"reduced-motion-verification.json").is_file())
             self.assertTrue((output/"selection-gesture-slide.json").is_file())
+            self.assertTrue((output/failed_run.name).is_file())
 
     def test_shutdown_after_xctest_preserves_the_primary_failure_and_admitted_traces(self):
         for returncode in (0,1):
@@ -795,6 +802,83 @@ class FailureEvidenceTests(unittest.TestCase):
                 return b'{"passed":true}'
             self.assertTrue(runtime.collect_android_result(device,"navigation","navigation.json",root)["passed"])
             self.assertFalse((root/"navigation-failure.png").exists())
+
+
+class IOSInputEvidenceTests(unittest.TestCase):
+    @staticmethod
+    def populate(output):
+        paths=[]
+        for mode in ("none","curl","slide","cover","scroll"):
+            for _ in range(3):
+                identity=str(uuid.uuid4()).upper();path=output/f"selection-run-{identity}-{mode}.json"
+                report={"mode":mode,"run_id":identity,
+                    "focus":{"confirmed":True,"received_taps":1,"ignored_probes":0,"key_window":True,"foreground_scene":True},
+                    "events":[{"state":1},{"state":2},{"state":3}],
+                    "touches":[{"phase":"began"},{"phase":"moved"},{"phase":"ended"}]}
+                path.write_text(json.dumps(report));paths.append(path)
+        return paths
+
+    def test_all_three_iterations_require_actual_input_and_recognizer_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);paths=self.populate(root)
+            for path,count in zip(paths,(2,3)):
+                report=json.loads(path.read_text());report["focus"]["received_taps"]=count;path.write_text(json.dumps(report))
+            result=runtime.validate_ios_input_runs(root)
+            self.assertEqual(result["runs"],15);self.assertEqual(result["received_focus_taps"],18)
+            self.assertEqual(result["repeated_readiness_handshakes"],2)
+            self.assertEqual(set(result["modes"].values()),{3})
+
+    def test_missing_iteration_or_mode_cannot_be_hidden_by_the_latest_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);paths=self.populate(root);paths[0].unlink()
+            with self.assertRaisesRegex(RuntimeError,"per-iteration"):runtime.validate_ios_input_runs(root)
+
+    def test_unacknowledged_window_fault_injection_and_unbounded_probe_counts_fail(self):
+        mutations=[("confirmed",False),("key_window",False),("foreground_scene",False),("ignored_probes",1),
+                   ("received_taps",0),("received_taps",4),("received_taps",True)]
+        for key,value in mutations:
+            with self.subTest(key=key,value=value),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);path=self.populate(root)[0];report=json.loads(path.read_text());report["focus"][key]=value;path.write_text(json.dumps(report))
+                with self.assertRaisesRegex(RuntimeError,"not acknowledged"):runtime.validate_ios_input_runs(root)
+
+    def test_one_bad_iteration_is_not_replaced_by_other_completed_gestures(self):
+        for field,value in [("events",[{"state":1}]),("events",[{"state":1},{"state":2},{"state":4}]),
+                            ("touches",[{"phase":"began"},{"phase":"moved"},{"phase":"cancelled"}]),("touches",[])]:
+            with self.subTest(field=field,value=value),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);path=self.populate(root)[0];report=json.loads(path.read_text());report[field]=value;path.write_text(json.dumps(report))
+                with self.assertRaisesRegex(RuntimeError,"did not complete"):runtime.validate_ios_input_runs(root)
+
+    def test_duplicate_run_identity_across_modes_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);paths=self.populate(root);first=json.loads(paths[0].read_text());other=json.loads(paths[3].read_text())
+            other["run_id"]=first["run_id"];paths[3].unlink();(root/f"selection-run-{first['run_id']}-{other['mode']}.json").write_text(json.dumps(other))
+            with self.assertRaisesRegex(RuntimeError,"identity"):runtime.validate_ios_input_runs(root)
+
+    def test_fifteen_reports_must_still_have_three_of_each_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);path=self.populate(root)[0];report=json.loads(path.read_text());path.unlink();report["mode"]="curl"
+            (root/f"selection-run-{report['run_id']}-curl.json").write_text(json.dumps(report))
+            with self.assertRaisesRegex(RuntimeError,"three iterations"):runtime.validate_ios_input_runs(root)
+
+    def test_report_payload_identity_and_mode_must_match_its_filename(self):
+        for key,value in (("mode","curl"),("run_id",str(uuid.uuid4()))):
+            with self.subTest(key=key),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);path=self.populate(root)[0];report=json.loads(path.read_text());report[key]=value;path.write_text(json.dumps(report))
+                with self.assertRaisesRegex(RuntimeError,"identity"):runtime.validate_ios_input_runs(root)
+
+    def test_symlink_oversized_and_unreadable_reports_fail_closed(self):
+        for kind in ("symlink","oversized","array","broken"):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)/"reports";root.mkdir();path=self.populate(root)[0]
+                if kind=="symlink":
+                    external=root.parent/"outside.json";path.rename(external);path.symlink_to(external)
+                else:path.write_text("x"*262145 if kind=="oversized" else "[]" if kind=="array" else "{")
+                with self.assertRaises(RuntimeError):runtime.validate_ios_input_runs(root)
+
+    def test_copy_errors_cannot_be_ignored_even_when_fifteen_reports_exist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.populate(root);(root/"selection-input-copy-errors.json").write_text('["unreadable"]')
+            with self.assertRaisesRegex(RuntimeError,"per-iteration"):runtime.validate_ios_input_runs(root)
 
 
 if __name__ == "__main__":

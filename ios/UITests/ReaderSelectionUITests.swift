@@ -8,6 +8,9 @@ final class ReaderSelectionUITests:XCTestCase {
         for key in ["READER_SELECTION_EPUB_BASE64","READER_NAVIGATION_EPUB_BASE64"] {
             app.launchEnvironment[key]=try XCTUnwrap(ProcessInfo.processInfo.environment[key],"Missing admitted fixture")
         }
+        if let ignored=ProcessInfo.processInfo.environment["READER_SELECTION_IGNORE_FOCUS_PROBES"] {
+            app.launchEnvironment["READER_SELECTION_IGNORE_FOCUS_PROBES"]=ignored
+        }
         return app
     }
     override func setUpWithError() throws {continueAfterFailure=false}
@@ -44,15 +47,26 @@ final class ReaderSelectionUITests:XCTestCase {
         expectation(for:NSPredicate(format:"label == %@","Ready"),evaluatedWith:status)
         waitForExpectations(timeout:10)
         // A visible paper does not prove that the simulator has delivered
-        // input to this app's window. Require one acknowledged native tap
-        // before admitting the long-press/drag, without retrying either input.
-        status.tap()
-        expectation(for:NSPredicate {element,_ in
+        // input to this app's window. Poll a bounded setup handshake before
+        // admitting the held drag; the actual selection is never retried.
+        let ready=NSPredicate {element,_ in
             guard let status=element as? XCUIElement,let raw=status.value as? String,
                   let data=raw.data(using:.utf8),let value=try? JSONSerialization.jsonObject(with:data) as? [String:Any] else{return false}
             return value["input_focus_confirmed"] as? Bool == true && value["key_window"] as? Bool == true && value["foreground_scene"] as? Bool == true
-        },evaluatedWith:status)
-        waitForExpectations(timeout:10)
+        }
+        let deadline=ProcessInfo.processInfo.systemUptime+10
+        var inputReady=false
+        for probe in 1...3 {
+            if ready.evaluate(with:status) {inputReady=true;break}
+            guard ProcessInfo.processInfo.systemUptime<deadline else{break}
+            XCTContext.runActivity(named:"Input readiness probe \(probe)/3") {_ in status.tap()}
+            let remaining=deadline-ProcessInfo.processInfo.systemUptime
+            guard remaining>0 else{break}
+            let received=XCTNSPredicateExpectation(predicate:ready,object:status)
+            inputReady=XCTWaiter.wait(for:[received],timeout:min(2,remaining)) == .completed
+            if inputReady {break}
+        }
+        XCTAssertTrue(inputReady,"Native window input was not acknowledged: \(status.value ?? "missing")")
         waitForTouchTarget(paper)
         let raw=try XCTUnwrap(status.value as? String)
         let points=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(raw.utf8)) as? [String:Any])

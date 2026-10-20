@@ -116,12 +116,20 @@ Native selection and system Reduce Motion XCTest cases run for three complete
 iterations with parallel execution disabled. This is repetition, not retry on
 failure: any failed iteration rejects the run. Touches require hittable targets;
 selection uses a held slow drag, and Settings uses its nested switch control.
-Each app is explicitly activated after launch. Before selecting, one native tap
+Each app is explicitly activated after launch. Before selecting, a native tap
 must be acknowledged by the diagnostic host in a key, foreground window. This
+uses a system UIButton; its callback refreshes actual window/coordinate state
+through transient layout changes without selecting text or forcing focus. The
 input readiness check does not select text; the subsequent real held drag still
-has to persist the exact Unicode range. Neither input is retried. The Debug-only
+has to persist the exact Unicode range. The setup handshake allows at most three
+probes within its existing ten-second budget. The held selection is sent once;
+any selection assertion failure rejects the run. The Debug-only
 host records passive raw touch phases alongside selection recognizer states,
 so a missing input stream can be distinguished from a selection failure.
+Each iteration keeps its own UUID input report, including failed iterations. Acceptance
+requires all fifteen selection input streams, three per mode, to be complete in
+active windows; a later pass cannot replace an earlier trace. Local fault probes
+can suppress setup acknowledgements, but such reports are rejected by CI.
 Failed cases retain explicit screenshots/hierarchies and native gesture traces.
 The collector installs the admitted app once on a new simulator. A targetless
 XCTest runner controls it through `XCUIApplication(bundleIdentifier:)`, avoiding

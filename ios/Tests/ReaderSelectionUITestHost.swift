@@ -21,7 +21,7 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
 }
 
 @MainActor final class ReaderSelectionHostController:UIViewController {
-    private let status=UILabel()
+    private let status=UIButton(type:.system)
     private var reader:NativeReadingController?
     private var annotations:ReadingAnnotations?
     private var root:URL?
@@ -36,12 +36,30 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
     private var touchEvents=[[String:Any]]()
     private var touchTrace:SelectionTouchTrace?
     private var inputFocusConfirmed=false
+    private var receivedFocusTaps=0
+    private var ignoredFocusProbes=0
+    private var focusTask:Task<Void,Never>?
 
     @objc private func confirmInputFocus() {
+        guard !handled else{return}
+        receivedFocusTaps+=1
+        // Explicitly enabled only by isolated local fault-injection probes.
+        let ignored=min(3,max(0,Int(ProcessInfo.processInfo.environment["READER_SELECTION_IGNORE_FOCUS_PROBES"] ?? "0") ?? 0))
+        if receivedFocusTaps<=ignored {ignoredFocusProbes+=1;writeGestureTrace();return}
         inputFocusConfirmed=true
-        // Refresh coordinates and window state after the real tap is handled.
-        // This does not invoke selection or synthesize any gesture state.
-        DispatchQueue.main.async {[weak self] in _=self?.publishTargets()}
+        writeGestureTrace()
+        focusTask?.cancel()
+        // Coordinate publication can be temporarily unavailable during a
+        // window transition. Keep reporting real state, without another tap
+        // or any selection action, within the setup handshake's budget.
+        focusTask=Task {@MainActor [weak self] in
+            for _ in 0..<200 {
+                guard !Task.isCancelled,let self else{return}
+                if self.publishTargets(),let window=self.reader?.view.window,
+                   window.isKeyWindow,window.windowScene?.activationState == .foregroundActive {return}
+                try? await Task.sleep(for:.milliseconds(50))
+            }
+        }
     }
 
     @objc private func traceSelection(_ gesture:UILongPressGestureRecognizer) {
@@ -56,10 +74,13 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
         if [.began,.ended,.cancelled,.failed].contains(gesture.state) {writeGestureTrace()}
     }
     private func writeGestureTrace() {
-        let value:[String:Any]=["mode":mode.rawValue,"run_id":runID,"events":gestureEvents,"touches":touchEvents]
+        let value:[String:Any]=["mode":mode.rawValue,"run_id":runID,"events":gestureEvents,"touches":touchEvents,
+            "focus":["confirmed":inputFocusConfirmed,"received_taps":receivedFocusTaps,"ignored_probes":ignoredFocusProbes,
+                     "key_window":view.window?.isKeyWindow == true,"foreground_scene":view.window?.windowScene?.activationState == .foregroundActive]]
         if let bytes=try? JSONSerialization.data(withJSONObject:value,options:[.prettyPrinted,.sortedKeys]) {
             let cache=FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0]
             try? bytes.write(to:cache.appendingPathComponent("selection-gesture-"+mode.rawValue+".json"),options:.atomic)
+            try? bytes.write(to:cache.appendingPathComponent("selection-run-"+runID+"-"+mode.rawValue+".json"),options:.atomic)
         }
     }
 
@@ -68,10 +89,10 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
         view.backgroundColor = .white
         status.accessibilityIdentifier="selection-status"
         status.isAccessibilityElement=true
-        status.numberOfLines=2;status.font = .systemFont(ofSize:12)
-        status.backgroundColor = .white;status.textColor = .black
-        status.isUserInteractionEnabled=true
-        status.addGestureRecognizer(UITapGestureRecognizer(target:self,action:#selector(confirmInputFocus)))
+        status.titleLabel?.numberOfLines=2;status.titleLabel?.font = .systemFont(ofSize:12)
+        status.backgroundColor = .white;status.setTitleColor(.black,for:.normal)
+        status.contentHorizontalAlignment = .leading
+        status.addTarget(self,action:#selector(confirmInputFocus),for:.touchUpInside)
         do {
             guard ["local.reader.ui-files","local.reader.columns"].contains(Bundle.main.bundleIdentifier ?? "") else {throw CoreFailure(message:"Selection UI requires an owned diagnostic bundle")}
             let args=CommandLine.arguments
@@ -107,7 +128,7 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
             let native=NativeReadingController(book:shown,anchor:.init(chapter:0),options:options)
             native.selected = {[weak self] in self?.selected($0)}
             addChild(native);view.addSubview(native.view);native.didMove(toParent:self);reader=native
-            view.addSubview(status);status.text="Preparing native selection"
+            view.addSubview(status);status.setTitle("Preparing native selection",for:.normal)
             Task {@MainActor [weak self] in
                 try? await Task.sleep(for:.milliseconds(800))
                 for _ in 0..<100 {
@@ -163,7 +184,6 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
             if let gesture=surface.gestureRecognizers?.compactMap({$0 as? UILongPressGestureRecognizer}).first,gesture !== tracedGesture {
                 tracedGesture?.removeTarget(self,action:#selector(traceSelection(_:)))
                 tracedGesture=gesture;gesture.addTarget(self,action:#selector(traceSelection(_:)))
-                writeGestureTrace()
             }
             if touchTrace?.view !== surface {
                 if let touchTrace {touchTrace.view?.removeGestureRecognizer(touchTrace)}
@@ -178,12 +198,13 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
                 }
                 surface.addGestureRecognizer(trace);touchTrace=trace
             }
-            status.accessibilityValue=encoded;status.text="Ready";return true
+            status.accessibilityValue=encoded;status.setTitle("Ready",for:.normal);writeGestureTrace();return true
         }
         return false
     }
     private func selected(_ passage:SelectedPassage) {
         guard !handled else{return};handled=true
+        focusTask?.cancel()
         Task {@MainActor in
             guard let annotations else {fail("Selection annotation model missing");return}
             guard passage.text==expectedText,passage.start==ReadingAnchor(chapter:0,block:expectedBlock,charOffset:expectedStart),
@@ -196,7 +217,7 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
                 let reloaded:ReaderAnnotations=try annotations.library.client.call("annotations",["id":annotations.book.id])
                 guard reloaded.highlights.contains(where:{$0.id==saved.id && $0.start==passage.start && $0.end==passage.end}) else{throw CoreFailure(message:"Selection was not persisted")}
                 write(["passed":true,"mode":mode.rawValue,"run_id":runID,"text":passage.text,"start_block":saved.start_block,"start_scalar":saved.start_offset,"end_block":saved.end_block,"end_scalar":saved.end_offset,"native_touch":true,"persisted":true])
-                status.text="Passed: "+expectedText
+                status.setTitle("Passed: "+expectedText,for:.normal)
             } catch {fail((error as? CoreFailure)?.message ?? error.localizedDescription)}
         }
     }
@@ -206,7 +227,7 @@ private final class SelectionTouchTrace:UIGestureRecognizer {
         let cache=FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0]
         try? bytes.write(to:cache.appendingPathComponent("selection-ui-"+mode.rawValue+".json"),options:.atomic)
     }
-    private func fail(_ message:String) {write(["passed":false,"mode":mode.rawValue,"error":message]);status.text="Failed: "+message}
+    private func fail(_ message:String) {write(["passed":false,"mode":mode.rawValue,"error":message]);status.setTitle("Failed: "+message,for:.normal)}
 }
 // This host only reports the existing native navigation suite. XCTest enables
 // the real simulator setting through Settings and restores it afterwards.

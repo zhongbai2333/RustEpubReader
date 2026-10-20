@@ -44,6 +44,45 @@ def validate_selection(report, platform):
     return report
 
 
+def validate_ios_input_runs(output):
+    modes = {mode: 0 for mode in ("none", "curl", "slide", "cover", "scroll")}
+    paths = list(output.glob("selection-run-*.json"))
+    if len(paths) != 15 or (output / "selection-input-copy-errors.json").exists():
+        raise RuntimeError("Missing complete per-iteration native input evidence")
+    identities, taps, repeated = set(), 0, 0
+    for path in paths:
+        match = re.fullmatch(r"selection-run-([0-9A-Fa-f-]{36})-(none|curl|slide|cover|scroll)\.json", path.name)
+        if not match or path.is_symlink() or path.stat().st_size > 262144:
+            raise RuntimeError("Invalid native input report path or size")
+        try:
+            report = json.loads(path.read_text())
+            identity = str(uuid.UUID(match[1]))
+        except ValueError as error:
+            raise RuntimeError("Unreadable native input report") from error
+        if not isinstance(report, dict):
+            raise RuntimeError("Native input report is not an object")
+        if identity in identities or report.get("run_id") != match[1] or report.get("mode") != match[2]:
+            raise RuntimeError("Native input report identity differs or repeats")
+        identities.add(identity); modes[match[2]] += 1
+        focus, events, touches = report.get("focus", {}), report.get("events", []), report.get("touches", [])
+        if (not isinstance(focus, dict) or any(focus.get(key) is not True for key in ("confirmed", "key_window", "foreground_scene")) or
+            type(focus.get("received_taps")) is not int or not 1 <= focus["received_taps"] <= 3 or
+            type(focus.get("ignored_probes")) is not int or focus["ignored_probes"] != 0):
+            raise RuntimeError("Native input was not acknowledged or used fault injection")
+        if (not isinstance(events, list) or not 3 <= len(events) <= 512 or any(not isinstance(e, dict) for e in events) or
+            events[0].get("state") != 1 or events[-1].get("state") != 3 or
+            any(type(e.get("state")) is not int or e["state"] not in (1, 2, 3) for e in events) or not any(e["state"] == 2 for e in events)):
+            raise RuntimeError("Native selection recognizer did not complete")
+        if (not isinstance(touches, list) or not 3 <= len(touches) <= 512 or any(not isinstance(e, dict) for e in touches) or
+            touches[0].get("phase") != "began" or touches[-1].get("phase") != "ended" or
+            any(e.get("phase") not in ("began", "moved", "ended") for e in touches) or not any(e["phase"] == "moved" for e in touches)):
+            raise RuntimeError("Native touch stream did not complete")
+        taps += focus["received_taps"]; repeated += focus["received_taps"] > 1
+    if set(modes.values()) != {3}:
+        raise RuntimeError("Native input evidence does not cover three iterations per mode")
+    return dict(passed=True, runs=15, modes=modes, received_focus_taps=taps, repeated_readiness_handshakes=repeated)
+
+
 def validate_reduced_motion(report, platform):
     if platform == "android":
         validate_selection(report, platform)
@@ -123,6 +162,7 @@ def ios_selection_manifest(args):
     if artifact_hash(staged_runner) != artifact_hash(runner):
         raise ValueError("Staged XCTest runner differs from the admitted runner")
     environment = case.setdefault("EnvironmentVariables", {})
+    environment["READER_SELECTION_IGNORE_FOCUS_PROBES"] = "0"
     with (args.app / "Info.plist").open("rb") as stream:
         environment["READER_UI_TARGET_BUNDLE"] = plistlib.load(stream)["CFBundleIdentifier"]
     for key, fixture in (("READER_SELECTION_EPUB_BASE64", ROOT / "core/tests/fixtures/native-typography.epub"),
@@ -195,12 +235,23 @@ def collect_ios_selection(args, identifier, bundle):
         for pattern in ("selection-ui-*.json", "selection-gesture-*.json", "reduced-motion-verification.json"):
             for path in (container / "Library/Caches").glob(pattern):
                 shutil.copyfile(path, args.output / path.name)
+        # Keep each UUID, including failed iterations, rather than overwriting
+        # their traces when the next repetition of the same mode completes.
+        copy_errors = []
+        for index, path in enumerate((container / "Library/Caches").glob("selection-run-*.json")):
+            if index >= 32 or path.is_symlink() or not path.is_file() or path.stat().st_size > 262144:
+                copy_errors.append(path.name)
+                continue
+            shutil.copyfile(path, args.output / path.name)
+        if copy_errors:
+            (args.output / "selection-input-copy-errors.json").write_text(json.dumps(copy_errors) + "\n")
         if inspection_error is not None and not execution_failed:
             raise inspection_error
     if before != after:
         raise RuntimeError("XCTest replaced the admitted target app or data container")
     rows = [validate_report((args.output / ("selection-ui-" + mode + ".json")).read_bytes()) for mode in ("none", "curl", "slide", "cover", "scroll")]
     selection = validate_selection({"passed": True, "cases": rows}, "ios")
+    selection["input_readiness"] = validate_ios_input_runs(args.output)
     selection["reduced_motion"] = validate_reduced_motion(validate_report((args.output / "reduced-motion-verification.json").read_bytes()), "ios")
     return selection
 
