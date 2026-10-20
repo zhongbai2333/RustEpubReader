@@ -108,7 +108,7 @@ class IOSLifecycleTests(unittest.TestCase):
                 if command == ("launch","owned-device","com.apple.Preferences"): return b"com.apple.Preferences: 123\n"
                 if command[0] == "terminate": self.assertEqual(command,("terminate","owned-device","com.apple.Preferences"))
                 return b""
-            with patch.object(runtime, "run", side_effect=listing), patch.object(runtime, "ios_simctl", side_effect=device), patch.object(runtime, "wait_report", return_value={"passed": True}):
+            with patch.object(runtime, "run", side_effect=listing), patch.object(runtime, "ios_simctl", side_effect=device), patch.object(runtime, "wait_report", return_value={"passed": True}), patch.object(runtime,"attach_ios_simulator",side_effect=AssertionError("GUI was not requested")):
                 result = runtime.ios(args)
             self.assertEqual(set(result), set(runtime.CASES))
             launches = [c for c in calls if c[0] == "launch" and "local.reader.columns" in c]
@@ -195,6 +195,29 @@ class IOSLifecycleTests(unittest.TestCase):
             self.assertEqual(len([c for c in calls if c[0]=="launch"]),1)
             self.assertTrue((args.output/"simulator-processes.txt").is_file())
             self.assertEqual(calls[-2:],[("shutdown","owned-device"),("delete","owned-device")])
+
+    def test_requested_gui_targets_the_owned_device_in_the_selected_xcode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            developer=Path(directory);app=developer/"Applications/Simulator.app";app.mkdir(parents=True)
+            with patch.dict(runtime.os.environ,{"DEVELOPER_DIR":str(developer)}),patch.object(runtime,"run",return_value=b"") as command:
+                runtime.attach_ios_simulator("owned-device")
+            self.assertEqual(command.call_args.args,("open","-a",str(app),"--args","-CurrentDeviceUDID","owned-device"))
+            self.assertEqual(command.call_args.kwargs,{"timeout":30})
+
+    def test_gui_attachment_is_opt_in_and_precedes_the_ui_readiness_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);args,listing=self.fixture(root);args.show_simulator=True;calls=[]
+            def device(output,*command,**kwargs):
+                calls.append(command)
+                if command[0]=="create":return b"owned-device\n"
+                if command[0]=="get_app_container":return str(root/"container").encode()
+                if command==("launch","owned-device","com.apple.Preferences"):return b"com.apple.Preferences: 123\n"
+                return b""
+            with patch.object(runtime,"run",side_effect=listing),patch.object(runtime,"ios_simctl",side_effect=device),patch.object(runtime,"wait_report",return_value={"passed":True}),patch.object(runtime,"attach_ios_simulator",side_effect=lambda identifier:calls.append(("gui",identifier))):
+                runtime.ios(args)
+            self.assertLess(calls.index(("boot","owned-device")),calls.index(("gui","owned-device")))
+            self.assertLess(calls.index(("gui","owned-device")),calls.index(("bootstatus","owned-device","-b")))
+            self.assertLess(calls.index(("gui","owned-device")),calls.index(("launch","owned-device","com.apple.Preferences")))
 
 
 class CorpusCoverageTests(unittest.TestCase):

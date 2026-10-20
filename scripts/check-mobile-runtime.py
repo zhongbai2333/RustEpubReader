@@ -217,6 +217,16 @@ def prepare_ios_ui(output, identifier):
     ios_simctl(output, "terminate", identifier, bundle, timeout=30)
 
 
+def attach_ios_simulator(identifier):
+    developer = os.environ.get("DEVELOPER_DIR") or run("xcode-select", "-p").decode().strip()
+    simulator = Path(developer) / "Applications/Simulator.app"
+    if not simulator.is_dir():
+        raise ValueError("Selected Xcode Simulator application is missing: " + str(simulator))
+    # Select the owned iPad on first opening, rather than booting a second,
+    # default device and competing with the actual test's cold initialization.
+    run("open", "-a", str(simulator), "--args", "-CurrentDeviceUDID", identifier, timeout=30)
+
+
 def capture_ios_failure(output, identifier, bundle):
     """Collect bounded diagnostics before the owned simulator is deleted."""
     predicate = 'process == "SpringBoard" OR process == "runningboardd" OR eventMessage CONTAINS[c] "' + bundle + '"'
@@ -554,6 +564,8 @@ def ios(args):
     completed = False
     try:
         ios_simctl(args.output, "boot", identifier)
+        if getattr(args, "show_simulator", False):
+            attach_ios_simulator(identifier)
         ios_simctl(args.output, "bootstatus", identifier, "-b")
         prepare_ios_ui(args.output, identifier)
         ios_simctl(args.output, "install", identifier, str(args.app))
@@ -619,6 +631,7 @@ def main():
     parser.add_argument("--with-book-opening", action="store_true", help="Android emulator only; native shelf input, cancellation and exact reopening")
     parser.add_argument("--with-selection", action="store_true", help="Native selection gestures, persisted scalar ranges, and real system Reduce Motion checks")
     parser.add_argument("--xctestrun", type=Path, help="Pinned ReaderUITests manifest, required for iOS selection")
+    parser.add_argument("--show-simulator", action="store_true", help="Attach the selected Xcode Simulator UI to this run's owned iPad")
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -626,6 +639,8 @@ def main():
         parser.error("--with-talkback is only supported for Android emulators")
     if args.with_book_opening and args.platform != "android":
         parser.error("--with-book-opening is only supported for Android emulators")
+    if args.show_simulator and args.platform != "ios":
+        parser.error("--show-simulator is only supported for iOS simulators")
     if args.platform == "android" and args.tests is None:
         parser.error("--tests is required for Android")
     ui_runner = ios_selection_inputs(args.app, args.xctestrun) if args.with_selection and args.platform == "ios" else None
