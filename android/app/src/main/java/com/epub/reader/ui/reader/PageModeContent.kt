@@ -259,6 +259,11 @@ internal fun PageModeContent(
     }
     // 跟踪当前翻页动画 Job，跨章时取消残留协程防止快速翻页导致状态错乱
     var flipJob by remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(flipJob) {
+        val pending = flipJob
+        pending?.join()
+        if (flipJob === pending) flipJob = null
+    }
     // 强制限制连续翻页间隔，防止过快卡死
     val lastFlipTime = remember { mutableLongStateOf(0L) }
 
@@ -596,7 +601,11 @@ internal fun PageModeContent(
                 .semantics(mergeDescendants = false) {
                     // Keep the text/image descendants readable, including in
                     // curl/cover modes that have no native Pager scroll action.
-                    customActions = listOf(
+                    // Announce page actions only when a turn can be accepted.
+                    // The settled locator can arrive one frame before the
+                    // animation job finishes; TalkBack must not offer a turn
+                    // that the handler will immediately reject in that gap.
+                    customActions = if (chapterJumpTriggered || flipJob?.isActive == true || pagerState.isScrollInProgress) emptyList() else listOf(
                         CustomAccessibilityAction(I18n.t("reader.next_page")) {accessibilityPageTurn(true)},
                         CustomAccessibilityAction(I18n.t("reader.previous_page")) {accessibilityPageTurn(false)},
                     )

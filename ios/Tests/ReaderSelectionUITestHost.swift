@@ -96,7 +96,7 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
         return nil
     }
     private func publishTargets()->Bool {
-        guard let reader,reader.isViewLoaded,reader.view.window != nil else{return false}
+        guard let reader,reader.isViewLoaded,let window=reader.view.window else{return false}
         for surface in surfaces(reader.view) {
             guard let page=surface.page,page.chapter==0,surface.bounds.width>0,surface.bounds.height>0,
                   let coordinate=page.content.coordinates.first(where:{$0.block==expectedBlock}) else{continue}
@@ -106,6 +106,10 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
                   let first=point(start,in:surface,page:page),let last=point(end,in:surface,page:page) else{continue}
             let visible=surface.convert(surface.bounds,to:view).intersection(view.bounds.inset(by:view.safeAreaInsets))
             guard visible.contains(surface.convert(first,to:view)),visible.contains(surface.convert(last,to:view)) else{continue}
+            // Curl pagers can retain an overlapping/back paper in their view
+            // hierarchy. Only publish coordinates of the actual touch surface.
+            guard window.hitTest(surface.convert(first,to:window),with:nil) === surface,
+                  window.hitTest(surface.convert(last,to:window),with:nil) === surface else{continue}
             let value:[String:Any]=["mode":mode.rawValue,"start":[first.x/surface.bounds.width,first.y/surface.bounds.height],"end":[last.x/surface.bounds.width,last.y/surface.bounds.height],"expected_text":expectedText]
             guard let bytes=try? JSONSerialization.data(withJSONObject:value),let encoded=String(data:bytes,encoding:.utf8) else{return false}
             surface.isAccessibilityElement=true;surface.accessibilityIdentifier="native-selection-paper";surface.accessibilityValue=encoded

@@ -72,9 +72,10 @@ internal object ReaderAccessibilityRuntimeChecks {
                 val next=checkNotNull(action(I18n.t("reader.next_page")))
                 check(next.first.performAction(next.second.id)) {"Accessible next rejected: $mode"}
                 await("Accessible next did not move: $mode") {location()!=origin}
+                await("Accessible previous not ready after next: $mode") {action(I18n.t("reader.previous_page"))!=null}
                 val previous=checkNotNull(action(I18n.t("reader.previous_page")))
                 check(previous.first.performAction(previous.second.id)) {"Accessible previous rejected: $mode"}
-                await("Accessible previous did not return: $mode") {location()==origin}
+                await("Accessible previous did not return: $mode, origin=$origin") {location()==origin}
                 cases.put(JSONObject().put("mode",mode).put("native_text_focus",true).put("custom_actions",true).put("exact_return",true))
             }
             report.put("passed",true)

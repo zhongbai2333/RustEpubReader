@@ -880,7 +880,7 @@ final class PaperController: UIViewController {
         }
     }
 }
-final class PaperSurface: UIView {
+final class PaperSurface: UIView, UIGestureRecognizerDelegate {
     var accessibleTurn: ((Bool) -> Bool)?
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
         guard let accessibleTurn else { return super.accessibilityScroll(direction) }
@@ -922,9 +922,16 @@ final class PaperSurface: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         NotificationCenter.default.addObserver(self, selector: #selector(illustrationLoaded), name: BookTypesetter.illustrationReady, object: nil)
-        let press = UILongPressGestureRecognizer(target: self, action: #selector(selectText(_:))); press.minimumPressDuration = 0.4; addGestureRecognizer(press)
+        let press = UILongPressGestureRecognizer(target: self, action: #selector(selectText(_:))); press.minimumPressDuration = 0.4; press.delegate = self; addGestureRecognizer(press)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // A held selection wins over the ancestor pager's curl/pan gestures.
+        // A normal swipe fails the long press on movement and turns as usual.
+        guard gestureRecognizer is UILongPressGestureRecognizer, let ancestor = otherGestureRecognizer.view,
+              ancestor !== self else {return false}
+        return isDescendant(of:ancestor)
+    }
     deinit { NotificationCenter.default.removeObserver(self) }
     @objc private func illustrationLoaded() { setNeedsDisplay() }
     private func frame(_ page: ReadingPage) -> CTFrame {
