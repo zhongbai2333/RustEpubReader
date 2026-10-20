@@ -210,11 +210,11 @@ def prepare_ios_ui(output, identifier):
     bundle = "com.apple.Preferences"
     reply = ios_simctl(output, "launch", identifier, bundle).decode().strip()
     # A booted SpringBoard or an installed icon does not establish that an
-    # application can start. Require a real system-app PID, then close only
-    # that process on this collector's disposable device.
+    # application can start. Require a real system-app PID. The test app will
+    # take the foreground normally; a separate terminate can itself stall
+    # during cold initialization. Device cleanup owns the probe process too.
     if not re.fullmatch(re.escape(bundle) + r":\s*[1-9][0-9]*", reply):
         raise RuntimeError("iOS UI readiness probe did not return a process: " + repr(reply))
-    ios_simctl(output, "terminate", identifier, bundle, timeout=30)
 
 
 def attach_ios_simulator(identifier):

@@ -116,7 +116,8 @@ class IOSLifecycleTests(unittest.TestCase):
             self.assertEqual(launches[0][1:3],("owned-device","local.reader.columns"))
             self.assertNotIn("--terminate-running-process",launches[0])
             self.assertTrue(all(c[1:4] == ("--terminate-running-process", "owned-device", "local.reader.columns") for c in launches[1:]))
-            self.assertLess(calls.index(("terminate","owned-device","com.apple.Preferences")), next(i for i,c in enumerate(calls) if c[0]=="install"))
+            self.assertLess(calls.index(("launch","owned-device","com.apple.Preferences")), next(i for i,c in enumerate(calls) if c[0]=="install"))
+            self.assertFalse(any(c[0]=="terminate" for c in calls))
             self.assertEqual(calls[-2:], [("shutdown", "owned-device"), ("delete", "owned-device")])
 
     def test_cleanup_attempts_delete_after_shutdown_timeout_and_preserves_original_error(self):
@@ -167,14 +168,13 @@ class IOSLifecycleTests(unittest.TestCase):
             self.assertTrue((args.output/"simulator-recent.log").is_file())
             self.assertEqual(calls[-2:],[("shutdown","owned-device"),("delete","owned-device")])
 
-    def test_ui_readiness_requires_a_system_app_process_and_terminates_only_that_app(self):
+    def test_ui_readiness_requires_a_system_app_process_without_separate_termination(self):
         with tempfile.TemporaryDirectory() as directory:
             output=Path(directory)
-            with patch.object(runtime,"ios_simctl",side_effect=[b"com.apple.Preferences: 123\n",b""]) as device:
+            with patch.object(runtime,"ios_simctl",return_value=b"com.apple.Preferences: 123\n") as device:
                 runtime.prepare_ios_ui(output,"owned-device")
             self.assertEqual(device.call_args_list[0].args,(output,"launch","owned-device","com.apple.Preferences"))
-            self.assertEqual(device.call_args_list[1].args,(output,"terminate","owned-device","com.apple.Preferences"))
-            self.assertEqual(device.call_args_list[1].kwargs,{"timeout":30})
+            self.assertEqual(device.call_count,1)
             for reply in (b"",b"com.apple.Preferences: 0",b"other.app: 123",b"com.apple.Preferences: -1"):
                 with self.subTest(reply=reply),patch.object(runtime,"ios_simctl",return_value=reply) as device:
                     with self.assertRaisesRegex(RuntimeError,"readiness probe"):runtime.prepare_ios_ui(output,"owned-device")
