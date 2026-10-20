@@ -50,6 +50,16 @@ class PerformanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "metric coverage"):
             performance.compare(current, baseline)
 
+    def test_corrupted_baseline_and_candidate_numbers_cannot_hide_a_regression(self):
+        base={"environment":{"device":"same"},"fixture_manifest_sha256":"same","books":{"book":{"metrics":{"cold_catalogue_ms":100}}}}
+        for side in ["baseline","candidate"]:
+            for number in [float("nan"),float("inf"),-1,True]:
+                baseline=copy.deepcopy(base);current=copy.deepcopy(base)
+                target=baseline if side=="baseline" else current
+                target["books"]["book"]["metrics"]["cold_catalogue_ms"]=number
+                with self.subTest(side=side,number=number),self.assertRaisesRegex(ValueError,"comparison metric"):
+                    performance.compare(current,baseline)
+
     def test_fixture_bytes_are_reproducible_and_have_epub_container(self):
         with tempfile.TemporaryDirectory() as directory:
             a, b = Path(directory) / "a.epub", Path(directory) / "b.epub"

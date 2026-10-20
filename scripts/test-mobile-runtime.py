@@ -17,6 +17,13 @@ SPEC.loader.exec_module(runtime)
 
 
 class ReportTests(unittest.TestCase):
+    def test_command_timeout_defaults_and_explicit_bounds_are_not_duplicated(self):
+        with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(stdout=b"ok")) as process:
+            self.assertEqual(runtime.run("owned-tool"),b"ok")
+            self.assertEqual(process.call_args.kwargs["timeout"],180)
+            self.assertEqual(runtime.run("owned-tool",timeout=10),b"ok")
+            self.assertEqual(process.call_args.kwargs["timeout"],10)
+
     def test_device_type_must_support_the_installed_runtime(self):
         devices = [
             {"identifier": "too-new", "productFamily": "iPad", "minRuntimeVersion": 28 << 16, "maxRuntimeVersion": 0xffffffff},
@@ -43,6 +50,15 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(runtime.compatible_tablet(order,"26.2"),prefix+"iPad-A16")
         devices[-1]["minRuntimeVersion"]=28 << 16
         self.assertEqual(runtime.compatible_tablet(devices,"26.2"),prefix+"iPad-10th-generation")
+
+    def test_explicit_performance_tablet_cannot_fall_back_to_another_viewport(self):
+        def device(name, family="iPad", minimum=0):
+            return dict(identifier=name,productFamily=family,minRuntimeVersion=minimum,maxRuntimeVersion=0xffffffff)
+        devices=[device("baseline"),device("large-tablet"),device("phone","iPhone"),device("future-tablet",minimum=28<<16)]
+        self.assertEqual(runtime.compatible_tablet(devices,"27.2","large-tablet"),"large-tablet")
+        for requested in ("phone","future-tablet","absent"):
+            with self.subTest(requested=requested),self.assertRaisesRegex(ValueError,"Requested iPad"):
+                runtime.compatible_tablet(devices,"27.2",requested)
 
     def test_artifact_identity_detects_changed_bytes_paths_and_absent_inputs(self):
         with tempfile.TemporaryDirectory() as directory:

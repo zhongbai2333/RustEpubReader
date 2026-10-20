@@ -19,6 +19,7 @@ jobs:
             - name: Validate the benchmark tooling
               run: |
                   python3 scripts/test-performance.py
+                  python3 scripts/test-mobile-runtime.py
                   python3 scripts/test-native-performance.py
                   python3 scripts/test-image-bridge.py
                   python3 scripts/test-android-native-artifacts.py

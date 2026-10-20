@@ -5,6 +5,8 @@ import importlib.util
 import json
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 import tempfile
 import unittest
 
@@ -46,6 +48,41 @@ def report(client, chapters=3000):
 
 class NativePerformanceTests(unittest.TestCase):
     book = {"sha256": "hash", "chapters": 3000}
+
+    def test_host_quietness_uses_measured_idle_and_requires_consecutive_samples(self):
+        self.assertEqual(native.parse_host_idle("CPU usage: 1% user, 1% sys, 98% idle\nCPU usage: 60% user, 20% sys, 20% idle\n"), 20)
+        for bad in ("Load Avg: 0.1", "CPU usage: 0% user, 0% sys, 90% idle",
+                    "CPU usage: 0% user, 0% sys, 98% idle\nCPU usage: 0% user, 0% sys, -1% idle",
+                    "CPU usage: 0% user, 0% sys, 98% idle\nCPU usage: 0% user, 0% sys, 101% idle"):
+            with self.assertRaises(ValueError): native.parse_host_idle(bad)
+        observations = []
+        readings = [80]*9 + [10] + [90]*10
+        with patch.object(native, "run", side_effect=[f"CPU usage: 0% user, 0% sys, 98% idle\nCPU usage: 0% user, 0% sys, {idle}% idle".encode() for idle in readings]):
+            native.wait_host_idle(observations)
+        self.assertEqual([o["idle_percent"] for o in observations], readings)
+        with self.assertRaisesRegex(RuntimeError, "did not become quiet"):
+            native.wait_host_idle([], timeout=0)
+
+    def test_ios_launch_waits_before_each_process_and_retains_failed_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver=object.__new__(native.IOS)
+            driver.args=SimpleNamespace(output=Path(directory))
+            driver.identifier="owned-simulator";driver.launched=False;driver.host_idle_samples=[]
+            events=[]
+            def quiet(observations):
+                events.append("quiet");observations.append({"idle_percent":80})
+            def command(*args,**kwargs):events.append(args[2]);return b""
+            with patch.object(native,"wait_host_idle",side_effect=quiet),patch.object(native,"run",side_effect=command):
+                driver.launch("--measure-release-shelf")
+                driver.launch("--measure-release-shelf")
+            self.assertEqual(events,["quiet","launch","terminate","quiet","launch"])
+            def busy(observations):
+                observations.append({"idle_percent":2});raise RuntimeError("busy host")
+            with patch.object(native,"wait_host_idle",side_effect=busy),patch.object(native,"run",side_effect=command):
+                with self.assertRaisesRegex(RuntimeError,"busy host"):driver.launch("--measure-release-shelf")
+            self.assertEqual(events[-1],"terminate")
+            self.assertLess(driver.host_idle_samples[-1]["samples"][0]["idle_percent"],native.HOST_IDLE_MINIMUM)
+            self.assertEqual(json.loads((Path(directory)/"host-idle-samples.json").read_text()),driver.host_idle_samples)
 
     def test_visible_endurance_requires_real_turns_origin_and_each_memory_point(self):
         for client in ["desktop", "android", "ios"]:

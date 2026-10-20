@@ -7,11 +7,20 @@ import SwiftUI
 
 @MainActor private final class ReadingFrameMeter:NSObject {
     var intervals:[Double]=[]
-    var measuring=false {didSet {last=nil}}
+    var callbackIntervals:[Double]=[]
+    var measuring=false {didSet {last=nil;lastCallback=nil}}
     private var last:CFTimeInterval?
+    private var lastCallback:CFTimeInterval?
     var link:CADisplayLink?
     func start() {let value=CADisplayLink(target:self,selector:#selector(tick(_:)));value.add(to:.main,forMode:.common);link=value}
-    @objc func tick(_ sender:CADisplayLink) {guard measuring else{return};if let last {intervals.append((sender.timestamp-last)*1000)};last=sender.timestamp}
+    @objc func tick(_ sender:CADisplayLink) {
+        guard measuring else{return}
+        let now=CACurrentMediaTime()
+        if let last {intervals.append((sender.timestamp-last)*1000)}
+        if let lastCallback {callbackIntervals.append((now-lastCallback)*1000)}
+        last=sender.timestamp;lastCallback=now
+    }
+    func reset(){intervals=[];callbackIntervals=[];last=nil;lastCallback=nil}
     func stop(){link?.invalidate();link=nil}
 }
 @MainActor enum ReadingReleasePerformance {
@@ -78,7 +87,7 @@ import SwiftUI
                         guard settledJumpID==jumpID && reader.anchor.chapter==target else {throw CoreFailure(message:"Chapter navigation did not settle in \(mode)/\(target)")}
                         reader.view.layoutIfNeeded();draw()
                         let first=(CACurrentMediaTime()-begin)*1000
-                        meter.intervals=[];var durations=[Double]();meter.measuring=true
+                        meter.reset();var durations=[Double]();meter.measuring=true
                         let turns=endurance ? 128 : 8, origin=reader.anchor
                         var turnMemory=[[String:Any]](), preparation=[Double](), preparedChapter = -1
                         for turn in 0..<turns {
@@ -176,7 +185,7 @@ final class ShelfProbeMetrics: @unchecked Sendable {
     func run()async {
         guard !running else {return};running=true
         precondition(!_isDebugAssertConfiguration(),"Shelf performance requires Release")
-        var report:[String:Any] = ["scenario":"dense-shelf","harness_schema":2,"profile":"release","run_id":runID,"baseline_memory":ShelfReleasePerformance.baseline,"input_kind":"native UIScrollView animated content offset","release_network_checks":false]
+        var report:[String:Any] = ["scenario":"dense-shelf","harness_schema":3,"profile":"release","run_id":runID,"baseline_memory":ShelfReleasePerformance.baseline,"input_kind":"native UIScrollView animated content offset","release_network_checks":false]
         let meter=ReadingFrameMeter();meter.start();meter.measuring=true
         do {
             let manifestData=try Data(contentsOf:root.appendingPathComponent("manifest.json"))
@@ -209,7 +218,7 @@ final class ShelfProbeMetrics: @unchecked Sendable {
                 try Data(runID.utf8).write(to:root.appendingPathComponent("scroll-ready"),options:.atomic)
                 try await wait {FileManager.default.fileExists(atPath:self.root.appendingPathComponent("scroll-go").path)}
             }
-            meter.intervals=[];var curve=[[String:Any]](),forward=true
+            meter.reset();var curve=[[String:Any]](),forward=true
             for step in 1...30 {
                 let old=scroll.contentOffset.y,maxY=max(0,scroll.contentSize.height-scroll.bounds.height+scroll.adjustedContentInset.bottom)
                 if old>=maxY-1 {forward=false};if old<=0 {forward=true}
@@ -221,14 +230,19 @@ final class ShelfProbeMetrics: @unchecked Sendable {
             }
             meter.measuring=false;try await Task.sleep(for:.milliseconds(750))
             var steady=[[String:UInt64]]();for _ in 0..<5 {steady.append(ReadingReleasePerformance.memory());try await Task.sleep(for:.milliseconds(150))}
-            let frames=meter.intervals.sorted(),counters=ShelfProbeMetrics.shared.snapshot()
-            guard frames.count>=100,library.books.count==count,counters.prepared>=min(count,12),count<=96 || counters.views<count else {throw CoreFailure(message:"Shelf coverage incomplete or all covers eagerly loaded")}
+            let frames=meter.intervals.sorted(),callbacks=meter.callbackIntervals.sorted(),counters=ShelfProbeMetrics.shared.snapshot()
+            guard frames.count>=100,callbacks.count==frames.count,library.books.count==count,counters.prepared>=min(count,12),count<=96 || counters.views<count else {throw CoreFailure(message:"Shelf coverage incomplete or all covers eagerly loaded")}
             report["ranking_evaluations"]=counters.ranks;report["geometry_updates"]=counters.geometry
             report["home_body_evaluations"]=counters.homes
             report["scrolls"]=30;report["scroll_memory_samples"]=curve;report["steady_memory_samples"]=steady
             report["total_cover_requests"]=counters.views;report["thumbnail_core_queries"]=counters.queries;report["prepared_covers"]=counters.prepared
             report["configured_cover_cache_count_limit"]=64;report["configured_cover_cache_cost_limit"]=64*1024*1024
             report["frame_samples"]=frames.count;report["display_interval_p50_ms"]=frames[frames.count/2];report["display_interval_p95_ms"]=frames[frames.count*95/100];report["display_interval_max_ms"]=frames.last!
+            // The display timestamp and actual main-thread callback cadence are
+            // distinct clocks. Keep both raw traces so delayed callbacks cannot
+            // be mistaken for an evenly delivered display timeline.
+            report["display_intervals_ms"]=meter.intervals;report["callback_intervals_ms"]=meter.callbackIntervals
+            report["callback_interval_p50_ms"]=callbacks[callbacks.count/2];report["callback_interval_p95_ms"]=callbacks[callbacks.count*95/100];report["callback_interval_max_ms"]=callbacks.last!
             report["viewport"]=["width_points":window.bounds.width,"height_points":window.bounds.height,"scale":scene.screen.scale,"maximum_frames_per_second":scene.screen.maximumFramesPerSecond,"reduce_motion":UIAccessibility.isReduceMotionEnabled,"content_size_category":UIApplication.shared.preferredContentSizeCategory.rawValue]
             guard let lastPNG=image().pngData() else {throw CoreFailure(message:"Cannot encode shelf screenshot")}
             try lastPNG.write(to:root.appendingPathComponent("shelf-scrolled.png"))

@@ -258,11 +258,102 @@ before timing begins.
 
 ### iOS shelf counter protocol
 
-The iOS shelf harness is now version2; Android/desktop shelf harnesses remain
+The iOS shelf harness is now version3; Android/desktop shelf harnesses remain
 version1. It records `ranking_evaluations` and `geometry_updates` separately so a
 scroll-triggered coordinate update is not mistaken for a rebuilt book ranking.
-Older iOS version1 reports remain historical data and are not silently compared
-as version2. The environment/protocol identity must match for a regression claim.
+Version3 also retains the complete display-timestamp and actual main-thread
+callback interval traces. The collector requires matching sample counts and
+recomputes both clocks' percentiles from the raw traces. Neither clock measures
+GPU presentation. Older iOS reports remain historical data and are not silently
+compared as version3. The environment/protocol identity must match for a regression claim.
 Optional `--diagnose-shelf-scroll` runs wait for the owned fixture root's
 `scroll-ready`/`scroll-go` handshake before scrolling. These externally sampled
 stack-diagnostic timings are excluded from the uninstrumented baseline.
+
+### Simulator startup and repeatability
+
+Both iOS native collectors accept `--ios-device-type` with an exact compatible
+iPad Simulator type identifier. A missing/incompatible requested model fails
+instead of silently switching to a smaller viewport. Keep the model, viewport,
+runtime, font scale and accessibility settings fixed across comparisons.
+
+Fresh Simulator boot can continue launching system extensions after `bootstatus`
+returns. Before each measured app process, the iOS runner now requires ten
+consecutive measured one-second host CPU samples with at least 80% idle. The
+first cumulative `top` reading is discarded. Preflight has a 300-second deadline;
+failure preserves `host-idle-samples.json` and fails the attempt without launching
+the timed app. Successful observations are retained too. The policy is part of
+the environment identity, so uncontrolled and controlled collections cannot be
+silently compared. Waiting is diagnostic setup, not a change to product startup.
+This reduces startup interference; it cannot guarantee zero contention during a
+run, so raw traces, repeated processes and independent repeated collections remain
+necessary. Keep compilers and other heavy tests out of timed collection windows.
+
+On Apple M4 / Xcode 27.2 / iOS 27.2 Simulator, an unchanged Release app reproduced
+the 2,000-book, 1032×1376-point shelf's approximately 49ms median-run P95 when
+launched amid fresh Simulator startup work. With the CPU preflight, the same
+artifact's median-run P95 was 16.67ms. This establishes an environment confound,
+not an application speedup or a proof that all historical slow frames had that
+cause. Independent version3 samples additionally check actual callback cadence.
+Local evidence is under `target/stage03-autonomous-20261020/`; final repeatability
+results and exact build/corpus fingerprints are indexed in its verification report.
+Physical devices, other graphics backends and product latency targets still need
+their own baselines. Do not reuse simulator thresholds as physical-device promises.
+
+### iOS shelf comparison policy
+
+Policy 1 keeps the 25% + 5ms allowance for median readiness and P50/P95 latency,
+and 25% + 8MiB for sampled/steady memory. Ranking evaluations, geometry updates,
+cover request counts and single-run frame extrema remain in every report, with
+changes surfaced as `warnings`. They do not individually establish a sustained
+latency regression: faster scrolling can produce more geometry callbacks, while
+one delayed display-link wakeup can double a run's maximum interval.
+
+Both clocks additionally gate the *missed cadence-slot share*. With the fixed
+Simulator maximum refresh rate as the nominal slot reference, an interval beyond
+1.5 slots contributes `round(interval / slot_period) - 1` missed slots. Thus one
+long stall consumes more budget than a single extra-frame delay. Each process
+retains its observed/missed/total counts. A candidate's pooled missed-slot share
+must stay at or below `1.25 * worst_baseline_run_share + 1 / smallest_baseline_slot_count`.
+The last term is one refresh slot's resolution per process. This is an initial
+local noise budget, not a statistical independence claim or physical dropped GPU
+frame count. The same number of processes, viewport and refresh configuration is
+required. Consistent cadence deterioration and rare long stalls still fail even
+when P95 is unchanged; regression tests exercise both cases. Raw worst intervals
+are always retained and can still require investigation despite a budget pass.
+
+The policy is explicit report metadata. A previous summary is rejected until the
+operator explicitly uses `--reanalyse ORIGINAL_COLLECTION`, with the original
+fixtures, immutable app and build record. Reanalysis validates every raw trace,
+reconstructs the original medians byte-for-value, checks the artifact again and
+writes a new directory. It records the original summary/report hashes, original
+pass/failure and any unavailable end-of-collection source check. It never changes
+the measured files or promotes their original status. An independent new collection
+must then validate the calibrated policy; reanalysis alone is not that validation.
+
+The isolated CPU/runloop diagnosis for this local shelf recorded 17 long callbacks.
+Those approximately 33ms gaps contained 5.08–8.14ms of main-thread CPU work; the
+longest continuous active runloop stretch was 5.57ms. The remaining gap was mostly
+waiting for callbacks, not one uninterrupted 33ms layout operation. This diagnosis
+used a separate instrumented artifact whose source/patch is retained; the normal
+harness was restored byte-for-byte. Its timings are excluded from the baseline.
+
+The reviewed local reference is
+`docs/performance-baselines/apple-m4-ios27.2-pro13-synthetic-2000.json`.
+It uses six processes and is specific to the recorded Apple M4, Xcode/runtime,
+large iPad viewport, build command and harness hashes. For a compatible future
+candidate (finish the recorded Release build before collecting):
+
+```sh
+python3 scripts/check-shelf-performance.py ios \
+  --app /absolute/immutable/ReaderPreview.app --build-record /absolute/build.json \
+  --fixtures /absolute/shelf-fixtures-2000-v1 --device apple-m4-ios-pro13-local \
+  --ios-device-type com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-16GB \
+  --runs 6 --pinned-build \
+  --baseline docs/performance-baselines/apple-m4-ios27.2-pro13-synthetic-2000.json \
+  --output /absolute/new/shelf-comparison
+```
+
+An incompatible environment fails rather than adopting this machine's numbers.
+The periodic core workflow exercises the shared mobile-runner regressions too;
+hosted core timing collection remains separate from these local iOS thresholds.

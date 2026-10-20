@@ -170,7 +170,8 @@ def artifact_hash(path):
 
 def run(*args, **kwargs):
     try:
-        return subprocess.run(args, check=True, capture_output=True, timeout=180, **kwargs).stdout
+        kwargs.setdefault("timeout", 180)
+        return subprocess.run(args, check=True, capture_output=True, **kwargs).stdout
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or b"").decode(errors="replace")[-4000:]
         raise RuntimeError(f"Command failed ({error.returncode}): {args}; {detail}") from error
@@ -219,12 +220,16 @@ def capture_ios_failure(output, identifier, bundle):
             (output / (filename + ".error.txt")).write_text(str(error) + "\n")
 
 
-def compatible_tablet(types, version):
+def compatible_tablet(types, version, requested=None):
     parts = [int(x) for x in version.split(".")]
     parts = (parts + [0, 0])[:3]
     encoded = (parts[0] << 16) | (parts[1] << 8) | parts[2]
     compatible = [device for device in types if device.get("productFamily") == "iPad"
                   and device.get("minRuntimeVersion", 0) <= encoded <= device.get("maxRuntimeVersion", 0)]
+    if requested is not None:
+        if any(device["identifier"] == requested for device in compatible):
+            return requested
+        raise ValueError("Requested iPad device type does not support the selected Simulator runtime: " + requested)
     # Keep the CI baseline independent of Xcode's newest-device-first order.
     for model in ("iPad-A16", "iPad-10th-generation", "iPad-Air-11-inch-M2"):
         for device in compatible:

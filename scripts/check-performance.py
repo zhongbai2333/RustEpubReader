@@ -48,6 +48,8 @@ def compare(current, baseline, relative=0.25, absolute_ms=5.0):
             raise ValueError("Different metric coverage: establish a separate baseline")
         for metric, value in entry["metrics"].items():
             old = baseline["books"][book]["metrics"][metric]
+            if any(not isinstance(n, (int, float)) or isinstance(n, bool) or not math.isfinite(n) or n < 0 for n in [old, value]):
+                raise ValueError("Invalid performance comparison metric: " + metric)
             allowance = 8 * 1024 * 1024 if metric.endswith("_bytes") else absolute_ms
             ceiling = old * (1 + relative) + allowance
             if value > ceiling:

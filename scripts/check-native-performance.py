@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import re
 import shutil
 import statistics
 import subprocess
@@ -18,6 +19,9 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "local.reader.performance"
 SCHEMA = 3
+HOST_IDLE_MINIMUM = 80
+HOST_IDLE_CONSECUTIVE = 10
+HOST_IDLE_TIMEOUT = 300
 
 
 def load_module(name, filename):
@@ -45,6 +49,33 @@ def digest(path):
 
 def artifact_hash(path):
     return mobile.artifact_hash(path)
+
+
+def parse_host_idle(output):
+    # top's first CPU line is cumulative; its second line covers the measured
+    # one-second interval. Historical load averages cannot establish quietness.
+    values = re.findall(r"CPU usage:[^\n]*,\s*([+-]?[0-9.]+)% idle", output)
+    if len(values) < 2 or not math.isfinite(value := float(values[-1])) or not 0 <= value <= 100:
+        raise ValueError("Missing or invalid measured host CPU idle percentage")
+    return value
+
+
+def wait_host_idle(observations, timeout=HOST_IDLE_TIMEOUT, minimum_idle=HOST_IDLE_MINIMUM, consecutive=HOST_IDLE_CONSECUTIVE):
+    deadline = time.monotonic() + timeout
+    ready = 0
+    while time.monotonic() < deadline:
+        output = run("top", "-l", "2", "-s", "1", "-n", "0", env=dict(os.environ, LC_ALL="C"), timeout=10).decode()
+        idle = parse_host_idle(output)
+        observations.append({"time": time.time(), "idle_percent": idle})
+        ready = ready + 1 if idle >= minimum_idle else 0
+        if ready >= consecutive:
+            return
+    raise RuntimeError("Host did not become quiet before performance sampling; keep this attempt separate from timing baselines")
+
+
+def collector_sources(entrypoint):
+    paths = {Path(__file__), Path(core.__file__), Path(mobile.__file__), entrypoint}
+    return {str(path.resolve().relative_to(ROOT)): digest(path) for path in sorted(paths)}
 
 def validate_build(build, current, app, pinned=False):
     source = build.get("source", {})
@@ -359,6 +390,8 @@ class IOS:
     def __init__(self, args, reader_fixture=True):
         self.args = args
         self.identifier = None
+        self.launched = False
+        self.host_idle_samples = []
         with (args.app / "Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
         if info["CFBundleIdentifier"] != PACKAGE or "iPhoneSimulator" not in info.get("CFBundleSupportedPlatforms", []):
@@ -366,10 +399,11 @@ class IOS:
         available = [r for r in json.loads(run("xcrun", "simctl", "list", "runtimes", "-j"))["runtimes"] if r.get("isAvailable") and ".iOS-" in r["identifier"]]
         runtime = max(available, key=lambda r: tuple(map(int, r["version"].split("."))))
         types = json.loads(run("xcrun", "simctl", "list", "devicetypes", "-j"))["devicetypes"]
-        device = mobile.compatible_tablet(types, runtime["version"])
+        device = mobile.compatible_tablet(types, runtime["version"], getattr(args, "ios_device_type", None))
         self.environment = {"host_cpu": run("sysctl", "-n", "machdep.cpu.brand_string").decode().strip(), "logical_cpus":os.cpu_count(), "physical_device": False, "runtime": runtime["identifier"], "runtime_build": runtime["buildversion"],
                             "device_type": device, "host_os": platform.release(), "host_architecture": platform.machine(),
                             "xcode": run("xcodebuild", "-version").decode().strip(), "graphics_backend": "CoreSimulator UIKit/Metal"}
+        self.environment["host_idle_policy"] = {"minimum_idle_percent": HOST_IDLE_MINIMUM, "consecutive_one_second_samples": HOST_IDLE_CONSECUTIVE, "timeout_seconds": HOST_IDLE_TIMEOUT}
         self.identifier = run("xcrun", "simctl", "create", "ReaderPerf-" + str(uuid.uuid4()), device, runtime["identifier"]).decode().strip()
         try:
             run("xcrun", "simctl", "boot", self.identifier)
@@ -384,15 +418,27 @@ class IOS:
             raise
 
     def sample(self, pair, mode, run_id):
-        subprocess.run(["xcrun", "simctl", "terminate", self.identifier, PACKAGE], capture_output=True, timeout=20)
         # Same run root for the cold/indexed pair; report ID remains unique per process.
         filename = "release-performance-reopen.json" if mode == "reopen" else "release-performance.json"
         path = self.container / "Library/Caches" / filename
         path.unlink(missing_ok=True)
-        run("xcrun", "simctl", "launch", self.identifier, PACKAGE, "--measure-release-book", "--performance-run", str(pair), "--performance-report-id", run_id,
+        self.launch("--measure-release-book", "--performance-run", str(pair), "--performance-report-id", run_id,
             *(["--performance-endurance"] if self.args.scenario == "visible-endurance" else []),
             *(["--performance-reopen"] if mode == "reopen" else []))
         return wait_json(path, self.args.timeout)
+
+    def launch(self, *arguments):
+        if self.launched:
+            run("xcrun", "simctl", "terminate", self.identifier, PACKAGE, timeout=30)
+            self.launched = False
+        observations = {"launch": len(self.host_idle_samples), "samples": []}
+        self.host_idle_samples.append(observations)
+        try:
+            wait_host_idle(observations["samples"])
+        finally:
+            (self.args.output / "host-idle-samples.json").write_text(json.dumps(self.host_idle_samples, indent=2) + "\n")
+        run("xcrun", "simctl", "launch", self.identifier, PACKAGE, *arguments)
+        self.launched = True
 
     def close(self):
         if self.identifier:
@@ -419,7 +465,7 @@ def collect(args):
         if digest(args.book) != book["sha256"]:
             raise ValueError("Invalid native reader stress fixture")
         summary.update(source_sha256=build["source"]["sha256"], collection_source_initial_sha256=initial["sha256"], pinned_build=args.pinned_build,
-                       artifact_sha256=build["artifact_sha256"], fixture_manifest_sha256=digest(manifest_path), build_command=build["command"], collector_sha256=digest(Path(__file__)))
+                       artifact_sha256=build["artifact_sha256"], fixture_manifest_sha256=digest(manifest_path), build_command=build["command"], collector_sha256=digest(Path(__file__)), collector_sources=collector_sources(Path(__file__)))
         driver = {"desktop": Desktop, "android": Android, "ios": IOS}[args.platform](args)
         summary["environment"] = dict(driver.environment, client=args.platform, device=args.device, profile="release", harness_schema=SCHEMA, build_command=build["command"], scenario=args.scenario,
                                       harness_sources=harness_sources(build, args.platform, args.scenario))
@@ -476,6 +522,7 @@ def main():
     measure.add_argument("--fixtures", type=Path, required=True)
     measure.add_argument("--output", type=Path, required=True)
     measure.add_argument("--device", required=True)
+    measure.add_argument("--ios-device-type", help="Exact compatible iPad Simulator type identifier; never silently substitutes a smaller viewport")
     measure.add_argument("--serial", default="emulator-5556")
     measure.add_argument("--runs", type=int, default=3, choices=range(3, 11))
     measure.add_argument("--timeout", type=int, default=240)
@@ -483,6 +530,8 @@ def main():
     measure.add_argument("--scenario", choices=["reader", "visible-endurance"], default="reader")
     measure.add_argument("--pinned-build", action="store_true", help="Attribute results to the recorded immutable build; workspace edits are recorded separately, artifact changes still fail")
     args = parser.parse_args()
+    if args.command_name == "collect" and args.ios_device_type and args.platform != "ios":
+        parser.error("--ios-device-type is only supported for iOS")
     record_build(args) if args.command_name == "build" else collect(args)
 
 
