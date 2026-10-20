@@ -191,6 +191,10 @@ jobs:
                     echo "::error::Android emulator did not boot within 120 seconds"
                     exit 1
                   fi
+                  # This disposable CI AVD must not interrupt TalkBack checks
+                  # with Accessibility Suite's first-run notification dialog.
+                  test "$(adb -s emulator-5554 shell getprop ro.kernel.qemu | tr -d '\r')" = "1"
+                  adb -s emulator-5554 shell pm grant com.google.android.marvin.talkback android.permission.POST_NOTIFICATIONS
                   python3 scripts/check-mobile-runtime.py android \
                     --app android/app/build/outputs/apk/debug/app-x86_64-debug.apk \
                     --tests android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
