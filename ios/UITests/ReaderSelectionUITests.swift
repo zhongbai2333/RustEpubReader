@@ -30,16 +30,28 @@ final class ReaderSelectionUITests:XCTestCase {
         let home=XCUIApplication(bundleIdentifier:"com.apple.springboard")
         XCTAssertTrue(home.wait(for:.runningForeground,timeout:20),"Wait for the system workspace before launching")
         app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for:.runningForeground,timeout:20),"Activate the launched app before querying or sending input")
     }
     private func select(_ mode:String) throws {
         let app=try readerApp()
         app.launchArguments=["--verify-selection-ui","--selection-mode",mode,"--selection-run",UUID().uuidString,"--book-share-preview","-reader.language","en"]
         launchAfterExit(app)
-        let status=app.staticTexts["selection-status"]
+        let status=app.descendants(matching:.any).matching(identifier:"selection-status").firstMatch
         XCTAssertTrue(status.waitForExistence(timeout:30))
         let paper=app.descendants(matching:.any).matching(identifier:"native-selection-paper").firstMatch
         XCTAssertTrue(paper.waitForExistence(timeout:20),app.debugDescription)
         expectation(for:NSPredicate(format:"label == %@","Ready"),evaluatedWith:status)
+        waitForExpectations(timeout:10)
+        // A visible paper does not prove that the simulator has delivered
+        // input to this app's window. Require one acknowledged native tap
+        // before admitting the long-press/drag, without retrying either input.
+        status.tap()
+        expectation(for:NSPredicate {element,_ in
+            guard let status=element as? XCUIElement,let raw=status.value as? String,
+                  let data=raw.data(using:.utf8),let value=try? JSONSerialization.jsonObject(with:data) as? [String:Any] else{return false}
+            return value["input_focus_confirmed"] as? Bool == true && value["key_window"] as? Bool == true && value["foreground_scene"] as? Bool == true
+        },evaluatedWith:status)
         waitForExpectations(timeout:10)
         waitForTouchTarget(paper)
         let raw=try XCTUnwrap(status.value as? String)

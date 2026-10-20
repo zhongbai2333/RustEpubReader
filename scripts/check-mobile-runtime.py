@@ -168,6 +168,7 @@ def collect_ios_selection(args, identifier, bundle):
     before = ios_installed_target(args, identifier, bundle)
     command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest), "-destination", "id=" + identifier,
                "-parallel-testing-enabled", "NO", "-test-iterations", "3", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
+    execution_failed = False
     try:
         with (args.output / "selection-ui.log").open("wb") as log:
             # Repeat all six cases three times, without retry-on-failure. Any
@@ -176,14 +177,26 @@ def collect_ios_selection(args, identifier, bundle):
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
         if result.returncode != 0:
             raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
+    except BaseException:
+        execution_failed = True
+        raise
     finally:
-        after = ios_installed_target(args, identifier, bundle)
+        after, inspection_error = None, None
+        try:
+            after = ios_installed_target(args, identifier, bundle)
+        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as error:
+            inspection_error = error
         (args.output / "xctest-installation.json").write_text(json.dumps(
-            {"before": before, "after": after, "unchanged": before == after}, indent=2) + "\n")
-        container = Path(after["data"])
+            {"before": before, "after": after, "unchanged": after is not None and before == after,
+             **({"inspection_error": str(inspection_error)} if inspection_error else {})}, indent=2) + "\n")
+        # A crashed simulator can no longer answer simctl. Its admitted data
+        # directory still contains the input traces needed to diagnose XCTest.
+        container = Path((after or before)["data"])
         for pattern in ("selection-ui-*.json", "selection-gesture-*.json", "reduced-motion-verification.json"):
             for path in (container / "Library/Caches").glob(pattern):
                 shutil.copyfile(path, args.output / path.name)
+        if inspection_error is not None and not execution_failed:
+            raise inspection_error
     if before != after:
         raise RuntimeError("XCTest replaced the admitted target app or data container")
     rows = [validate_report((args.output / ("selection-ui-" + mode + ".json")).read_bytes()) for mode in ("none", "curl", "slide", "cover", "scroll")]

@@ -9,6 +9,17 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
     func updateUIViewController(_ controller:ReaderSelectionHostController,context:Context) {}
 }
 
+/// Passive diagnostics: never recognizes, prevents or delays another recognizer.
+private final class SelectionTouchTrace:UIGestureRecognizer {
+    var record:((String,Set<UITouch>,UIEvent?)->Void)?
+    override func canPrevent(_ preventedGestureRecognizer:UIGestureRecognizer)->Bool {false}
+    override func canBePrevented(by preventingGestureRecognizer:UIGestureRecognizer)->Bool {false}
+    override func touchesBegan(_ touches:Set<UITouch>,with event:UIEvent) {record?("began",touches,event)}
+    override func touchesMoved(_ touches:Set<UITouch>,with event:UIEvent) {record?("moved",touches,event)}
+    override func touchesEnded(_ touches:Set<UITouch>,with event:UIEvent) {record?("ended",touches,event);state = .failed}
+    override func touchesCancelled(_ touches:Set<UITouch>,with event:UIEvent) {record?("cancelled",touches,event);state = .failed}
+}
+
 @MainActor final class ReaderSelectionHostController:UIViewController {
     private let status=UILabel()
     private var reader:NativeReadingController?
@@ -22,14 +33,30 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
     private var handled=false
     private var tracedGesture:UILongPressGestureRecognizer?
     private var gestureEvents=[[String:Any]]()
+    private var touchEvents=[[String:Any]]()
+    private var touchTrace:SelectionTouchTrace?
+    private var inputFocusConfirmed=false
+
+    @objc private func confirmInputFocus() {
+        inputFocusConfirmed=true
+        // Refresh coordinates and window state after the real tap is handled.
+        // This does not invoke selection or synthesize any gesture state.
+        DispatchQueue.main.async {[weak self] in _=self?.publishTargets()}
+    }
 
     @objc private func traceSelection(_ gesture:UILongPressGestureRecognizer) {
         let point=gesture.location(in:gesture.view)
-        gestureEvents.append(["state":gesture.state.rawValue,"time":ProcessInfo.processInfo.systemUptime,"x":point.x,"y":point.y])
+        var ancestors=[[String:Any]]()
+        var parent=gesture.view?.superview
+        while let current=parent {
+            ancestors += (current.gestureRecognizers ?? []).map {["type":String(describing:type(of:$0)),"state":$0.state.rawValue,"enabled":$0.isEnabled]}
+            parent=current.superview
+        }
+        gestureEvents.append(["state":gesture.state.rawValue,"time":ProcessInfo.processInfo.systemUptime,"x":point.x,"y":point.y,"ancestors":ancestors])
         if [.began,.ended,.cancelled,.failed].contains(gesture.state) {writeGestureTrace()}
     }
     private func writeGestureTrace() {
-        let value:[String:Any]=["mode":mode.rawValue,"run_id":runID,"events":gestureEvents]
+        let value:[String:Any]=["mode":mode.rawValue,"run_id":runID,"events":gestureEvents,"touches":touchEvents]
         if let bytes=try? JSONSerialization.data(withJSONObject:value,options:[.prettyPrinted,.sortedKeys]) {
             let cache=FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0]
             try? bytes.write(to:cache.appendingPathComponent("selection-gesture-"+mode.rawValue+".json"),options:.atomic)
@@ -40,8 +67,11 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
         super.viewDidLoad()
         view.backgroundColor = .white
         status.accessibilityIdentifier="selection-status"
+        status.isAccessibilityElement=true
         status.numberOfLines=2;status.font = .systemFont(ofSize:12)
         status.backgroundColor = .white;status.textColor = .black
+        status.isUserInteractionEnabled=true
+        status.addGestureRecognizer(UITapGestureRecognizer(target:self,action:#selector(confirmInputFocus)))
         do {
             guard ["local.reader.ui-files","local.reader.columns"].contains(Bundle.main.bundleIdentifier ?? "") else {throw CoreFailure(message:"Selection UI requires an owned diagnostic bundle")}
             let args=CommandLine.arguments
@@ -127,13 +157,26 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
             // hierarchy. Only publish coordinates of the actual touch surface.
             guard window.hitTest(surface.convert(first,to:window),with:nil) === surface,
                   window.hitTest(surface.convert(last,to:window),with:nil) === surface else{continue}
-            let value:[String:Any]=["mode":mode.rawValue,"start":[first.x/surface.bounds.width,first.y/surface.bounds.height],"end":[last.x/surface.bounds.width,last.y/surface.bounds.height],"expected_text":expectedText]
+            let value:[String:Any]=["mode":mode.rawValue,"start":[first.x/surface.bounds.width,first.y/surface.bounds.height],"end":[last.x/surface.bounds.width,last.y/surface.bounds.height],"expected_text":expectedText,"input_focus_confirmed":inputFocusConfirmed,"key_window":window.isKeyWindow,"foreground_scene":window.windowScene?.activationState == .foregroundActive]
             guard let bytes=try? JSONSerialization.data(withJSONObject:value),let encoded=String(data:bytes,encoding:.utf8) else{return false}
             surface.isAccessibilityElement=true;surface.accessibilityIdentifier="native-selection-paper";surface.accessibilityValue=encoded
             if let gesture=surface.gestureRecognizers?.compactMap({$0 as? UILongPressGestureRecognizer}).first,gesture !== tracedGesture {
                 tracedGesture?.removeTarget(self,action:#selector(traceSelection(_:)))
                 tracedGesture=gesture;gesture.addTarget(self,action:#selector(traceSelection(_:)))
                 writeGestureTrace()
+            }
+            if touchTrace?.view !== surface {
+                if let touchTrace {touchTrace.view?.removeGestureRecognizer(touchTrace)}
+                let trace=SelectionTouchTrace();trace.cancelsTouchesInView=false;trace.delaysTouchesBegan=false;trace.delaysTouchesEnded=false
+                trace.record = {[weak self,weak surface] phase,touches,event in
+                    guard let self,let surface else{return}
+                    for touch in touches where self.touchEvents.count<512 {
+                        let point=touch.location(in:surface)
+                        self.touchEvents.append(["phase":phase,"time":touch.timestamp,"x":point.x,"y":point.y,"in_window":surface.window != nil,"event_time":event?.timestamp ?? 0])
+                    }
+                    if phase != "moved" {self.writeGestureTrace()}
+                }
+                surface.addGestureRecognizer(trace);touchTrace=trace
             }
             status.accessibilityValue=encoded;status.text="Ready";return true
         }

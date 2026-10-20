@@ -706,6 +706,23 @@ class FailureEvidenceTests(unittest.TestCase):
             self.assertTrue((output/"reduced-motion-verification.json").is_file())
             self.assertTrue((output/"selection-gesture-slide.json").is_file())
 
+    def test_shutdown_after_xctest_preserves_the_primary_failure_and_admitted_traces(self):
+        for returncode in (0,1):
+            with self.subTest(returncode=returncode),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);output=root/"output";output.mkdir()
+                cache=root/"container/Library/Caches";cache.mkdir(parents=True)
+                (cache/"selection-gesture-cover.json").write_text('{"events":[],"touches":[]}')
+                args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
+                shutdown=RuntimeError("Simulator is Shutdown")
+                installed={'data':str(root/'container'),'app':'/owned.app'}
+                with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=returncode)),patch.object(runtime,'ios_installed_target',side_effect=[installed,shutdown]),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
+                    expected="Native selection XCTest failed" if returncode else "Simulator is Shutdown"
+                    with self.assertRaisesRegex(RuntimeError,expected):runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
+                admission=json.loads((output/"xctest-installation.json").read_text())
+                self.assertFalse(admission["unchanged"]);self.assertIsNone(admission["after"])
+                self.assertEqual(admission["inspection_error"],"Simulator is Shutdown")
+                self.assertTrue((output/"selection-gesture-cover.json").is_file())
+
     def test_native_failure_or_missing_report_still_captures_the_screen(self):
         for missing in (False,True):
             with tempfile.TemporaryDirectory() as directory:
