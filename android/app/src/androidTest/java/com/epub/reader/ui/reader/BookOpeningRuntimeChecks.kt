@@ -2,12 +2,12 @@ package com.zhongbai233.epub.reader.ui.reader
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.InputDevice
-import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.lifecycle.ViewModelProvider
 import com.zhongbai233.epub.reader.MainActivity
@@ -72,6 +72,27 @@ internal object BookOpeningRuntimeChecks {
                 }
                 return true
             }
+            fun coverReady(): Boolean = covers[path]?.let { it.width > 0 && it.height > 0 } == true &&
+                activity?.hasWindowFocus() == true && test.uiAutomation.rootInActiveWindow?.packageName?.toString() == context.packageName
+            fun systemBack(): Long {
+                // Core readiness can precede Compose's callback registration on
+                // a cold software-rendered CI device. Wait for the real input
+                // receiver, then use the OS Back action rather than a key pair.
+                await("Reader did not register a focused system Back handler") {
+                    var ready = false
+                    test.runOnMainSync {
+                        ready = activity?.hasWindowFocus() == true && activity?.onBackPressedDispatcher?.hasEnabledCallbacks() == true
+                    }
+                    ready && test.uiAutomation.rootInActiveWindow?.packageName?.toString() == context.packageName
+                }
+                if (!report.has("reader_ready_at_back")) {
+                    report.put("reader_ready_at_back", vm.currentBook != null && !vm.isLoading)
+                        .put("loading_at_back", vm.isLoading)
+                }
+                val began = SystemClock.elapsedRealtimeNanos()
+                check(test.uiAutomation.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) { "System Back input was rejected" }
+                return began
+            }
             fun screenshot(name: String, required: Boolean = true) {
                 var image = test.uiAutomation.takeScreenshot()
                 if (required) repeat(10) { if (image == null) { Thread.sleep(60); image = test.uiAutomation.takeScreenshot() } }
@@ -81,16 +102,13 @@ internal object BookOpeningRuntimeChecks {
                     bitmap.recycle()
                 }
             }
-            await("Owned shelf cover not visible") { covers.containsKey(path) && activity?.hasWindowFocus() == true }
+            await("Owned shelf cover not visible or focused", ::coverReady)
             screenshot("shelf")
             check(tapCover())
             await("Shelf touch did not enter the reader; check foreground system dialogs") { vm.isLoading || vm.currentBook != null }
             Thread.sleep(140)
-            report.put("reader_ready_at_back", vm.currentBook != null && !vm.isLoading)
-                .put("loading_at_back", vm.isLoading)
             screenshot("before-back", required = false)
-            val cancelledAt = SystemClock.elapsedRealtimeNanos()
-            test.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            val cancelledAt = systemBack()
             await("Back did not release the reader") { vm.currentBook == null && !vm.isLoading }
             report.put("back_to_cleared_session_ms", (SystemClock.elapsedRealtimeNanos() - cancelledAt) / 1e6)
             // An old worker must not republish after returning to the shelf.
@@ -99,6 +117,7 @@ internal object BookOpeningRuntimeChecks {
             check(vm.currentBook == null && !vm.isLoading && vm.errorMessage == null) {
                 "After cancellation: book=${vm.currentBook?.title}, loading=${vm.isLoading}, error=${vm.errorMessage}"
             }
+            await("Returned shelf cover not visible or focused", ::coverReady)
             val reopenedAt = SystemClock.elapsedRealtimeNanos()
             check(tapCover())
             await("Shelf input did not reopen the same book") { vm.currentBook != null && !vm.isLoading && vm.originalBookPath == path }
@@ -106,7 +125,7 @@ internal object BookOpeningRuntimeChecks {
             Thread.sleep(900)
             check(vm.originalBookPath == path && vm.errorMessage == null)
             screenshot("reopened")
-            test.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            systemBack()
             await("Closing the reopened reader failed") { vm.currentBook == null && !vm.isLoading }
             report.put("passed", true).put("shelf_click", true).put("system_back", true)
                 .put("late_completion_observed_ms", 900).put("reopen_exact_book", true)

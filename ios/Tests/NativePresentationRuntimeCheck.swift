@@ -11,6 +11,13 @@ enum NativePresentationRuntimeCheck {
             let caches=files.urls(for:.cachesDirectory,in:.userDomainMask)[0]
             var result:[String:Any]=[:]
             do {
+                // This task starts from App.init. Yield until SwiftUI connects
+                // its scene before synchronous typesetting occupies MainActor.
+                for _ in 0..<50 {
+                    if UIApplication.shared.connectedScenes.contains(where:{$0 is UIWindowScene}) {break}
+                    try await Task.sleep(for:.milliseconds(100))
+                }
+                guard let scene=UIApplication.shared.connectedScenes.first(where:{$0 is UIWindowScene}) as? UIWindowScene else {throw CoreFailure(message:"No native layout test scene after waiting for startup")}
                 let root=files.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("ReaderLibrary")
                 let client=CoreClient(root:root.path,device:"native-layout-check")
                 let entry:LibraryEntry=try client.call("import",["path":documents.appendingPathComponent("original-layout.epub").path])
@@ -90,7 +97,7 @@ enum NativePresentationRuntimeCheck {
                 }
                 let note:NativeNote=try client.call("native_note",["id":typography.id,"chapter":0,"href":"notes.xhtml#n%E4%B8%80"])
                 try require(note.text.contains("这是跨章节的注释原文"),"Note resolution failed")
-                let linkChecks=try await checkBodyLinks(client:client,book:typographyBook)
+                let linkChecks=try await checkBodyLinks(client:client,book:typographyBook,scene:scene)
                 var corpusChecks:[[String:Any]]=[]
                 var corpusCJKGlyphs=0,corpusCJKFonts=Set<String>()
                 let corpusManifest=documents.appendingPathComponent("corpus-cases.json")
@@ -174,7 +181,7 @@ enum NativePresentationRuntimeCheck {
             if let data=try? JSONSerialization.data(withJSONObject:result,options:[.prettyPrinted,.sortedKeys]) {try? data.write(to:caches.appendingPathComponent("native-verification.json"))}
         }
     }
-    @MainActor private static func checkBodyLinks(client:CoreClient,book:PreviewBook) async throws -> Int {
+    @MainActor private static func checkBodyLinks(client:CoreClient,book:PreviewBook,scene:UIWindowScene) async throws -> Int {
         let href="notes.xhtml#n%E4%B8%80",source="目录😀"
         let target:ReadingAnchor?=try client.call("native_link",["id":book.id,"chapter":0,"href":href])
         try require(target != nil && target?.chapter != 0,"Body-link bridge target missing")
@@ -218,7 +225,6 @@ enum NativePresentationRuntimeCheck {
                 for flow in ReadingMode.allCases {
                     var flowOptions=options;flowOptions.readingMode=flow;flowOptions.sliding=flow == .slide
                     let reader=NativeReadingController(book:book,anchor:.init(chapter:0),options:flowOptions)
-                    guard let scene=UIApplication.shared.connectedScenes.first(where:{$0 is UIWindowScene}) as? UIWindowScene else {throw CoreFailure(message:"No body-link test scene")}
                     let window=UIWindow(windowScene:scene);window.rootViewController=reader;window.makeKeyAndVisible()
                     defer {window.isHidden=true;window.rootViewController=nil}
                     reader.loadViewIfNeeded();reader.view.frame=CGRect(x:0,y:0,width:340,height:600);reader.view.setNeedsLayout();reader.view.layoutIfNeeded()

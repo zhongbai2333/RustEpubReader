@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import shlex
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -58,6 +59,60 @@ class ReportTests(unittest.TestCase):
             path.write_text('{"passed":false,"error":"native check failed"}')
             with self.assertRaisesRegex(RuntimeError, "native check failed"):
                 runtime.wait_report(path, 1)
+
+
+class IOSLifecycleTests(unittest.TestCase):
+    def fixture(self, root):
+        app = root / "Reader.app"; app.mkdir()
+        (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleSupportedPlatforms": ["iPhoneSimulator"], "CFBundleIdentifier": "local.reader.columns"}))
+        output = root / "output"; output.mkdir()
+        args = SimpleNamespace(app=app, output=output, timeout=1)
+        def listing(*command):
+            if command[3] == "runtimes":
+                return json.dumps({"runtimes": [{"isAvailable": True, "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-3", "version": "26.3"}]}).encode()
+            return json.dumps({"devicetypes": [{"identifier": "test-ipad", "productFamily": "iPad", "minRuntimeVersion": 0, "maxRuntimeVersion": 0xffffffff}]}).encode()
+        return args, listing
+
+    def test_fresh_app_and_later_cases_launch_without_separate_terminate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); args, listing = self.fixture(root); calls = []
+            def device(output, *command, **kwargs):
+                calls.append(command)
+                if command[0] == "create": return b"owned-device\n"
+                if command[0] == "get_app_container": return str(root / "container").encode()
+                self.assertNotEqual(command[0], "terminate", "A never-launched app must not receive a terminate request")
+                return b""
+            with patch.object(runtime, "run", side_effect=listing), patch.object(runtime, "ios_simctl", side_effect=device), patch.object(runtime, "wait_report", return_value={"passed": True}):
+                result = runtime.ios(args)
+            self.assertEqual(set(result), set(runtime.CASES))
+            launches = [c for c in calls if c[0] == "launch"]
+            self.assertEqual(len(launches), len(runtime.CASES))
+            self.assertTrue(all(c[1:4] == ("--terminate-running-process", "owned-device", "local.reader.columns") for c in launches))
+            self.assertEqual(calls[-2:], [("shutdown", "owned-device"), ("delete", "owned-device")])
+
+    def test_cleanup_attempts_delete_after_shutdown_timeout_and_preserves_original_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args, listing = self.fixture(Path(directory)); calls = []
+            def device(output, *command, **kwargs):
+                calls.append(command)
+                if command[0] == "create": return b"owned-device\n"
+                if command[0] == "boot": raise RuntimeError("original boot failure")
+                raise subprocess.TimeoutExpired(command, 45)
+            with patch.object(runtime, "run", side_effect=listing), patch.object(runtime, "ios_simctl", side_effect=device):
+                with self.assertRaisesRegex(RuntimeError, "original boot failure"):
+                    runtime.ios(args)
+            self.assertEqual(calls[-2:], [("shutdown", "owned-device"), ("delete", "owned-device")])
+
+    def test_timed_out_command_remains_a_failure_with_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            error = subprocess.TimeoutExpired(["xcrun", "simctl", "launch"], 180, stderr=b"simulator unavailable")
+            with patch.object(runtime.subprocess, "run", side_effect=error):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    runtime.ios_simctl(output, "launch", "owned-device", "local.reader.columns")
+            rows = [json.loads(line) for line in (output / "simulator-commands.jsonl").read_text().splitlines()]
+            self.assertEqual([r["status"] for r in rows], ["started", "failed"])
+            self.assertEqual(rows[-1]["stderr"], "simulator unavailable")
 
 
 class CorpusCoverageTests(unittest.TestCase):
@@ -203,12 +258,12 @@ class SelectionTests(unittest.TestCase):
                 for row in self.report("ios")["cases"]:
                     (cache/("selection-ui-"+row["mode"]+".json")).write_text(json.dumps(dict(row,passed=True)))
                 return SimpleNamespace(returncode=0)
-            def lookup(*args):
+            def lookup(output, *args):
                 self.assertTrue(ran,"Container path must be resolved after XCTest runs")
-                self.assertEqual(args[:3],("xcrun","simctl","get_app_container"))
+                self.assertEqual(args[:1],("get_app_container",))
                 return str(current).encode()
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
-            with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,"run",side_effect=lookup):
+            with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,"ios_simctl",side_effect=lookup):
                 value=runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue(value["passed"]);self.assertEqual(len(list(output.glob("selection-ui-*.json"))),5)
 

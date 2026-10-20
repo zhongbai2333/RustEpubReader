@@ -98,7 +98,7 @@ def collect_ios_selection(args, identifier, bundle):
     finally:
         # XCTest can reinstall the same bundle and move its data container. A
         # pre-test path is not authoritative after that operation.
-        container = Path(run("xcrun", "simctl", "get_app_container", identifier, bundle, "data").decode().strip())
+        container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
         for pattern in ("selection-ui-*.json", "reduced-motion-verification.json"):
             for path in (container / "Library/Caches").glob(pattern):
                 shutil.copyfile(path, args.output / path.name)
@@ -169,6 +169,33 @@ def run(*args, **kwargs):
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or b"").decode(errors="replace")[-4000:]
         raise RuntimeError(f"Command failed ({error.returncode}): {args}; {detail}") from error
+
+
+def ios_simctl(output, *args, timeout=180):
+    """Retain lifecycle diagnostics even when a freshly booted simulator hangs."""
+    command = ["xcrun", "simctl", *args]
+    started = time.monotonic()
+    def record(**fields):
+        with (output / "simulator-commands.jsonl").open("a") as log:
+            log.write(json.dumps(dict(command=command, elapsed_seconds=round(time.monotonic() - started, 3), **fields)) + "\n")
+    record(status="started", timeout_seconds=timeout)
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError) as error:
+        record(status="failed", error=str(error), stderr=(getattr(error, "stderr", None) or b"").decode(errors="replace")[-4000:])
+        raise
+    record(status="completed", stdout=result.stdout.decode(errors="replace")[-4000:])
+    return result.stdout
+
+
+def cleanup_ios_simulator(output, identifier):
+    errors = []
+    for operation in ("shutdown", "delete"):
+        try:
+            ios_simctl(output, operation, identifier, timeout=45)
+        except (OSError, subprocess.SubprocessError) as error:
+            errors.append(str(error))
+    return errors
 
 
 def compatible_tablet(types, version):
@@ -416,24 +443,26 @@ def ios(args):
     runtime = max(available, key=lambda r: tuple(map(int, r["version"].split("."))))
     types = json.loads(run("xcrun", "simctl", "list", "devicetypes", "-j"))["devicetypes"]
     device_type = compatible_tablet(types, runtime["version"])
-    identifier = run("xcrun", "simctl", "create", "ReaderCI-" + str(uuid.uuid4()),
-                     device_type, runtime["identifier"]).decode().strip()
+    identifier = ios_simctl(args.output, "create", "ReaderCI-" + str(uuid.uuid4()),
+                            device_type, runtime["identifier"]).decode().strip()
+    completed = False
     try:
-        run("xcrun", "simctl", "boot", identifier)
-        run("xcrun", "simctl", "bootstatus", identifier, "-b")
-        run("xcrun", "simctl", "install", identifier, str(args.app))
-        container = Path(run("xcrun", "simctl", "get_app_container", identifier, bundle, "data").decode().strip())
+        ios_simctl(args.output, "boot", identifier)
+        ios_simctl(args.output, "bootstatus", identifier, "-b")
+        ios_simctl(args.output, "install", identifier, str(args.app))
+        container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
         documents, caches = container / "Documents", container / "Library/Caches"
         documents.mkdir(parents=True, exist_ok=True)
         caches.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "ios/Tests/fixtures/native-reading-modes.epub", documents / "reading-modes.epub")
         results = {}
         for case, report in CASES.items():
-            subprocess.run(["xcrun", "simctl", "terminate", identifier, bundle], capture_output=True, timeout=30)
             path = caches / report
             path.unlink(missing_ok=True)
             flag = "--verify-single-column" if case == "single-column" else "--verify-navigation"
-            run("xcrun", "simctl", "launch", identifier, bundle, "--verify-reading-modes", flag)
+            # This also replaces an existing instance between cases, without a
+            # separate terminate request for the never-launched first instance.
+            ios_simctl(args.output, "launch", "--terminate-running-process", identifier, bundle, "--verify-reading-modes", flag)
             try:
                 results[case] = wait_report(path, args.timeout)
             finally:
@@ -446,10 +475,9 @@ def ios(args):
                 name = case["name"] + ".epub"
                 shutil.copyfile(ROOT / "core/tests/fixtures" / name, documents / name)
             (documents / "corpus-cases.json").write_text(json.dumps(CORPUS_CASES, indent=2))
-            subprocess.run(["xcrun", "simctl", "terminate", identifier, bundle], capture_output=True, timeout=30)
             path = caches / "native-verification.json"
             path.unlink(missing_ok=True)
-            run("xcrun", "simctl", "launch", identifier, bundle, "--verify-native", "--book-share-preview")
+            ios_simctl(args.output, "launch", "--terminate-running-process", identifier, bundle, "--verify-native", "--book-share-preview")
             try:
                 results["corpus"] = validate_corpus(wait_report(path, args.timeout), "ios")
             finally:
@@ -459,12 +487,14 @@ def ios(args):
             shutil.copyfile(ROOT / "core/tests/fixtures/native-typography.epub", documents / "selection.epub")
             for mode in ("none", "curl", "slide", "cover", "scroll"):
                 (caches / ("selection-ui-" + mode + ".json")).unlink(missing_ok=True)
-            subprocess.run(["xcrun", "simctl", "terminate", identifier, bundle], capture_output=True, timeout=30)
+            # Each XCTest calls XCUIApplication.launch() with its own arguments.
             results["selection"] = collect_ios_selection(args, identifier, bundle)
+        completed = True
         return results
     finally:
-        subprocess.run(["xcrun", "simctl", "shutdown", identifier], capture_output=True, timeout=45)
-        subprocess.run(["xcrun", "simctl", "delete", identifier], capture_output=True, timeout=45)
+        cleanup_errors = cleanup_ios_simulator(args.output, identifier)
+        if completed and cleanup_errors:
+            raise RuntimeError("Could not clean up owned iOS simulator: " + repr(cleanup_errors))
 
 
 def main():

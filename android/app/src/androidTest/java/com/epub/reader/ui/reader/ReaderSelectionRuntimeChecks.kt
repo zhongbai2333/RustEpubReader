@@ -75,6 +75,9 @@ internal object ReaderSelectionRuntimeChecks {
                     vm.updateReaderPageAnimation(if(mode=="Scroll") "None" else mode);vm.updateScrollMode(mode=="Scroll")
                     vm.goToPosition(0,1,0)
                 }
+                // Let mode/font reflow finish before sampling touch geometry.
+                // Sleeping after sampling left coordinates from the old font.
+                Thread.sleep(700)
                 var block=-1;var first=Offset.Zero;var last=Offset.Zero;var begin=0
                 await("Native selection layout missing in $mode") {
                     var found=false
@@ -89,7 +92,6 @@ internal object ReaderSelectionRuntimeChecks {
                         }
                     };found
                 }
-                Thread.sleep(700)
                 val original=highlightIDs();var down=SystemClock.uptimeMillis()
                 fun event(action:Int,point:Offset) {
                     if(action==MotionEvent.ACTION_DOWN)down=SystemClock.uptimeMillis()
