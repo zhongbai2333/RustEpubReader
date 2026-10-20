@@ -446,8 +446,13 @@ class SelectionTests(unittest.TestCase):
             def execute(*args,**kwargs):
                 nonlocal ran
                 ran=True
-                self.assertGreaterEqual(kwargs["timeout"],600,"Allow cold XCTest setup and the six cases to complete cleanup")
+                self.assertGreaterEqual(kwargs["timeout"],1200,"Allow three complete suites including cold XCTest setup and cleanup")
+                command=args[0]
+                self.assertEqual(command[command.index("-test-iterations")+1],"3")
+                self.assertNotIn("-retry-tests-on-failure",command)
+                self.assertNotIn("-run-tests-until-failure",command)
                 (cache/"reduced-motion-verification.json").write_text(json.dumps(ReducedMotionTests.ios_report()))
+                (cache/"selection-gesture-slide.json").write_text('{"events":[{"state":1},{"state":3}]}')
                 for row in self.report("ios")["cases"]:
                     (cache/("selection-ui-"+row["mode"]+".json")).write_text(json.dumps(dict(row,passed=True)))
                 return SimpleNamespace(returncode=0)
@@ -459,6 +464,7 @@ class SelectionTests(unittest.TestCase):
             with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,"ios_simctl",side_effect=lookup):
                 value=runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue(value["passed"]);self.assertEqual(len(list(output.glob("selection-ui-*.json"))),5)
+            self.assertEqual(json.loads((output/"selection-gesture-slide.json").read_text())["events"],[{"state":1},{"state":3}])
 
 
 class ReducedMotionTests(unittest.TestCase):
@@ -527,11 +533,13 @@ class FailureEvidenceTests(unittest.TestCase):
             root=Path(directory);output=root/"output";output.mkdir()
             cache=root/"container/Library/Caches";cache.mkdir(parents=True)
             (cache/"reduced-motion-verification.json").write_text('{"passed":true}')
+            (cache/"selection-gesture-slide.json").write_text('{"events":[]}')
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
             with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,"ios_simctl",return_value=str(root/"container").encode()):
                 with self.assertRaisesRegex(RuntimeError,"Native selection XCTest failed"):
                     runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue((output/"reduced-motion-verification.json").is_file())
+            self.assertTrue((output/"selection-gesture-slide.json").is_file())
 
     def test_native_failure_or_missing_report_still_captures_the_screen(self):
         for missing in (False,True):

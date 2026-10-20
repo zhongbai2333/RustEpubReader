@@ -92,20 +92,20 @@ def ios_selection_inputs(app, manifest):
 
 def collect_ios_selection(args, identifier, bundle):
     command = ["xcodebuild", "test-without-building", "-xctestrun", str(args.xctestrun.resolve()), "-destination", "id=" + identifier,
-               "-parallel-testing-enabled", "NO", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
+               "-parallel-testing-enabled", "NO", "-test-iterations", "3", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
     try:
         with (args.output / "selection-ui.log").open("wb") as log:
-            # Six XCTest cases include cold runner setup and restoring Settings.
-            # Keep per-case assertions bounded; allow the suite to finish them
-            # and write a complete XCResult instead of killing its cleanup.
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(600, args.timeout))
+            # Repeat all six cases three times, without retry-on-failure. Any
+            # failed iteration fails the suite. Keep per-case assertions bounded
+            # and allow cold runner setup and Settings restoration to complete.
+            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
         if result.returncode != 0:
             raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
     finally:
         # XCTest can reinstall the same bundle and move its data container. A
         # pre-test path is not authoritative after that operation.
         container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
-        for pattern in ("selection-ui-*.json", "reduced-motion-verification.json"):
+        for pattern in ("selection-ui-*.json", "selection-gesture-*.json", "reduced-motion-verification.json"):
             for path in (container / "Library/Caches").glob(pattern):
                 shutil.copyfile(path, args.output / path.name)
     rows = [validate_report((args.output / ("selection-ui-" + mode + ".json")).read_bytes()) for mode in ("none", "curl", "slide", "cover", "scroll")]

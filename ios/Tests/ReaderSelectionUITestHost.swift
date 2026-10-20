@@ -20,6 +20,21 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
     private var mode=ReadingMode.none
     private var runID=""
     private var handled=false
+    private var tracedGesture:UILongPressGestureRecognizer?
+    private var gestureEvents=[[String:Any]]()
+
+    @objc private func traceSelection(_ gesture:UILongPressGestureRecognizer) {
+        let point=gesture.location(in:gesture.view)
+        gestureEvents.append(["state":gesture.state.rawValue,"time":ProcessInfo.processInfo.systemUptime,"x":point.x,"y":point.y])
+        if [.began,.ended,.cancelled,.failed].contains(gesture.state) {writeGestureTrace()}
+    }
+    private func writeGestureTrace() {
+        let value:[String:Any]=["mode":mode.rawValue,"run_id":runID,"events":gestureEvents]
+        if let bytes=try? JSONSerialization.data(withJSONObject:value,options:[.prettyPrinted,.sortedKeys]) {
+            let cache=FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0]
+            try? bytes.write(to:cache.appendingPathComponent("selection-gesture-"+mode.rawValue+".json"),options:.atomic)
+        }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -113,6 +128,11 @@ struct ReaderSelectionUITestHost: UIViewControllerRepresentable {
             let value:[String:Any]=["mode":mode.rawValue,"start":[first.x/surface.bounds.width,first.y/surface.bounds.height],"end":[last.x/surface.bounds.width,last.y/surface.bounds.height],"expected_text":expectedText]
             guard let bytes=try? JSONSerialization.data(withJSONObject:value),let encoded=String(data:bytes,encoding:.utf8) else{return false}
             surface.isAccessibilityElement=true;surface.accessibilityIdentifier="native-selection-paper";surface.accessibilityValue=encoded
+            if let gesture=surface.gestureRecognizers?.compactMap({$0 as? UILongPressGestureRecognizer}).first,gesture !== tracedGesture {
+                tracedGesture?.removeTarget(self,action:#selector(traceSelection(_:)))
+                tracedGesture=gesture;gesture.addTarget(self,action:#selector(traceSelection(_:)))
+                writeGestureTrace()
+            }
             status.accessibilityValue=encoded;status.text="Ready";return true
         }
         return false

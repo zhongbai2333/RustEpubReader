@@ -2,6 +2,18 @@ import XCTest
 
 final class ReaderSelectionUITests:XCTestCase {
     override func setUpWithError() throws {continueAfterFailure=false}
+    override func tearDownWithError() throws {
+        if (testRun?.failureCount ?? 0)>0 {
+            for app in [XCUIApplication(),XCUIApplication(bundleIdentifier:"com.apple.Preferences")] where app.state == .runningForeground {
+                let image=XCTAttachment(screenshot:app.screenshot());image.name="failed-input-screen";image.lifetime = .keepAlways;add(image)
+                let hierarchy=XCTAttachment(string:app.debugDescription);hierarchy.name="failed-input-hierarchy";hierarchy.lifetime = .keepAlways;add(hierarchy)
+            }
+        }
+    }
+    private func waitForTouchTarget(_ element:XCUIElement,timeout:TimeInterval=10) {
+        expectation(for:NSPredicate {_,_ in element.exists && element.isHittable},evaluatedWith:element)
+        waitForExpectations(timeout:timeout)
+    }
     private func select(_ mode:String) throws {
         let app=XCUIApplication()
         app.launchArguments=["--verify-selection-ui","--selection-mode",mode,"--selection-run",UUID().uuidString,"--book-share-preview","-reader.language","en"]
@@ -10,13 +22,19 @@ final class ReaderSelectionUITests:XCTestCase {
         XCTAssertTrue(status.waitForExistence(timeout:30))
         let paper=app.descendants(matching:.any).matching(identifier:"native-selection-paper").firstMatch
         XCTAssertTrue(paper.waitForExistence(timeout:20),app.debugDescription)
+        expectation(for:NSPredicate(format:"label == %@","Ready"),evaluatedWith:status)
+        waitForExpectations(timeout:10)
+        waitForTouchTarget(paper)
         let raw=try XCTUnwrap(status.value as? String)
         let points=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(raw.utf8)) as? [String:Any])
         let first=try XCTUnwrap(points["start"] as? [Double]),last=try XCTUnwrap(points["end"] as? [Double])
         XCTAssertEqual(first.count,2);XCTAssertEqual(last.count,2)
         let start=paper.coordinate(withNormalizedOffset:CGVector(dx:first[0],dy:first[1]))
         let end=paper.coordinate(withNormalizedOffset:CGVector(dx:last[0],dy:last[1]))
-        start.press(forDuration:0.7,thenDragTo:end)
+        // Use a deliberate hold and slow drag, including a held endpoint. A
+        // fast drag immediately followed by touch-up can be coalesced on a
+        // loaded Simulator before UIKit delivers the selection's changed state.
+        start.press(forDuration:1.2,thenDragTo:end,withVelocity:.slow,thenHoldForDuration:0.2)
         let passed=NSPredicate(format:"label == %@","Passed: 文字 😀 中文")
         expectation(for:passed,evaluatedWith:status)
         waitForExpectations(timeout:15)
@@ -43,9 +61,15 @@ final class ReaderSelectionUITests:XCTestCase {
         XCTAssertTrue(motion.waitForExistence(timeout:10),settings.debugDescription);motion.tap()
         let toggle=settings.switches["Reduce Motion"].firstMatch
         XCTAssertTrue(toggle.waitForExistence(timeout:10),settings.debugDescription)
-        // Settings exposes the complete row as a switch on iPad. Its label
-        // midpoint is not the knob's hit target; use the public trailing area.
-        func tapSwitch() {toggle.coordinate(withNormalizedOffset:CGVector(dx:0.94,dy:0.5)).tap()}
+        // Settings exposes both a row-sized switch and its actual UISwitch.
+        // Touch the real control, not a guessed percentage of the row frame.
+        // A short held touch remains a tap while surviving host scheduling gaps.
+        func tapSwitch() {
+            let knob=toggle.switches.firstMatch
+            let target=knob.exists ? knob:toggle
+            waitForTouchTarget(target)
+            target.press(forDuration:0.2)
+        }
         let hierarchy=XCTAttachment(string:toggle.debugDescription);hierarchy.name="system-motion-switch";hierarchy.lifetime = .keepAlways;add(hierarchy)
         let original=try XCTUnwrap(toggle.value as? String)
         XCTAssertTrue(["0","1"].contains(original))

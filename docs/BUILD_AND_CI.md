@@ -107,6 +107,11 @@ data migration. Reader launches retain their 180-second bound; this does not
 retry or admit a timed-out launch. Failed simulator commands retain partial
 standard output as well as standard error, followed by bounded diagnostics
 and owned-device cleanup.
+Native selection and system Reduce Motion XCTest cases run for three complete
+iterations with parallel execution disabled. This is repetition, not retry on
+failure: any failed iteration rejects the run. Touches require hittable targets;
+selection uses a held slow drag, and Settings uses its nested switch control.
+Failed cases retain explicit screenshots/hierarchies and native gesture traces.
 
 Rustup installs `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The build phase
 preserves the selected Rust toolchain and honors Cargo's target directory.
