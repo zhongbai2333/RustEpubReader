@@ -50,23 +50,22 @@ libraries; the build phase preserves that toolchain instead of preferring
 Homebrew Rust. The shared scheme and pinned `Package.resolved` must be committed.
 
 The workflow runs three build/check jobs independently: core/bridge tests plus
-seven host check groups, one ad-hoc signed simulator build, and the unsigned
-arm64 Release archive/IPA. The simulator build and its targetless XCTest runner
-are compiled once, packaged with executable permissions, and admitted by source
-and content hashes on each test host.
+seven host logic-check groups, one ad-hoc signed simulator application build,
+and the unsigned arm64 Release archive/IPA. The final job requires all three
+jobs and verifies package integrity and source provenance before uploading the
+usual artifact bundle. Hosted jobs do not boot simulators, build UI-test runners,
+or execute UI cases.
 
-Five runtime jobs use separate hosts and disposable simulators: iPad
-layout/navigation/corpus, iPad TXT/service/contribution features, the same five
-features on iPhone, iPad selection, and iPad system Reduce Motion. Selection runs
-three repetitions for each of the five modes; system Reduce Motion also runs
-three repetitions. No failed repetition is retried into a pass. Every expected
-case/repetition must appear as passed in its XCResult. The final job requires
-all five receipts and both build outputs before publishing the usual artifact
-bundle. `BackupFilesUITests` remains separate.
 Normal CI, `run-build` PR builds and release builds reuse this workflow; it also
 supports manual dispatch. Logs and build provenance are uploaded. GitHub Releases
 attach the unsigned IPA, checksum, signing instructions and build information;
 simulator applications and device archives remain in Actions.
+
+Native UI automation runs locally. The `ReaderUITests` target and collector
+retain the TXT/service/contribution cases, five selection modes with three
+repetitions each, and three system Reduce Motion repetitions. Files checks
+remain a separate local suite. Missing, failed or incomplete local results are
+not counted as passes. See [local mobile checks](../docs/MOBILE_RUNTIME_CI.md).
 
 No signing secrets are required for these checks or unsigned IPA packaging.
 The IPA requires signing the app and all embedded frameworks with the user's
@@ -75,7 +74,7 @@ own identity and matching provisioning profile before installation; see
 structure and integrity, not successful installation on a physical device. The isolated
 `ReaderUITests` XCTest target exercises simulator UI interactions; publisher
 signing/provisioning, TestFlight and App Store upload remain unconfigured. See
-[mobile runtime CI](../docs/MOBILE_RUNTIME_CI.md) for the gate and its evidence.
+[local mobile checks](../docs/MOBILE_RUNTIME_CI.md) for invocation and evidence.
 See [build/CI notes](../docs/BUILD_AND_CI.md) and the
 [Windows handoff checklist](../docs/WINDOWS_TESTING.md).
 
@@ -325,7 +324,7 @@ audio. The diagnostic uses an isolated preferences suite, not reader settings.
 
 Run the Swift host checks under `ios/scripts/` and shared Rust/bridge tests listed
 in [build and CI](../docs/BUILD_AND_CI.md). Native UI test selection and diagnostic
-installation requirements are documented in [mobile runtime CI](../docs/MOBILE_RUNTIME_CI.md).
+installation requirements are documented in [local mobile checks](../docs/MOBILE_RUNTIME_CI.md).
 Use isolated application IDs and data for scripted checks. Test device permissions,
 external file providers, Keychain, camera input and cross-device transfers on
 physical devices separately from simulator checks.

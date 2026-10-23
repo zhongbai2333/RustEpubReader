@@ -5,22 +5,18 @@ final class TxtImportUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
     override func tearDownWithError() throws {
         if (testRun?.failureCount ?? 0) > 0 {
-            shot("txt-parity-failure")
-            let hierarchy = XCTAttachment(string: app.debugDescription)
-            hierarchy.name = "txt-parity-failure-hierarchy"
-            hierarchy.lifetime = .keepAlways
-            add(hierarchy)
+            for foreground in [app,XCUIApplication(bundleIdentifier:"com.apple.Preferences"),XCUIApplication(bundleIdentifier:"com.apple.springboard")] where foreground.state == .runningForeground {
+                let image=XCTAttachment(screenshot:foreground.screenshot())
+                image.name="txt-parity-failure";image.lifetime = .keepAlways;add(image)
+                let hierarchy = XCTAttachment(string: foreground.debugDescription)
+                hierarchy.name = "txt-parity-failure-hierarchy"
+                hierarchy.lifetime = .keepAlways
+                add(hierarchy)
+            }
         }
     }
     private func launchApp() {
-        if app.state != .notRunning { app.terminate() }
-        XCTAssertTrue(app.wait(for: .notRunning, timeout: 20))
-        XCUIDevice.shared.press(.home)
-        let home = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        XCTAssertTrue(home.wait(for: .runningForeground, timeout: 20))
-        app.launch()
-        app.activate()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        UITestLaunch.open(app)
     }
     private func launch() {
         app.launchArguments = ["--verify-txt-import-ui", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -43,7 +39,9 @@ final class TxtImportUITests: XCTestCase {
         waitForExpectations(timeout: 20)
         // Search the original source and select a line independently of its format.
         app.buttons["txt-add-heading"].tap()
-        let search = app.searchFields.firstMatch
+        let sourceBar=app.navigationBars["Add heading from source"]
+        XCTAssertTrue(sourceBar.waitForExistence(timeout:10))
+        let search = sourceBar.searchFields.firstMatch
         expectation(for: NSPredicate { _, _ in search.exists && search.isHittable }, evaluatedWith: search)
         waitForExpectations(timeout: 10)
         search.tap(); search.typeText("§")

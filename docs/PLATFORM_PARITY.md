@@ -60,4 +60,4 @@
 - 局域网：[桌面连接界面](../desktop/src/ui/sharing.rs)、[Android 发现与重连](../android/app/src/main/java/com/epub/reader/viewmodel/ReaderViewModel.kt)、[iOS 发现与配对入口](../ios/Reader/NearbySync.swift)。
 - 导出与贡献：[桌面导出选项](../desktop/src/ui/export_dialog.rs)、[共享重建导出](../core/src/export.rs)、[Android 桥接](../android-bridge/src/lib.rs)、[iOS 桥接](../ios-bridge/src/lib.rs)、[桌面样本贡献](../desktop/src/ui/csc_contribute.rs)、[Android 样本贡献](../android/app/src/main/java/com/epub/reader/util/GitHubContributor.kt)。
 - 导入选择器：[桌面](../desktop/src/app.rs)、[Android](../android/app/src/main/java/com/epub/reader/MainActivity.kt)、[iOS](../ios/Reader/ReaderPreviewApp.swift)。
-- CI：[iOS 工作流](../.github/workflows/ios-build.yml)、[运行门禁收集器](../scripts/check-mobile-runtime.py)、[TXT 界面测试](../ios/UITests/TxtImportUITests.swift)。
+- CI / 本地检查：[iOS 工作流](../.github/workflows/ios-build.yml)、[本地运行检查收集器](../scripts/check-mobile-runtime.py)、[TXT 界面测试](../ios/UITests/TxtImportUITests.swift)。

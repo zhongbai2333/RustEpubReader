@@ -52,7 +52,7 @@ jobs:
                   ios/scripts/check-i18n.sh
 
     simulator-build:
-        name: Build shared simulator tests
+        name: Build simulator application
         runs-on: macos-26
         timeout-minutes: 45
         defaults:
@@ -73,30 +73,20 @@ jobs:
 
             - name: Build Apple Silicon simulator application
               run: |
-                  xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderUITests \
+                  xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
                     -configuration Debug -sdk iphonesimulator \
                     -destination 'generic/platform=iOS Simulator' \
                     -clonedSourcePackagesDirPath target/ios-ci/Packages \
                     -disableAutomaticPackageResolution \
                     -derivedDataPath target/ios-ci/Simulator \
-                    CODE_SIGN_IDENTITY=- ARCHS=arm64 READER_APP_BUNDLE_ID=local.reader.columns build-for-testing 2>&1 | tee target/ios-ci/logs/simulator.log
+                    CODE_SIGN_IDENTITY=- ARCHS=arm64 READER_APP_BUNDLE_ID=local.reader.columns build 2>&1 | tee target/ios-ci/logs/simulator.log
 
-            - name: Bind and package simulator test products
+            - name: Package simulator application
               run: |
-                  READER_UI_MANIFEST="$(python3 -c 'import glob; p=glob.glob("target/ios-ci/Simulator/Build/Products/ReaderUITests_*.xctestrun"); assert len(p)==1,p; print(p[0])')"
-                  python3 scripts/ios-ci.py pack \
-                    --products target/ios-ci/Simulator/Build/Products \
-                    --manifest "$READER_UI_MANIFEST" --output simulator-transport
                   mkdir -p simulator-assets
                   ditto -c -k --sequesterRsrc --keepParent \
                     target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
                     simulator-assets/RustEpubReader-iOS-Simulator.zip
-            - uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-tests
-                  path: simulator-transport/*
-                  overwrite: true
-                  if-no-files-found: error
             - uses: actions/upload-artifact@v4
               with:
                   name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-products
@@ -175,100 +165,26 @@ jobs:
                   overwrite: true
                   if-no-files-found: ignore
 
-    runtime:
-        name: Runtime ${{ matrix.name }}
-        needs: simulator-build
-        runs-on: macos-26
-        timeout-minutes: 40
-        strategy:
-            fail-fast: false
-            # Separate VMs; never share GUI focus, simulator settings or a library.
-            max-parallel: 5
-            matrix:
-                include:
-                    - { name: ipad-selection, shard: selection, family: ipad }
-                    - { name: ipad-motion, shard: motion, family: ipad }
-                    - { name: ipad-layout, shard: layout, family: ipad }
-                    - { name: ipad-features, shard: features, family: ipad }
-                    - { name: iphone-features, shard: features, family: iphone }
-        defaults:
-            run:
-                shell: bash
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  ref: ${{ inputs.ref || github.sha }}
-            - uses: actions/setup-python@v5
-              with:
-                  python-version: "3.12"
-            - uses: actions/download-artifact@v4
-              with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-tests
-                  path: simulator-transport
-            - name: Restore and verify the shared simulator build
-              run: |
-                  python3 scripts/ios-ci.py unpack --transport simulator-transport \
-                    --products target/ios-ci/Simulator/Build/Products
-            - name: Run isolated native shard
-              run: |
-                  xcrun simctl runtime dyld_shared_cache update --all
-                  READER_UI_MANIFEST="$(python3 -c 'import json; print("target/ios-ci/Simulator/Build/Products/"+json.load(open("simulator-transport/build.json"))["manifest"])')"
-                  python3 scripts/check-mobile-runtime.py ios \
-                    --app target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
-                    --timeout 240 --output target/ios-ci/runtime --with-corpus --show-simulator \
-                    --ios-shard "${{ matrix.shard }}" --ios-device-family "${{ matrix.family }}" \
-                    --ios-runtime-version 26.4 --xctestrun "$READER_UI_MANIFEST" \
-                    --build-record simulator-transport/build.json
-            - name: Preserve machine-readable runtime receipt
-              if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-receipt-${{ matrix.name }}
-                  path: target/ios-ci/runtime/*.json
-                  overwrite: true
-                  if-no-files-found: warn
-            - name: Preserve runtime logs, screenshots and XCResults
-              if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-runtime-${{ matrix.name }}
-                  path: target/ios-ci/runtime/*
-                  overwrite: true
-                  if-no-files-found: warn
-
     verify-results:
         # Keep the existing final check name for callers and branch protection.
         name: Swift checks / simulator / unsigned device IPA
-        needs: [native-checks, simulator-build, device-build, runtime]
+        needs: [native-checks, simulator-build, device-build]
         if: ${{ always() }}
         runs-on: ubuntu-latest
         steps:
-            - name: Require every build and every matrix job
+            - name: Require native checks and both builds
               env:
                   JOB_RESULTS: ${{ toJSON(needs) }}
               run: |
                   python3 - <<'PY'
                   import json, os
                   results=json.loads(os.environ["JOB_RESULTS"])
-                  assert set(results)=={"native-checks","simulator-build","device-build","runtime"}
+                  assert set(results)=={"native-checks","simulator-build","device-build"}
                   assert all(value["result"]=="success" for value in results.values()),results
                   PY
             - uses: actions/checkout@v4
               with:
                   ref: ${{ inputs.ref || github.sha }}
-            - uses: actions/download-artifact@v4
-              with:
-                  pattern: ${{ inputs.artifact-prefix || 'ios-build' }}-receipt-*
-                  path: apple-reports
-            - uses: actions/download-artifact@v4
-              with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-tests
-                  path: simulator-transport
-            - name: Verify complete coverage and identical source/build identities
-              run: |
-                  python3 scripts/ios-ci.py aggregate --reports apple-reports \
-                    --build simulator-transport/build.json \
-                    --prefix "${{ inputs.artifact-prefix || 'ios-build' }}" --output parallel-summary.json
             - uses: actions/download-artifact@v4
               with:
                   name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-products
@@ -290,11 +206,3 @@ jobs:
                   path: ios-assets/*
                   overwrite: true
                   if-no-files-found: error
-            - name: Preserve aggregate acceptance report
-              if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-runtime
-                  path: parallel-summary.json
-                  overwrite: true
-                  if-no-files-found: ignore

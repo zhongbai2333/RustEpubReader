@@ -1,5 +1,26 @@
 import XCTest
 
+enum UITestLaunch {
+    static func open(_ app:XCUIApplication,isSettings:Bool=false,file:StaticString=#filePath,line:UInt=#line) {
+        // simctl's readiness probe starts Settings before XCTest. A PID does
+        // not mean its initial scene transition has finished. End that probe
+        // explicitly so it cannot reclaim the foreground during reader launch.
+        if !isSettings {
+            let settings=XCUIApplication(bundleIdentifier:"com.apple.Preferences")
+            if settings.state != .notRunning {settings.terminate()}
+            XCTAssertTrue(settings.wait(for:.notRunning,timeout:20),"Settings probe must exit before reader launch",file:file,line:line)
+        }
+        if app.state != .notRunning {app.terminate()}
+        XCTAssertTrue(app.wait(for:.notRunning,timeout:20),"Previous process must exit before another launch",file:file,line:line)
+        XCUIDevice.shared.press(.home)
+        let home=XCUIApplication(bundleIdentifier:"com.apple.springboard")
+        XCTAssertTrue(home.wait(for:.runningForeground,timeout:20),"Wait for the system workspace before launching",file:file,line:line)
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for:.runningForeground,timeout:20),"Activate the launched app before querying or sending input",file:file,line:line)
+    }
+}
+
 final class ReaderSelectionUITests:XCTestCase {
     private var readerBundle:String {ProcessInfo.processInfo.environment["READER_UI_TARGET_BUNDLE"] ?? "local.reader.columns"}
     private func readerApp() throws -> XCUIApplication {
@@ -16,7 +37,7 @@ final class ReaderSelectionUITests:XCTestCase {
     override func setUpWithError() throws {continueAfterFailure=false}
     override func tearDownWithError() throws {
         if (testRun?.failureCount ?? 0)>0 {
-            for app in [XCUIApplication(bundleIdentifier:readerBundle),XCUIApplication(bundleIdentifier:"com.apple.Preferences")] where app.state == .runningForeground {
+            for app in [XCUIApplication(bundleIdentifier:readerBundle),XCUIApplication(bundleIdentifier:"com.apple.Preferences"),XCUIApplication(bundleIdentifier:"com.apple.springboard")] where app.state == .runningForeground {
                 let image=XCTAttachment(screenshot:app.screenshot());image.name="failed-input-screen";image.lifetime = .keepAlways;add(image)
                 let hierarchy=XCTAttachment(string:app.debugDescription);hierarchy.name="failed-input-hierarchy";hierarchy.lifetime = .keepAlways;add(hierarchy)
             }
@@ -26,20 +47,10 @@ final class ReaderSelectionUITests:XCTestCase {
         expectation(for:NSPredicate {_,_ in element.exists && element.isHittable},evaluatedWith:element)
         waitForExpectations(timeout:timeout)
     }
-    private func launchAfterExit(_ app:XCUIApplication) {
-        if app.state != .notRunning {app.terminate()}
-        XCTAssertTrue(app.wait(for:.notRunning,timeout:20),"Previous process must exit before another launch")
-        XCUIDevice.shared.press(.home)
-        let home=XCUIApplication(bundleIdentifier:"com.apple.springboard")
-        XCTAssertTrue(home.wait(for:.runningForeground,timeout:20),"Wait for the system workspace before launching")
-        app.launch()
-        app.activate()
-        XCTAssertTrue(app.wait(for:.runningForeground,timeout:20),"Activate the launched app before querying or sending input")
-    }
     private func select(_ mode:String) throws {
         let app=try readerApp()
         app.launchArguments=["--verify-selection-ui","--selection-mode",mode,"--selection-run",UUID().uuidString,"--book-share-preview","-reader.language","en"]
-        launchAfterExit(app)
+        UITestLaunch.open(app)
         let status=app.descendants(matching:.any).matching(identifier:"selection-status").firstMatch
         XCTAssertTrue(status.waitForExistence(timeout:30))
         let paper=app.descendants(matching:.any).matching(identifier:"native-selection-paper").firstMatch
@@ -106,7 +117,7 @@ final class ReaderSelectionUITests:XCTestCase {
         let settings=XCUIApplication(bundleIdentifier:"com.apple.Preferences")
         settings.launchArguments=["-AppleLanguages","(en)","-AppleLocale","en_US"]
         func openMotionSwitch()->XCUIElement {
-            launchAfterExit(settings)
+            UITestLaunch.open(settings,isSettings:true)
             let toggle=settings.switches["Reduce Motion"].firstMatch
             // Settings can be reclaimed while the reader is foreground. A new
             // process may return to its root instead of the previous subpage.
@@ -149,7 +160,7 @@ final class ReaderSelectionUITests:XCTestCase {
         let app=try readerApp()
         let runID=UUID().uuidString
         app.launchArguments=["--verify-reduced-motion-ui","--motion-run",runID,"--book-share-preview","-reader.language","en"]
-        launchAfterExit(app)
+        UITestLaunch.open(app)
         let status=app.staticTexts["motion-status"]
         XCTAssertTrue(status.waitForExistence(timeout:30))
         XCTAssertEqual(status.label,"Ready native reduced motion")

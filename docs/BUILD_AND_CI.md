@@ -7,7 +7,7 @@
 | `ci.yml`: main/dev pushes, PRs, manual | Rust fmt / locked metadata / strict Clippy / workspace tests; native Windows core safety tests; Android JVM tests and Release lint; all three platform builds |
 | `desktop-build.yml`: reusable | Windows x64/arm64 ZIP, Linux x64/arm64 ZIP, macOS Intel/Apple Silicon DMG |
 | `android-build.yml`: reusable | Three per-ABI Release APKs; publishing secrets are optional, otherwise development signing |
-| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift checks, five isolated runtime shards, IPA packaging regressions, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive and IPA with SHA-256 receipt |
+| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift logic checks, IPA packaging regressions, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive and IPA with SHA-256 receipt |
 | `pr-review.yml`: `run-build` label | Reuses all three builds for the PR head SHA |
 | `release.yml`: `v*` tag or manual tag | Requires all three builds; publishes desktop/Android assets and the unsigned iOS IPA, checksum, signing instructions and build information. iOS simulator/archive artifacts remain in Actions |
 
@@ -83,62 +83,19 @@ Legacy raw executable replacement remains available on Windows/Linux.
 ## iOS environment and artifacts
 
 The iOS workflow uses `macos-26` (arm64) and explicitly selects Xcode 26.4.1
-and an installed iOS 26.4 runtime. It fails if that runtime is absent rather
-than silently selecting another version from the runner image.
+for compilation and packaging. Hosted jobs do not boot an iOS Simulator or run
+XCTest UI cases.
 The [runner label table](https://github.com/actions/runner-images#available-images)
 and [installed tools](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)
 are the source for this choice. Do not rely on the runner's default Xcode: the
 source references SDK 26 APIs behind runtime availability checks. The minimum
 deployment target remains iOS 17.
 
-Xcode 26.4 includes fixes for Simulator cache creation and `simctl` hangs
-([Apple release notes](https://developer.apple.com/documentation/xcode-release-notes/xcode-26_4-release-notes),
-170836966 and 172343027). Runtime cache preparation and a system-app launch
-probe run before admitting the reader tests; the reader's own launch or test
-failures remain failures. Different Xcode/host combinations use separate caches.
-The disposable iPad's first boot has a 600-second budget for initial system
-data migration. Reader launches retain their 180-second bound; this does not
-retry or admit a timed-out launch. Failed simulator commands retain partial
-standard output as well as standard error, followed by bounded diagnostics
-and owned-device cleanup.
-The Simulator window request starts concurrently with first boot. Launch
-Services may acknowledge the window only after system initialization; its
-30-second acknowledgement check therefore runs after `bootstatus` completes.
-Neither a failed boot nor a failed window request is admitted. Pending window
-requests are terminated and reaped on failure, and their output is retained.
-Native selection and system Reduce Motion XCTest cases run for three complete
-iterations with parallel execution disabled. This is repetition, not retry on
-failure: any failed iteration rejects the run. Touches require hittable targets;
-selection uses a held slow drag, and Settings uses its nested switch control.
-Each app is explicitly activated after launch. Before selecting, a native tap
-must be acknowledged by the diagnostic host in a key, foreground window. This
-uses a system UIButton; its callback refreshes actual window/coordinate state
-through transient layout changes without selecting text or forcing focus. The
-input readiness check does not select text; the subsequent real held drag still
-has to persist the exact Unicode range. The setup handshake allows at most three
-probes within its existing ten-second budget. The held selection is sent once;
-any selection assertion failure rejects the run. The Debug-only
-host records passive raw touch phases alongside selection recognizer states,
-so a missing input stream can be distinguished from a selection failure.
-Each iteration keeps its own UUID input report, including failed iterations. Acceptance
-requires all fifteen selection input streams, three per mode, to be complete in
-active windows; a later pass cannot replace an earlier trace. Local fault probes
-can suppress setup acknowledgements, but such reports are rejected by CI.
-Failed cases retain explicit screenshots/hierarchies and native gesture traces.
-The collector installs the admitted app once on a new simulator. A targetless
-XCTest runner controls it through `XCUIApplication(bundleIdentifier:)`, avoiding
-the IDE's separate target-app installation/debug launch path. Command-line
-diagnostics run afterward. Synthetic fixtures pass through the runner environment
-and public `launchEnvironment`; original build inputs stay unchanged. App/data
-container paths, executable checksum and inode must remain unchanged across
-XCTest. The generated test products contain only a byte-identical runner, with
-the reader removed from deployment dependencies and product search paths.
-The runner waits for process exit and Home before each launch.
-Reduce Motion restoration reopens its Settings page after deliberately terminating
-Settings, and still requires the original switch value to be restored.
-Android TalkBack checks include an outgoing paragraph's Show on Screen request
-during a Cover return. Pager accessibility scrolls share the reader's turn gate,
-and noncurrent pages do not expose readable descendants.
+The Swift check scripts compile and run logic assertions on the macOS host;
+they do not open app windows or start an iOS Simulator. Core/bridge tests,
+Android JVM tests, formatting, lint and archive/package integrity checks remain
+in CI. Native UI interaction, system accessibility settings, real selection
+and animation checks are local checks; see [local mobile checks](MOBILE_RUNTIME_CI.md).
 
 Rustup installs `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The build phase
 preserves the selected Rust toolchain and honors Cargo's target directory.
@@ -167,24 +124,17 @@ required for these build checks or unsigned IPA packaging. The packager preserve
 embedded frameworks and executable permissions; it rejects simulator/wrong-CPU
 executables, app signing metadata and invalid ZIP/checksum data. The publisher
 verifies the downloaded IPA before attaching it to a Release. Developer signing,
-provisioning and store submission are not configured. The project has host Swift checks, Rust tests and an isolated `ReaderUITests`
-UI-test target containing selection, system Reduce Motion, Files and TXT cases.
-The Apple workflow runs native logic checks, simulator compilation and unsigned
-Release packaging as independent jobs. One pinned simulator build is transported
-with its source, executable, runner and manifest hashes to five isolated runtime
-jobs: iPad layout/corpus, iPad features, iPhone features, iPad selection and iPad
-system Reduce Motion. The five feature cases run once on each device family;
-each of the five selection cases and the system Reduce Motion case still runs
-three times, without retry-on-failure. XCTest results must contain every required
-case and repetition. Each job owns its simulator, installation and output folder.
+provisioning and store submission are not configured.
 
-A final job requires every build and runtime job, revalidates the five receipts
-against the same source/build identity, and verifies the transported IPA before
-uploading the existing `*-arm64` artifact. Intermediate build artifacts alone do
-not pass the release gate. `BackupFilesUITests` remains a separate local suite.
-Workflow configuration and local passes do not establish a hosted result.
-Compilation does not validate physical page-turn gestures, background behavior
-or App Store acceptance.
+The Apple workflow runs native logic checks, simulator compilation and unsigned
+Release packaging as independent jobs. Its final job requires all three jobs,
+checks the source provenance and verifies the transported IPA before uploading
+the existing `*-arm64` artifact. Simulator compilation produces an app ZIP; it
+does not build the XCTest runner, launch a simulator, or require UI receipts.
+Ordinary CI, PR label builds and Release all reuse this boundary. UI scripts
+and `ReaderUITests` remain available locally, including all three selection and
+Reduce Motion repetitions. Build success does not establish UI or physical-device
+acceptance.
 
 All three readers use native rendering. Publication scripts use an embedded
 QuickJS interpreter without a WebView, JIT, network, filesystem or account APIs.
@@ -193,11 +143,10 @@ libclang (provided by the CI LLVM toolchain). Desktop builds need no WebView2 or
 WebKitGTK runtime.
 
 For native EPUB image diagnostics and CSS/JavaScript runtime boundaries,
-see [EPUB media and interactivity](EPUB_MEDIA_AND_INTERACTIVITY.md). The reusable mobile workflows launch native simulator/emulator checks through
-`scripts/check-mobile-runtime.py`, including the committed painting corpus and
-real selection gestures. See [mobile runtime checks](MOBILE_RUNTIME_CI.md) for
-artifact isolation, system-setting restoration and exact invocation. Local
-passes and configured jobs do not establish a hosted pass for unpushed source.
+see [EPUB media and interactivity](EPUB_MEDIA_AND_INTERACTIVITY.md). Run native
+painting, selection, TalkBack and system Reduce Motion checks locally through
+`scripts/check-mobile-runtime.py`. See [local mobile checks](MOBILE_RUNTIME_CI.md)
+for isolated data, setting restoration, evidence and exact invocation.
 
 ## Local gates
 
