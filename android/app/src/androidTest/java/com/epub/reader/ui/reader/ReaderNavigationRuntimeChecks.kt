@@ -145,8 +145,27 @@ internal object ReaderNavigationRuntimeChecks {
             check(vm.currentBlock == 3 && vm.currentCharOffset == 3)
             check(vm.returnHistory.last().location.chapter == 20)
             check(remoteVersionText == JSONObject(journal.readText()).getJSONObject("own").optJSONObject("progress_versions").toString()) { "Remote position created local edit" }
-            Thread.sleep(1200)
-            tap(context.resources.displayMetrics.widthPixels / 2f, context.resources.displayMetrics.heightPixels / 2f)
+            val paperTitle = vm.currentBook!!.chapters[vm.currentChapter].title
+            check(paperTitle.isNotBlank())
+            report.put("paper_title", paperTitle)
+            val paperTitleKey = paperTitle.filterNot { it.isWhitespace() }
+            await("Restored native paper is not ready for input") {
+                var focused = false
+                test.runOnMainSync { focused = activity.hasWindowFocus() && activity.window.decorView.isShown }
+                focused && nodes().any { it.isVisibleToUser && it.text?.toString()?.filterNot { char -> char.isWhitespace() }?.contains(paperTitleKey) == true }
+            }
+            val viewport = android.graphics.Rect()
+            test.runOnMainSync { check(activity.window.decorView.getGlobalVisibleRect(viewport)) }
+            // The exact spine is a boundary between the controls and forward
+            // turn zones. Use the interior of the controls zone in the actual
+            // resumed window, including after an inset/orientation change.
+            val controlX = viewport.left + viewport.width() * 0.4f
+            val controlY = viewport.exactCenterY()
+            report.put("control_tap", JSONObject().put("x", controlX).put("y", controlY)
+                .put("window", viewport.toShortString()).put("paper_title", paperTitle)
+                .put("display_width", context.resources.displayMetrics.widthPixels)
+                .put("display_height", context.resources.displayMetrics.heightPixels))
+            tap(controlX, controlY)
             val returnLabel = I18n.t("reader.return_position")
             await("Return button not reachable") { nodes().any { it.contentDescription?.toString() == returnLabel } }
             Thread.sleep(250)
@@ -177,6 +196,16 @@ internal object ReaderNavigationRuntimeChecks {
         } catch (failure: Throwable) {
             report.put("passed",false).put("error",failure.stackTraceToString())
             runCatching {record("failure")}.onFailure {report.put("state_capture_error",it.toString())}
+            runCatching {
+                val hierarchy = JSONArray()
+                nodes().take(200).forEach { node ->
+                    val bounds = android.graphics.Rect(); node.getBoundsInScreen(bounds)
+                    hierarchy.put(JSONObject().put("text",node.text?.toString()?.take(300))
+                        .put("description",node.contentDescription?.toString()?.take(300))
+                        .put("visible",node.isVisibleToUser).put("bounds",bounds.toShortString()))
+                }
+                report.put("failure_ui",hierarchy)
+            }.onFailure {report.put("hierarchy_capture_error",it.toString())}
             runCatching {
                 test.uiAutomation.takeScreenshot()?.let {image->
                     try {File(context.cacheDir,"navigation-failure.png").outputStream().use {image.compress(Bitmap.CompressFormat.PNG,100,it)}}
