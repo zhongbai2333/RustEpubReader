@@ -265,6 +265,9 @@ mod submission_tests {
                         Err(e) => panic!("{e}"),
                     }
                 };
+                // Accepted sockets may inherit the listener's nonblocking mode.
+                // The HTTP reader below must wait for headers and body fragments.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
@@ -307,6 +310,32 @@ mod submission_tests {
             calls
         });
         (address, worker)
+    }
+    #[test]
+    fn mock_accepts_delayed_headers_and_body_fragments() {
+        let (api, worker) = server(vec![(200, serde_json::json!({}))]);
+        let mut socket = std::net::TcpStream::connect(api.trim_start_matches("http://")).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        socket
+            .write_all(b"POST /fragmented HTTP/1.1\r\nContent-Length: 7\r\n")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        socket.write_all(b"\r\n{\"a\":").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        socket.write_all(b"1}").unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert_eq!(
+            worker.join().unwrap(),
+            vec![(
+                "POST /fragmented HTTP/1.1".into(),
+                serde_json::json!({"a": 1})
+            )]
+        );
     }
     #[test]
     fn reviewed_submission_uses_dedicated_content_branch_and_exact_selected_samples() {

@@ -394,7 +394,10 @@ fn file_larger_than_round_budget_advances_instead_of_being_permanently_skipped()
         for i in if round == 0 { 0..12 } else { 12..17 } {
             steps.push(read_chunk(i, if i < 16 { &block } else { &tail }));
         }
-        let (api, server) = mock(steps);
+        // The second round rehashes 96 MiB of cached chunks before requesting
+        // the next part. Allow CPU/disk work in debug CI builds between requests;
+        // this is a mock-server idle limit, not a production network timeout.
+        let (api, server) = mock_with_request_wait(steps, false, Duration::from_secs(120));
         let result = staged::files(
             &api,
             &mut DeviceSnapshot::new("local".into()),

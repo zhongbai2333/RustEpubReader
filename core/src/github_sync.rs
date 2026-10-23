@@ -567,6 +567,13 @@ mod tests {
         steps: Vec<Step>,
         count_contributions: bool,
     ) -> (Api, std::thread::JoinHandle<()>) {
+        mock_with_request_wait(steps, count_contributions, Duration::from_secs(10))
+    }
+    fn mock_with_request_wait(
+        steps: Vec<Step>,
+        count_contributions: bool,
+        request_wait: Duration,
+    ) -> (Api, std::thread::JoinHandle<()>) {
         use std::{io::Write, net::TcpListener};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -579,11 +586,16 @@ mod tests {
                         Ok((stream, _)) => break stream,
                         Err(e)
                             if e.kind() == std::io::ErrorKind::WouldBlock
-                                && start.elapsed().as_secs() < 10 =>
+                                && start.elapsed() < request_wait =>
                         {
                             std::thread::sleep(Duration::from_millis(5))
                         }
-                        Err(e) => panic!("mock request missing: {e}"),
+                        Err(e) => panic!(
+                            "mock request missing after {:?}: {} {}: {e}",
+                            start.elapsed(),
+                            step.method,
+                            step.path
+                        ),
                     }
                 };
                 // Darwin may inherit O_NONBLOCK from the listening socket.
