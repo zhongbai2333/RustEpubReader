@@ -18,6 +18,7 @@ import org.json.JSONObject
 
 /** Verifies the actual JNI bridge and Android bitmap decoder on a device. */
 class IllustrationInstrumentation : Instrumentation() {
+    private var parity = false
     private var selection = false
     private var selectionReduced = false
     private var bookOpening = false
@@ -38,8 +39,9 @@ class IllustrationInstrumentation : Instrumentation() {
     private var native = false
     private var curl = false
     private var bookShare = false
-    override fun onCreate(arguments: Bundle?) { selectionReduced=arguments?.getString("check")=="selection-reduced"; selection=arguments?.getString("check") in listOf("selection","selection-reduced"); bookOpening=arguments?.getString("check")=="book-opening"; accessibility=arguments?.getString("check")=="accessibility"; columns=arguments?.getString("check")=="single-column"; navigation=arguments?.getString("check")=="navigation"; largePublication=arguments?.getString("check")=="large-publication"; fontLibrary=arguments?.getString("check")=="font-library"; punctuation=arguments?.getString("check")=="punctuation"; firstReader=arguments?.getString("check")=="first-reader"; linkage=arguments?.getString("check")=="appearance-linkage"; appearance=arguments?.getString("check") in listOf("appearance","appearance-ambient"); appearanceAmbient=arguments?.getString("check")=="appearance-ambient"; bookShare=arguments?.getString("check")=="book-share"; i18n=arguments?.getString("check")=="i18n"; bounds=arguments?.getString("check")=="bounds"; corpus=arguments?.getString("check")=="corpus"; typography = arguments?.getString("check") == "typography"; native = arguments?.getString("check") == "native"; curl = arguments?.getString("check") == "curl"; super.onCreate(arguments); start() }
+    override fun onCreate(arguments: Bundle?) { parity=arguments?.getString("check")=="parity"; selectionReduced=arguments?.getString("check")=="selection-reduced"; selection=arguments?.getString("check") in listOf("selection","selection-reduced"); bookOpening=arguments?.getString("check")=="book-opening"; accessibility=arguments?.getString("check")=="accessibility"; columns=arguments?.getString("check")=="single-column"; navigation=arguments?.getString("check")=="navigation"; largePublication=arguments?.getString("check")=="large-publication"; fontLibrary=arguments?.getString("check")=="font-library"; punctuation=arguments?.getString("check")=="punctuation"; firstReader=arguments?.getString("check")=="first-reader"; linkage=arguments?.getString("check")=="appearance-linkage"; appearance=arguments?.getString("check") in listOf("appearance","appearance-ambient"); appearanceAmbient=arguments?.getString("check")=="appearance-ambient"; bookShare=arguments?.getString("check")=="book-share"; i18n=arguments?.getString("check")=="i18n"; bounds=arguments?.getString("check")=="bounds"; corpus=arguments?.getString("check")=="corpus"; typography = arguments?.getString("check") == "typography"; native = arguments?.getString("check") == "native"; curl = arguments?.getString("check") == "curl"; super.onCreate(arguments); start() }
     override fun onStart() {
+        if(parity){PlatformParityRuntimeChecks.run(this);return}
         if(selection) {ReaderSelectionRuntimeChecks.run(this,selectionReduced);return}
         if(bookOpening) {BookOpeningRuntimeChecks.run(this);return}
         if(accessibility) {ReaderAccessibilityRuntimeChecks.run(this);return}

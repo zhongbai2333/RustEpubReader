@@ -258,12 +258,13 @@ struct BookShareView: View {
     @State private var stage = 0
     private var books: [LibraryEntry] { ids.compactMap { id in library.books.first { $0.id == id } } }
     private func back() { if stage == 1 || library.bookSharing.busy { library.bookSharing.cancel() }; stage = 0 }
-    private func export() {
+    @State private var exportOptions=false
+    private func export(mode:String) {
         preparing = true; error = nil
         Task {
             do {
                 let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BookExports", isDirectory: true).appendingPathComponent(UUID().uuidString, isDirectory: true)
-                let files = try await library.exportBooks(books.map(\.id), directory: directory)
+                let files = try await library.exportBooks(books.map(\.id), directory: directory,mode:mode)
                 if !files.isEmpty { systemShare = BookShareFiles(urls: files) }
             } catch { self.error = L("book.export_failed", error.localizedDescription) }
             preparing = false
@@ -274,10 +275,16 @@ struct BookShareView: View {
             VStack(alignment: .leading, spacing: 18) {
                 ShareBookSummary(books: books, covers: library.covers).padding(.horizontal, 24).padding(.top, 10)
                 ScrollView {
-                    BookShareSender(sharing: library.bookSharing, account: account, ids: books.map(\.id), stage: $stage, exporting: preparing, export: export).padding(.horizontal, 24).padding(.bottom, 24)
+                    BookShareSender(sharing: library.bookSharing, account: account, ids: books.map(\.id), stage: $stage, exporting: preparing, export: {exportOptions=true}).padding(.horizontal, 24).padding(.bottom, 24)
                     if let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal, 24) }
                 }.scrollBounceBehavior(.basedOnSize)
             }.background(Color(.systemGroupedBackground))
+                .confirmationDialog(L("book.export"),isPresented:$exportOptions,titleVisibility:.visible){
+                    Button(L("export.mode_original")){export(mode:"original")}
+                    Button(L("export.mode_corrections")){export(mode:"corrections")}
+                    Button(L("export.mode_annotations")){export(mode:"annotations")}
+                    Button(L("export.mode_full")){export(mode:"full")}
+                }
                 .navigationTitle(L(stage == 1 ? "share_ui.nearby" : stage == 2 ? "transfer.github" : "book.share_title")).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { if stage != 0 { Button(action: back) { Image(systemName: "chevron.left") }.accessibilityLabel(L("settings.back")) } }

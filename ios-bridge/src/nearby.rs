@@ -230,7 +230,7 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
             let mut s = SESSION.lock().unwrap_or_else(|e| e.into_inner());
             let result = s.result.take();
             Ok(
-                json!({"epoch":s.epoch,"address":s.address,"status":s.status,"paired":store.paired,"result":result}),
+                json!({"epoch":s.epoch,"address":s.address,"status":s.status,"device_id":store.device_id,"device_name":store.device_name,"paired":store.paired,"result":result}),
             )
         }
         "peer_remove" => {
@@ -340,7 +340,14 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
                 return Err("Invalid nearby address".into());
             }
             let pin = super::field(v, "pin")?;
-            validate_pin(pin)?;
+            let peer_id = v["peer_id"].as_str().filter(|s| !s.is_empty());
+            if let Some(id) = peer_id {
+                if !identity(root)?.paired.iter().any(|p| p.device_id == id) {
+                    return Err("Device is no longer paired".into());
+                }
+            } else {
+                validate_pin(pin)?;
+            }
             stop();
             let epoch = SESSION.lock().unwrap_or_else(|e| e.into_inner()).epoch;
             let mut snapshot = snapshot(root, device)?;
@@ -353,8 +360,8 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
                 stream,
                 &mut snapshot.store,
                 stage,
-                v["peer_id"].as_str(),
-                Some(pin),
+                peer_id,
+                if peer_id.is_some() { None } else { Some(pin) },
             )?;
             auto_sync_session(
                 &mut stream,

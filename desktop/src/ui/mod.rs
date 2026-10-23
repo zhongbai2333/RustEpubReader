@@ -42,3 +42,5 @@ pub(crate) mod book_presentation;
 pub(crate) mod reader_introduction;
 
 pub(crate) mod reading_themes;
+
+pub(crate) mod reading_services;

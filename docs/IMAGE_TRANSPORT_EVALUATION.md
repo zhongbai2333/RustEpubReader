@@ -113,8 +113,7 @@ immutable artifact and logs workspace changes separately. At least three fresh
 processes run per platform/profile. Seven alternating samples per selection
 (first/all images) retain every raw result. Fingerprints, complete case coverage,
 independent processes, cross-platform/profile image hashes and finite timings are
-checked. The ten collector regressions are wired into normal and performance CI; local
-runs are verified, and hosted execution remains a separate gate.
+checked. Collector regressions run in normal and performance CI.
 
 Schema 2 uses a blank native host without startup library/network work, explicitly
 waits for its window to settle, and records first chapter and decoder preparation
@@ -152,11 +151,8 @@ addition to this bridge assessment. Current default remains `release`.
 
 ## Cached Android library publication
 
-The locally installed cargo-ndk4.1.2 output-copy freshness check compares only
-modification times. Switching from a newer performance-profile library back to
-an older cached size-profile library can therefore retain the wrong output.
-An independent APK-vs-Cargo SHA audit reproduced this; that invalidates the
-affected preliminary profile labels, even when the native runtime tests pass.
+A modification-time-only library copy can retain the wrong output when switching
+between cached build profiles. Publishing by content avoids that ambiguity.
 
 The Gradle integration now builds with cargo-ndk without its mtime-based `-o`
 copy, then uses `scripts/android-native-artifacts.py publish` to publish the
@@ -175,4 +171,4 @@ outputs and embedded provenance; a stale or mismatched package fails the build.
 The publication regressions cover a destination with a newer timestamp, cached
 switches in both directions, unchanged output reuse, missing ABI, changed source,
 wrong/missing provenance, duplicate ZIP entries and incomplete/traversing output
-listings. Real cached-build switching is a separate runtime acceptance record.
+listings.

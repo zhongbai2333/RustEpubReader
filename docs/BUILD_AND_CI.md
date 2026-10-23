@@ -32,12 +32,6 @@ For source builds, also install the development libraries used by the Linux CI
 steps: GTK3/GLib/ATK, ALSA, XCB render/shape/xfixes, xkbcommon, EGL/OpenGL, a C/C++
 compiler and `pkg-config`. Package names vary across distributions.
 
-The local Ubuntu ARM64 check uses an isolated source snapshot and Xvfb/Openbox
-with Mesa software rendering. That verifies native window/layout behavior on
-that guest; it is separate from a physical GPU, other distributions and a hosted
-job. Its evidence keeps the missing-XKB launch failure as well as the subsequent
-run after installing the required runtime package.
-
 ## App versions
 
 Use Python 3.9 or newer from any platform; no extra packages are needed:
@@ -45,10 +39,10 @@ Use Python 3.9 or newer from any platform; no extra packages are needed:
 ```sh
 python3 scripts/bump-version.py --check
 python3 scripts/bump-version.py patch --dry-run
-python3 scripts/bump-version.py patch       # 1.0.8 -> 1.0.9
+python3 scripts/bump-version.py patch       # 2.0.2 -> 2.0.3
 python3 scripts/bump-version.py minor       # increment minor, reset patch
 python3 scripts/bump-version.py major       # increment major, reset minor/patch
-python3 scripts/bump-version.py 1.2.0       # choose a greater stable X.Y.Z
+python3 scripts/bump-version.py 2.1.0       # choose a greater stable X.Y.Z
 python3 scripts/bump-version.py --build-only
 ```
 
@@ -65,16 +59,16 @@ If a local test installation used build-number overrides, pass greater numbers
 explicitly, for example:
 
 ```sh
-python3 scripts/bump-version.py --build-only --ios-build 1017.4 --android-code 10
+python3 scripts/bump-version.py --build-only --ios-build 1017.8 --android-code 14
 ```
 
-The defaults come from committed project files, not connected devices or previous
+The defaults come from the current project version files, not connected devices or previous
 build outputs. Xcode/Gradle command-line overrides still take precedence when
 building. This script does not build, sign, install, commit, tag, or publish.
 
 CI checks version consistency and tests the updater. Release builds first require
 the tag to equal the source version, using
-`python3 scripts/bump-version.py --check --tag v1.0.8`. Create/push that tag only
+`python3 scripts/bump-version.py --check --tag v2.0.2`. Create/push that tag only
 after committing the intended version changes. Historical examples, test fixtures
 and third-party versions are not updated by the script.
 
@@ -148,7 +142,11 @@ and noncurrent pages do not expose readable descendants.
 
 Rustup installs `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The build phase
 preserves the selected Rust toolchain and honors Cargo's target directory.
-Homebrew's matching-source `build-std` path remains a local fallback.
+Homebrew's matching-source `build-std` path remains a local fallback. Android
+`build-std` diagnostics may also need `cargo ndk --link-builtins` to resolve NDK
+compiler-runtime symbols such as `__aarch64_cas2_acq_rel`. Use `-Wl,-z,defs` to
+reject unresolved native symbols at link time, then verify packaged native-library
+provenance and launch the diagnostic APK.
 ONNX Runtime comes from pinned Swift package 1.24.2; model weights remain optional
 first-use downloads rather than app resources.
 
@@ -170,8 +168,14 @@ embedded frameworks and executable permissions; it rejects simulator/wrong-CPU
 executables, app signing metadata and invalid ZIP/checksum data. The publisher
 verifies the downloaded IPA before attaching it to a Release. Developer signing,
 provisioning and store submission are not configured. The project has host Swift checks, Rust tests and an isolated `ReaderUITests`
-UI-test target for native selection, system Reduce Motion and Files interactions. Compilation does not validate physical page-turn
-gestures, background behavior or App Store acceptance.
+UI-test target containing selection, system Reduce Motion, Files and TXT cases.
+The hosted collector runs `ReaderSelectionUITests` across its repeated selection
+iterations, then runs `TxtImportUITests` once against the same admitted app
+installation. `BackupFilesUITests` remains separate and is not executed by that
+gate. This describes the current collector configuration, not a hosted result
+for uncommitted changes.
+Compilation does not validate physical page-turn gestures, background behavior
+or App Store acceptance.
 
 All three readers use native rendering. Publication scripts use an embedded
 QuickJS interpreter without a WebView, JIT, network, filesystem or account APIs.
@@ -225,10 +229,10 @@ xcodebuild -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
   CODE_SIGNING_ALLOWED=NO ARCHS=arm64 archive
 python3 ios/scripts/package-unsigned-ipa.py pack \
   --archive target/ios-local/ReaderPreview.xcarchive \
-  --output-dir target/ios-local/assets --version v1.0.8
+  --output-dir target/ios-local/assets --version v2.0.2
 python3 ios/scripts/package-unsigned-ipa.py verify \
-  target/ios-local/assets/RustEpubReader-iOS-arm64-v1.0.8-unsigned.ipa \
-  --checksum target/ios-local/assets/RustEpubReader-iOS-arm64-v1.0.8-unsigned.ipa.sha256
+  target/ios-local/assets/RustEpubReader-iOS-arm64-v2.0.2-unsigned.ipa \
+  --checksum target/ios-local/assets/RustEpubReader-iOS-arm64-v2.0.2-unsigned.ipa.sha256
 ```
 
 Android uses JDK 21 to align CI with the locally verified environment. The Java
@@ -249,13 +253,14 @@ packaging. Native builds use `--locked` and all three Android Rust targets.
 
 ## Commit boundary
 
-The current platform work adds complete source directories. Include `ios/`,
-`ios-bridge/`, the new core sync modules/tests, client UI files, workflows and
-documentation in the source commit; staging tracked modifications alone misses
-the new functionality. Preserve the source asset `ReaderIcon.png` and pinned
-Swift package file.
+Include new source files, tests, client assets and build configuration in source
+commits; staging tracked modifications alone can omit required files. Preserve
+source icons and pinned Swift package files.
 
-Do not transfer `target/`, Gradle outputs, Android SDK paths, signing keys,
+Keep local review reports, screenshots, benchmark output and build logs outside
+the source repository or under ignored `target/`. PRs should summarize relevant
+checks; CI artifacts retain run-specific logs. Do not transfer `target/`, Gradle
+outputs, Android SDK paths, signing keys,
 provisioning profiles, books, models, library/settings/journals or failed-transfer
 queues into the source commit. GitHub tokens stay in device credential storage.
 Local macOS development signing material is outside the repository and is not a

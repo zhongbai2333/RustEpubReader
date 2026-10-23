@@ -1100,6 +1100,7 @@ fn paint_native_ruby(
 /// Result from the selection toolbar.
 pub(crate) enum SelToolbarResult {
     KeepOpen,
+    Service(&'static str),
     Close,
     /// User clicked a highlight colour – create the highlight with saved selection.
     CreateHighlight(reader_core::library::HighlightColor),
@@ -1174,21 +1175,10 @@ pub(crate) fn show_selection_toolbar(
                     }
                     // Dictionary
                     if ui.small_button(i18n.t("context.dictionary")).clicked() {
-                        let trimmed = text.chars().take(20).collect::<String>();
-                        let url = format!("https://www.zdic.net/hans/{}", trimmed);
-                        let _ = open::that(&url);
-                        result = SelToolbarResult::Close;
+                        result = SelToolbarResult::Service("dictionary");
                     }
-                    // Translate
                     if ui.small_button(i18n.t("context.translate")).clicked() {
-                        let trimmed: String = text.chars().take(200).collect();
-                        let encoded = urlencoding::encode(&trimmed);
-                        let url = format!(
-                            "https://translate.google.com/?sl=auto&tl=en&text={}",
-                            encoded,
-                        );
-                        let _ = open::that(&url);
-                        result = SelToolbarResult::Close;
+                        result = SelToolbarResult::Service("translate");
                     }
                     // Custom Replace (only in ReadWrite CSC mode)
                     if is_csc_readwrite && ui.small_button(i18n.t("csc.custom_replace")).clicked() {

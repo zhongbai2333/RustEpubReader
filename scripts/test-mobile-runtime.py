@@ -555,8 +555,13 @@ class SelectionTests(unittest.TestCase):
             def execute(*args,**kwargs):
                 nonlocal ran
                 ran=True
-                self.assertGreaterEqual(kwargs["timeout"],1200,"Allow three complete suites including cold XCTest setup and cleanup")
                 command=args[0]
+                if "-only-testing:ReaderUITests/TxtImportUITests" in command:
+                    self.assertGreaterEqual(kwargs["timeout"],300)
+                    self.assertNotIn("-test-iterations",command)
+                    self.assertIn(str(output/"platform-parity.xcresult"),command)
+                    return SimpleNamespace(returncode=0)
+                self.assertGreaterEqual(kwargs["timeout"],1200,"Allow three complete suites including cold XCTest setup and cleanup")
                 self.assertEqual(command[command.index('-xctestrun')+1],str(root/'selection-inputs.xctestrun'))
                 self.assertEqual(command[command.index("-test-iterations")+1],"3")
                 self.assertNotIn("-retry-tests-on-failure",command)
@@ -575,6 +580,8 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(json.loads((output/"selection-gesture-slide.json").read_text())["events"],[{"state":1},{"state":3}])
             self.assertTrue(json.loads((output/'xctest-installation.json').read_text())['unchanged'])
             self.assertEqual(value['input_readiness']['runs'],15)
+            self.assertTrue(value['platform_parity']['passed'])
+            self.assertEqual(value['platform_parity']['suite'],'TxtImportUITests')
 
     def test_installed_binary_must_match_admitted_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -597,6 +604,17 @@ class SelectionTests(unittest.TestCase):
             with patch.object(runtime,'ios_installed_target',side_effect=[before,after]),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'),patch.object(runtime.subprocess,'run',return_value=SimpleNamespace(returncode=0)):
                 with self.assertRaisesRegex(RuntimeError,'replaced the admitted target'):runtime.collect_ios_selection(args,'owned-device','local.reader.columns')
             self.assertFalse(json.loads((root/'xctest-installation.json').read_text())['unchanged'])
+
+    def test_parity_suite_failure_cannot_pass_selection_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);cache=root/'Library/Caches';cache.mkdir(parents=True)
+            args=SimpleNamespace(output=root,xctestrun=root/'owned',timeout=1)
+            state={'data':str(root),'app':'/owned.app'}
+            with patch.object(runtime.subprocess,'run',side_effect=[SimpleNamespace(returncode=0),SimpleNamespace(returncode=1)]),patch.object(runtime,'ios_installed_target',return_value=state),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
+                with self.assertRaisesRegex(RuntimeError,'Native TXT/service/contribution XCTest failed'):
+                    runtime.collect_ios_selection(args,'owned-device','local.reader.columns')
+            self.assertFalse((root/'platform-parity-ui.json').exists())
+            self.assertTrue(json.loads((root/'xctest-installation.json').read_text())['unchanged'])
 
     def test_invalid_selection_inputs_do_not_start_xctest(self):
         with tempfile.TemporaryDirectory() as directory:

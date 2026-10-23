@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import CoreText
+import Security
 import UniformTypeIdentifiers
 struct ReadingToolsMenu: UIViewRepresentable {
     var tint: UIColor
@@ -259,13 +260,17 @@ struct SelectedTextView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var note = ""
     @State private var dictionary = false
+    @State private var serviceKind: String?
     var body: some View {
         NavigationStack {
             Form {
                 Section { Text(passage.text).textSelection(.enabled) }
                 Section {
                     Button(L("context.copy"), systemImage: "doc.on.doc") { UIPasteboard.general.string = passage.text; dismiss() }
-                    Button(L("reader.look_up"), systemImage: "character.book.closed") { dictionary = true }
+                    Button(L("reader.look_up"), systemImage: "character.book.closed") {
+                        if UserDefaults.standard.string(forKey:"reader.service.dictionary.url")?.isEmpty != false { dictionary = true } else {serviceKind="dictionary"}
+                    }
+                    Button(L("context.translate"),systemImage:"character.bubble"){serviceKind="translate"}
                 }
                 Section(L("selection.highlight")) {
                     HStack {
@@ -286,6 +291,7 @@ struct SelectedTextView: View {
             }.navigationTitle(L("reader.selected_text")).navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button(L("common.deselect")) { dismiss() } } }
                 .sheet(isPresented: $dictionary) { NativeDictionary(term: passage.text) }
+        .sheet(isPresented:Binding(get:{serviceKind != nil},set:{if !$0 {serviceKind=nil}})){NativeServiceResult(client:annotations.library.client,text:passage.text,kind:serviceKind ?? "translate")}
         }
     }
     private func highlightColor(_ color: String) -> Color {
@@ -308,6 +314,7 @@ struct CorrectionView: View {
                 Picker(L("csc.correction_intensity"), selection: $model.threshold) { Text(L("csc.conservative")).tag(0.97); Text(L("csc.standard")).tag(0.90); Text(L("csc.intensity_aggressive")).tag(0.80) }.disabled(model.busy)
                 if let error = model.error { Text(LM(error)).foregroundStyle(.red) }
             } footer: { Text(L("csc.first_use_hint")) }
+            Section {NavigationLink(L("contribution.preview")){NativeContributionView(annotations:annotations)}}
             Section(L("csc.correction_suggestions")) {
                 ForEach(model.suggestions) { suggestion in
                     VStack(alignment: .leading, spacing: 8) {
@@ -355,6 +362,7 @@ struct ReaderAppearanceSettings: View {
     var body: some View {
         Form {
             ReadingAppearanceControls(value: appearance, activeDark: appearanceDark, fontName: fontName, fontSize: fontSize)
+            Section {NavigationLink(L("services.title")){NativeServiceSettings()}}
 
             Section {
                 Text(L("settings.reading_mode_label")).font(.subheadline).foregroundStyle(.secondary)
@@ -712,5 +720,147 @@ struct ReadingReturnButton: View {
             .accessibilityLabel(L("reader.return_position")).accessibilityHint(detail)
             .contextMenu { Button(action: action) { Label(detail, systemImage: "arrow.uturn.backward") } }
             .transition(.opacity)
+    }
+}
+
+// Custom services use the same bounded transport and response contract as desktop/Android.
+private enum ReadingServiceKeychain {
+    static func query(_ kind:String)->[String:Any]{[kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"com.zhongbai233.reader.services",kSecAttrAccount as String:kind]}
+    static func load(_ kind:String)->String{
+        var q=query(kind);q[kSecReturnData as String]=true;q[kSecMatchLimit as String]=kSecMatchLimitOne
+        var result:CFTypeRef?;guard SecItemCopyMatching(q as CFDictionary,&result)==errSecSuccess,let data=result as? Data else{return ""};return String(decoding:data,as:UTF8.self)
+    }
+    static func save(_ kind:String,_ key:String)throws{
+        let q=query(kind)
+        if key.isEmpty {let status=SecItemDelete(q as CFDictionary);guard status==errSecSuccess || status==errSecItemNotFound else{throw CoreFailure(message:"Cannot remove service credential")};return}
+        let attrs:[String:Any]=[kSecValueData as String:Data(key.utf8),kSecAttrAccessible as String:kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+        var status=SecItemUpdate(q as CFDictionary,attrs as CFDictionary)
+        if status==errSecItemNotFound {status=SecItemAdd(q.merging(attrs){_,new in new} as CFDictionary,nil)}
+        guard status==errSecSuccess else {throw CoreFailure(message:"Cannot save service credential")}
+    }
+}
+struct NativeServiceSettings:View {
+    @ObservedObject private var readerI18n=ReaderI18n.shared
+    @AppStorage("reader.service.translate.url") private var translateURL=""
+    @AppStorage("reader.service.dictionary.url") private var dictionaryURL=""
+    @State private var translateKey=""
+    @State private var dictionaryKey=""
+    @AppStorage("reader.service.translate.provider") private var translateProvider="openai"
+    @AppStorage("reader.service.dictionary.provider") private var dictionaryProvider="openai"
+    @AppStorage("reader.service.translate.model") private var translateModel="gpt-4o-mini"
+    @AppStorage("reader.service.dictionary.model") private var dictionaryModel="gpt-4o-mini"
+    @State private var error:String?
+    var body:some View {
+        Form {
+            Section(L("context.translate")){
+                Picker(L("services.provider"),selection:$translateProvider){Text(L("services.openai")).tag("openai");Text(L("services.json")).tag("json")}
+                if translateProvider=="openai"{LabeledContent(L("services.model")){TextField(L("services.model"),text:$translateModel).multilineTextAlignment(.trailing).textInputAutocapitalization(.never).autocorrectionDisabled()}}
+                TextField(L("settings.api_url"),text:$translateURL).accessibilityIdentifier("service-translate-url").keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField(L("settings.api_key"),text:$translateKey).textInputAutocapitalization(.never).autocorrectionDisabled()
+            }
+            Section(L("context.dictionary")){
+                Picker(L("services.provider"),selection:$dictionaryProvider){Text(L("services.openai")).tag("openai");Text(L("services.json")).tag("json")}
+                if dictionaryProvider=="openai"{LabeledContent(L("services.model")){TextField(L("services.model"),text:$dictionaryModel).multilineTextAlignment(.trailing).textInputAutocapitalization(.never).autocorrectionDisabled()}}
+                TextField(L("settings.api_url"),text:$dictionaryURL).accessibilityIdentifier("service-dictionary-url").keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField(L("settings.api_key"),text:$dictionaryKey).textInputAutocapitalization(.never).autocorrectionDisabled()
+            }
+            Section {Text(L("services.notice")).font(.footnote).foregroundStyle(.secondary)
+                if translateProvider=="openai" || dictionaryProvider=="openai"{Text(L("services.openai_hint")).font(.footnote).foregroundStyle(.secondary)}
+                DisclosureGroup(L("services.json")){Text(L("services.protocol")).font(.caption).foregroundStyle(.secondary)}
+            }
+            if let error{Text(error).foregroundStyle(.red)}
+        }.navigationTitle(L("services.title")).navigationBarTitleDisplayMode(.inline)
+        .onAppear{translateKey=ReadingServiceKeychain.load("translate");dictionaryKey=ReadingServiceKeychain.load("dictionary")}
+        .onChange(of:translateKey){_,key in save("translate",key)}.onChange(of:dictionaryKey){_,key in save("dictionary",key)}
+    }
+    private func save(_ kind:String,_ key:String){do{try ReadingServiceKeychain.save(kind,key)}catch{self.error=error.localizedDescription}}
+}
+struct NativeServiceResult:View {
+    let client:CoreClient;let text:String;let kind:String
+    var endpointOverride:String?=nil
+    @Environment(\.dismiss) private var dismiss
+    @State private var result:String?
+    @State private var error:String?
+    @State private var generation=UUID()
+    @State private var loading=false
+    @State private var target="zh"
+    @State private var hasAppeared=false
+    private var endpoint:String{endpointOverride ?? UserDefaults.standard.string(forKey:"reader.service.\(kind).url") ?? ""}
+    private var onlineURL:URL? {
+        var c=URLComponents(string:kind=="dictionary" ? "https://www.zdic.net/hans/" : "https://translate.google.com/")!
+        if kind=="dictionary"{c.path += text}else{c.queryItems=[.init(name:"sl",value:"auto"),.init(name:"tl",value:"zh-CN"),.init(name:"text",value:text)]};return c.url
+    }
+    var body:some View {
+        NavigationStack {
+            ScrollView {VStack(alignment:.leading,spacing:16){
+                Text(text).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled)
+                Divider()
+                if kind=="translate"{Picker(L("services.target"),selection:$target){Text(L("fonts.chinese")).tag("zh");Text(L("fonts.english")).tag("en")}.pickerStyle(.segmented).disabled(loading)}
+                if loading{ProgressView(L("services.loading"))}
+                if let result{Text(result).textSelection(.enabled)}
+                if let error{Text(error).foregroundStyle(.red);Button(L("services.retry")){generation=UUID()}}
+                if endpoint.isEmpty {
+                    Text(L("services.missing"));NavigationLink(L("services.title")){NativeServiceSettings()}
+                    if let onlineURL{Link(L(kind=="dictionary" ? "services.online_dictionary":"services.online_translation"),destination:onlineURL)}
+                }
+            }.frame(maxWidth:.infinity,alignment:.leading).padding()}
+            .onAppear {
+                // Request again only when the user returns from settings, never
+                // while the endpoint is being edited on the destination page.
+                if hasAppeared { generation=UUID() } else { hasAppeared=true }
+            }
+            .navigationTitle(L(kind=="dictionary" ? "context.dictionary":"context.translate")).navigationBarTitleDisplayMode(.inline)
+            .toolbar{ToolbarItem(placement:.confirmationAction){Button(L("common.close")){dismiss()}}}
+        }.task(id:generation.uuidString+target){
+            guard !endpoint.isEmpty else{return};loading=true;error=nil;result=nil
+            let url=endpoint,key=ReadingServiceKeychain.load(kind),language=target
+            let model=UserDefaults.standard.string(forKey:"reader.service.\(kind).model") ?? "gpt-4o-mini"
+            let provider=endpointOverride != nil ? "auto" : UserDefaults.standard.string(forKey:"reader.service.\(kind).provider") ?? "openai"
+            do{let value:String=try await Task.detached{try client.call("reading_service",["endpoint":url,"key":key,"text":text,"kind":kind,"target":language,"model":model,"provider":provider])}.value
+                guard !Task.isCancelled else{return};result=value
+            }catch{if !Task.isCancelled{self.error=error.localizedDescription}}
+            if !Task.isCancelled{loading=false}
+        }
+    }
+}
+
+struct NativeContributionSample:Codable,Hashable {let input:String;let output:String}
+struct NativeContributionView:View {
+    @ObservedObject var annotations:ReadingAnnotations
+    @State private var samples:[NativeContributionSample]=[]
+    @State private var busy=false
+    @State private var error:String?
+    @State private var prURL:URL?
+    @State private var ready=false
+    var body:some View {
+        List {
+            Section {Text(L("contribution.public")).font(.footnote).foregroundStyle(.secondary)}
+            Section {
+                if busy {ProgressView(L("common.processing"))}
+                if samples.isEmpty && !busy{Text(L("contribution.empty")).foregroundStyle(.secondary)}
+                ForEach(Array(samples.enumerated()),id:\.offset){index,sample in
+                    VStack(alignment:.leading,spacing:6){Text(sample.input).foregroundStyle(.secondary);Text(sample.output)}
+                        .accessibilityElement(children:.combine).accessibilityIdentifier("contribution-sample-\(index)")
+                        .swipeActions{Button(L("library.delete"),role:.destructive){samples.remove(at:index)}.disabled(busy)}
+                }
+            }
+            Section {
+                Button(L("contribution.submit")){Task{await submit()}}.disabled(busy || samples.isEmpty || prURL != nil)
+                if let prURL{Link(L("contribution.success"),destination:prURL)}
+                if let error{Text(error).foregroundStyle(.red)}
+            }
+        }.navigationTitle(L("contribution.preview")).navigationBarTitleDisplayMode(.inline)
+        .task{guard !ready else{return};ready=true;busy=true;defer{busy=false};let client=annotations.library.client,id=annotations.book.id
+            do{samples=try await Task.detached{try client.call("csc_samples",["id":id],as:[NativeContributionSample].self)}.value}catch{self.error=error.localizedDescription}
+        }
+    }
+    private func submit()async {
+        guard !busy, !samples.isEmpty else{return};busy=true;error=nil;defer{busy=false}
+        do {
+            guard let credential=try TokenKeychain.load() else {error=L("csc.contribute_need_login");return}
+            let client=annotations.library.client,data=try JSONEncoder().encode(samples),selected=try JSONSerialization.jsonObject(with:data)
+            let url:String=try await Task.detached{try client.call("csc_submit",["token":credential.token,"samples":selected])}.value
+            prURL=URL(string:url)
+        }catch{self.error=error.localizedDescription}
     }
 }

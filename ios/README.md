@@ -44,14 +44,19 @@ App Store upload or TestFlight setup are included.
 
 ## Continuous integration
 
-`.github/workflows/ios-build.yml` runs on the Apple Silicon `macos-15` runner
-with Xcode 26.3 selected explicitly. Rustup installs both iOS target standard
+`.github/workflows/ios-build.yml` runs on the Apple Silicon `macos-26` runner
+with Xcode 26.4.1 selected explicitly. Rustup installs both iOS target standard
 libraries; the build phase preserves that toolchain instead of preferring
 Homebrew Rust. The shared scheme and pinned `Package.resolved` must be committed.
 
-The workflow runs core/bridge tests and all seven host check groups (layout,
-OAuth, appearance, reading mode, speech, contents and localization), builds an
-ad-hoc signed arm64 simulator app, and archives an **unsigned arm64 Release** for
+The workflow runs core/bridge tests and seven host check groups (layout, OAuth,
+appearance, reading mode, speech, contents and localization). It builds the
+`ReaderUITests` scheme for simulator testing and runs the native runtime gate,
+including selection and Reduce Motion. After the repeated selection iterations,
+the collector runs `TxtImportUITests` once against the same admitted installation;
+`BackupFilesUITests` remains separate. This is the current configuration, not a
+hosted pass for uncommitted changes. The workflow also builds an
+ad-hoc signed arm64 simulator app and archives an **unsigned arm64 Release** for
 physical iPhone/iPad, then packages an **unsigned IPA** with a SHA-256 receipt.
 Normal CI, `run-build` PR builds and release builds reuse this workflow; it also
 supports manual dispatch. Logs and build provenance are uploaded. GitHub Releases
@@ -62,16 +67,30 @@ No signing secrets are required for these checks or unsigned IPA packaging.
 The IPA requires signing the app and all embedded frameworks with the user's
 own identity and matching provisioning profile before installation; see
 [unsigned IPA installation](UNSIGNED_IPA.md). The workflow checks package
-structure and integrity, not successful installation. There is no XCTest target,
-publisher signing/provisioning, TestFlight or App Store upload.
+structure and integrity, not successful installation on a physical device. The isolated
+`ReaderUITests` XCTest target exercises simulator UI interactions; publisher
+signing/provisioning, TestFlight and App Store upload remain unconfigured. See
+[mobile runtime CI](../docs/MOBILE_RUNTIME_CI.md) for the gate and its evidence.
 See [build/CI notes](../docs/BUILD_AND_CI.md) and the
 [Windows handoff checklist](../docs/WINDOWS_TESTING.md).
 
-## EPUB and reading position
+## EPUB / TXT import and reading position
 
-- Native file importer accepts EPUB from Files, including security-scoped URLs.
-  The scope remains open until Rust validates and copies the book. File associations
-  also support opening an EPUB from another application. An invalid EPUB is rejected.
+- The native file importer and document associations accept EPUB and TXT. EPUB
+  scoped access remains open until Rust validates and copies the book. TXT is copied
+  with scoped access into private staging before background analysis/conversion; the
+  source file is not changed. The picker supports multiple EPUBs, imported
+  sequentially; one failed file does not stop the remaining files. TXT files enter
+  individual conversion sheets.
+- TXT conversion uses the shared mixed-heading detector, optional unnumbered-heading
+  detection and custom regex rules. The native sheet supports per-heading exclusion,
+  body excerpts and adding a heading from source-line search. It previews the first
+  500 chapters, displays up to 80 source-search matches, and converts the full text.
+  Input is bounded at 64 MiB; absent selected headings use explicitly labelled
+  length-based parts. Cancelling a boundary keeps its text in the body. Ambiguous
+  unnumbered titles still need user review. Normal dismissal releases staged files;
+  the first import after a process restart clears stale UUID directories in the
+  private TXT staging namespace. See the [capability audit](../docs/PLATFORM_PARITY.md).
 - Owned UUID EPUBs, per-book configs, index and sync journal live under
   `Library/Application Support/ReaderLibrary`. Documents is an optional Files
   transfer area, not the managed library. Re-import uses SHA-256 identity and keeps
@@ -121,7 +140,12 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
   still exchange progress. Files are staged on disk and promoted only after
   complete hash verification, with per-device journals and SHA compare-and-set
   retries. Public or unmarked unrelated
-  repositories are rejected. Annotations and settings are not in this schema. Daily reading/listening activity is included in the device snapshot; see [reading activity](../docs/READING_ACTIVITY.md).
+  repositories are rejected. Daily reading/listening activity is included in the
+  device snapshot; see [reading activity](../docs/READING_ACTIVITY.md). Bookmarks,
+  highlights and notes synchronize through separate causal annotation objects and
+  indices, applied after progress and transferred before EPUB files. Concurrent
+  note edits are preserved and explicit deletions propagate. Settings remain
+  local; see [annotation sync](../docs/ANNOTATION_SYNC.md).
 - Failed books have a persistent account/device retry queue and do not prevent
   other books from completing. A manual retry targets queued files after refreshing
   progress; automatic retries back off and still respect global rate limits.
@@ -137,9 +161,11 @@ See [build/CI notes](../docs/BUILD_AND_CI.md) and the
   Already transmitted remote requests can complete; cancelling does not roll them
   back. Rate-limit replies set a cooldown. Tokens and paths are never cloud records.
 - PIN transfer uses the shared encrypted pairing/transport protocol with an iOS
-  foreground lifecycle. The native local-network purpose is declared. Enter a
-  private/local device address and four-digit PIN explicitly; iOS does not yet
-  broadcast or discover peers automatically. Listener startup, active sockets and
+  foreground lifecycle. The native local-network purpose is declared. Bonjour advertises and discovers `_epubreader._tcp` while foregrounded;
+  manual private/local IPv4 addresses remain available. First pairing needs a
+  four-digit PIN; saved peers have identity-bound reconnect and throttled
+  foreground automatic reconnect. Discovery is only an address hint, not
+  authentication. Listener startup, active sockets and
   staged apply are invalidated on cancellation/background. Peer keys use Keychain;
   decrypted EPUBs are bounded, hashed and parsed before managed-library insertion.
   Accepted newer progress for the open book uses the same automatic jump and
@@ -162,9 +188,10 @@ fullscreen. Menus, forms and compact TOC rows are native. Chinese and English
 fonts have independent preferences (defaults: PingFang SC and Helvetica). Font
 choices are filtered by actual glyph coverage; Songti is offered when resolved.
 Legacy single-font preferences migrate once without overwriting later choices.
-The reading entry now uses UIKit/CoreText for all three modes: vertical continuous
-scrolling, paper curl, and horizontal sliding. The old native/sliding preferences
-migrate once into `preview.readingMode`. Switching modes and rotating restore the
+The reading entry uses UIKit/CoreText for continuous scrolling and pagination.
+Paged reading offers system paper curl, sliding, cover transitions and page changes
+without animation. Legacy mode preferences migrate into distinct reading-mode
+and page-animation settings. Switching modes and rotating restore the
 chapter/block/Unicode-scalar anchor; visibility of controls does not repaginate.
 
 Continuous scrolling virtualizes paper surfaces in a native scroll view, shortens chapter-ending
@@ -182,17 +209,21 @@ long chapter while a single drag remains held. Measured line maps
 are reused while scrolling. A common-mode display link and immediate backing
 draws for new paper rows keep rendering active while a finger remains down;
 the link stops after dragging/deceleration or detaching the view. Progress writes are coalesced and flushed at
-gesture completion, backgrounding and reader exit. The parsed publication remains
-in memory; exceptionally large individual chapters still need chapter-level layout.
-The two paginated modes currently typeset the entire book.
+gesture completion, backgrounding and reader exit. The publication catalogue remains available while chapter bodies load on demand.
+Paged reading reuses a nearby chapter layout window and trims it after completed
+turns; it no longer typesets the entire book when it opens. Large individual chapters
+still require chapter-level layout. See [pagination and bounded chapter loading](../docs/EPUB_PAGINATION_AND_PERFORMANCE.md#chapter-loading).
 
-Both paginated modes show two leaves in landscape when each body column is at
+Paged reading can show two leaves in landscape when each body column is at
 least `max(280pt, 12 * fontSize)` after margins and symmetric horizontal safe areas.
 Narrow windows or larger type use one leaf. Curl uses the public `.mid` spine and
 double-sided content; sliding moves a two-leaf container. An odd final spread has
 one blank leaf. Reduce Motion uses the public sliding transition and an inline
 settings explanation. No private page-curl API or custom curl shader is used.
-This change does not implement the planned native CSS/JavaScript emulation.
+Native/Mixed/Classic styles use the shared native CSS subset. Book-local scripts
+use the bounded QuickJS adapter when enabled; the adapter exposes only the documented native interfaces, without network or filesystem access.
+See [native typography](../docs/EPUB_NATIVE_TYPOGRAPHY.md) and
+[media and interactivity](../docs/EPUB_MEDIA_AND_INTERACTIVITY.md).
 
 `ios/scripts/check-reading-mode.sh` verifies preference migration and spread
 thresholds. `ios/scripts/check-layout.sh` includes continuous row coverage and
@@ -216,7 +247,9 @@ Long-press and held drag select text on the current leaf. The system dictionary,
 copy, four highlight colors, notes and bookmarks use native controls. Annotations
 and accepted single-character corrections persist in the shared per-book schema;
 original EPUBs remain intact. Selection does not extend across a page boundary,
-and the notes list currently supports jump/delete rather than editing an old note.
+and note details support editing existing text, inspecting source revisions and
+saving a revised note that resolves the concurrent versions shown to the user. Bookmarks, highlights and notes can also
+be exported as Markdown through the system share/save interface.
 
 The iOS-specific ONNX Runtime engine is statically linked through the official
 Swift package (1.24.2). Existing MacBERT int8 weights and vocabulary are **not**
@@ -226,19 +259,32 @@ load cached files offline or remove them. Inference checks the selected chapter,
 then presents suggestions for explicit accept/ignore; suggestions are not a
 promise of correction quality. No executable plugins are downloaded.
 
-Book opening presents an unfolding cover while real parsing/layout work proceeds,
+Book opening fades the cover into a paper-colored surface and expands it to the
+reader bounds while parsing/layout work proceeds,
 with a static Reduce Motion fallback and no artificial minimum delay. Three
-clients have stable-ID bookshelf selection, batch export and confirmed local
-delete. Filtered selections remain selected. iOS local deletion markers prevent
-an in-flight download from immediately restoring a removed book; remote copies
-remain. About includes app identity, source, relevant licenses and optional daily
+clients have stable-ID bookshelf selection, batch original export and confirmed
+archive actions. Filtered selections remain selected. Local-only archiving hides
+the shelf entry while retaining its EPUB and annotations. With GitHub sync enabled,
+lifecycle records propagate between updated clients; archived originals are only
+unlinked after a verified remote copy exists. The archive list has restore and
+separately confirmed permanent-delete actions. See [archive and permanent deletion](../docs/GITHUB_SYNC.md#archive-and-permanent-deletion).
+About includes app identity, source, relevant licenses and optional daily
 release notice. iOS checks release metadata but never installs an app update.
 
-This integration is not complete EPUB feature parity: arbitrary CSS/fixed-layout,
-image-only chapters previously excluded by the canonical parser, interactive links,
-TXT conversion UI is still outside this change. Existing tables retain
-the core's text-row representation. Custom online dictionaries/translation and
-correction-contribution UI are not yet ported; the system dictionary is available.
+Native rendering supports illustrations, ruby, basic text tables, note references
+and book-local links. It preserves canonical text positions while applying the
+supported style subset. Fixed-layout fidelity, vertical text and arbitrary
+browser CSS/JavaScript remain outside that subset. The system dictionary and
+TXT conversion/correction sheet are available. Custom online dictionary/translation results now use native panels, with OpenAI
+compatible and JSON service settings. Keys use Keychain; no built-in cloud service
+is supplied. Accepted MacBERT corrections can be reviewed, removed from the
+selection and explicitly submitted as public samples. System speech and remaining platform-specific behavior are recorded in the [capability audit](../docs/PLATFORM_PARITY.md).
+
+The settings include portable library backup export, verification and merge
+restore through the native Files interface. Backups contain book data and
+reading records, but exclude account credentials, pairing keys, downloaded
+fonts/models and global UI settings. They are unencrypted ZIP packages; see
+[backup format and restore behavior](../docs/BACKUPS.md).
 
 ## Read aloud
 
@@ -270,22 +316,14 @@ A Debug app launched with `--verify-speech` also writes
 with the real player, while online/system synthesis checks use actual returned
 audio. The diagnostic uses an isolated preferences suite, not reader settings.
 
-## Verification
+## Checks
 
-Current parity/UI builds, own fixture EPUBs, tests, native screenshots and
-fingerprints are in `target/reader-parity-management`. Earlier core integration
-and design evidence remain in `target/ios-core-integration` and
-`target/ios-design-review`; they do not validate later source changes. Host layout checks verify full contiguous Unicode text,
-block/scalar mapping, supplemental media mapping, reflow, cancelled commits and
-spread sentinels. URLProtocol OAuth checks use synthetic credentials and intercept
-all network requests; Rust GitHub transport tests use a local simulated API.
-Neither substitutes for live account authorization or actual cross-device acceptance.
-
-The simulator check uses own synthetic **real EPUB files**, not a bundled mock
-library. Native MacBERT load/inference and saved highlight redisplay were observed.
-A real encrypted PIN transfer from the iOS listener to an isolated Rust client
-validated the received EPUB; this is narrower than three-device acceptance. Physical-device gesture latency, minimum iOS17 runtime and App Store
-acceptance remain separate from simulator compilation and observed navigation.
+Run the Swift host checks under `ios/scripts/` and shared Rust/bridge tests listed
+in [build and CI](../docs/BUILD_AND_CI.md). Native UI test selection and diagnostic
+installation requirements are documented in [mobile runtime CI](../docs/MOBILE_RUNTIME_CI.md).
+Use isolated application IDs and data for scripted checks. Test device permissions,
+external file providers, Keychain, camera input and cross-device transfers on
+physical devices separately from simulator checks.
 
 ## References
 

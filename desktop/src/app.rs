@@ -379,6 +379,8 @@ impl TextSelection {
 }
 
 pub struct ReaderApp {
+    pub reading_service: Option<crate::ui::reading_services::ServicePanel>,
+    pub pending_batch_import: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     pub(crate) scripts_enabled: bool,
     pub(crate) native_events:
         std::collections::HashMap<usize, Vec<reader_core::epub::native::NativeEvent>>,
@@ -606,8 +608,12 @@ pub struct ReaderApp {
     pub last_egui_ctx: Option<egui::Context>,
     // ── API Settings ──
     pub translate_api_url: String,
+    pub translate_api_model: String,
+    pub translate_api_provider: String,
     pub translate_api_key: String,
     pub dictionary_api_url: String,
+    pub dictionary_api_model: String,
+    pub dictionary_api_provider: String,
     pub dictionary_api_key: String,
 
     // ── CSC (Chinese Spelling Correction) ──
@@ -655,6 +661,7 @@ pub struct ReaderApp {
     pub csc_contribute_prompted: bool,
     pub csc_contribute_dismissed: bool,
     pub csc_contribute_in_progress: bool,
+    pub csc_contribution_samples: Option<Vec<reader_core::csc::contribution::Sample>>,
     pub csc_contribute_status: String,
     pub csc_contribute_pr_url: Option<String>,
     pub csc_contribute_rx:
@@ -706,14 +713,35 @@ pub struct CrossChapterSnapshot {
 
 pub type TxtConvertSlot = Arc<Mutex<Option<Result<reader_core::txt::ConvertResult, String>>>>;
 
+#[derive(Clone, Default)]
+pub enum TxtImportPage {
+    #[default]
+    Review,
+    Rules,
+    Source,
+    Excerpt(reader_core::txt::ChapterPreview),
+}
+
 /// TXT 导入对话框状态。
 pub struct TxtImportState {
+    pub page: TxtImportPage,
     pub txt_path: PathBuf,
     pub title: String,
     pub author: String,
     pub custom_regex: String,
     pub use_heuristic: bool,
     pub previews: Vec<reader_core::txt::ChapterPreview>,
+    pub excluded: std::collections::BTreeSet<usize>,
+    pub included: std::collections::BTreeSet<usize>,
+    pub heading_count: usize,
+    pub chapter_count: usize,
+    pub source_query: String,
+    pub source_hits: Vec<reader_core::txt::ChapterPreview>,
+    pub pending: Option<(
+        String,
+        std::sync::mpsc::Receiver<Result<serde_json::Value, String>>,
+    )>,
+    pub analyzed: bool,
     pub converting: bool,
     pub error: Option<String>,
     /// 后台转换结果回传。
@@ -728,19 +756,26 @@ impl TxtImportState {
             .unwrap_or("")
             .to_string();
 
-        // 立即做一次预览
-        let config = reader_core::txt::SplitConfig::default();
-        let previews = reader_core::txt::preview_chapters(&txt_path, &config).unwrap_or_default();
+        let (previews, error) = (Vec::new(), None);
 
         Self {
+            page: TxtImportPage::Review,
             txt_path,
             title,
             author: String::new(),
             custom_regex: String::new(),
-            use_heuristic: false,
+            use_heuristic: true,
             previews,
+            excluded: Default::default(),
+            included: Default::default(),
+            heading_count: 0,
+            chapter_count: 0,
+            source_query: String::new(),
+            source_hits: Vec::new(),
+            pending: None,
+            analyzed: false,
             converting: false,
-            error: None,
+            error,
             result_slot: None,
         }
     }
@@ -784,6 +819,8 @@ impl ReaderApp {
         let discovery_stop_flag = Arc::new(AtomicBool::new(false));
         let discovered_peers = start_listener(&own_device_id, discovery_stop_flag.clone());
         let mut app = Self {
+            reading_service: None,
+            pending_batch_import: None,
             data_dir,
             book: None,
             scripts_enabled: true,
@@ -989,8 +1026,12 @@ impl ReaderApp {
             last_egui_ctx: None,
             // API settings
             translate_api_url: String::new(),
+            translate_api_model: "gpt-4o-mini".into(),
+            translate_api_provider: "openai".into(),
             translate_api_key: String::new(),
             dictionary_api_url: String::new(),
+            dictionary_api_model: "gpt-4o-mini".into(),
+            dictionary_api_provider: "openai".into(),
             dictionary_api_key: String::new(),
             // CSC
             csc_mode: reader_core::csc::CorrectionMode::None,
@@ -1028,6 +1069,7 @@ impl ReaderApp {
             csc_contribute_prompted: false,
             csc_contribute_dismissed: false,
             csc_contribute_in_progress: false,
+            csc_contribution_samples: None,
             csc_contribute_status: String::new(),
             csc_contribute_pr_url: None,
             csc_contribute_rx: None,
@@ -1164,8 +1206,15 @@ impl ReaderApp {
             .add_filter("EPUB / TXT", &["epub", "txt"])
             .add_filter("EPUB", &["epub"])
             .add_filter("TXT", &["txt"])
-            .pick_file()
+            .pick_files()
         {
+            if path.len() > 1 {
+                self.import_epub_batch(path);
+                return;
+            }
+            let Some(path) = path.into_iter().next() else {
+                return;
+            };
             let is_txt = path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -1740,7 +1789,9 @@ impl Drop for ReaderApp {
                 eprintln!("Cannot flush reading position: {error}");
             }
         }
-        AppSettings::from_app(self).save(&self.data_dir);
+        if let Err(error) = AppSettings::from_app(self).save(&self.data_dir) {
+            eprintln!("{error}");
+        }
         if !self.backup.busy() {
             self.flush_reading_stats();
         }
@@ -2279,6 +2330,7 @@ impl eframe::App for ReaderApp {
 
         // ── Floating windows ──
         self.render_export_dialog(ctx);
+        self.render_reading_service(ctx);
         self.render_receive_books(ctx);
         self.render_rename_dialog(ctx);
         self.render_stats_window(ctx);
@@ -2294,9 +2346,7 @@ impl eframe::App for ReaderApp {
         // ── CSC Contribute Dialog ──
         self.render_display_reset_confirmation(ctx);
         self.render_language_picker(ctx);
-        if self.show_csc_contribute_dialog {
-            self.render_csc_contribute_dialog(ctx);
-        }
+        self.render_csc_contribute_dialog(ctx);
 
         // ── TXT Import ──
         if self.txt_import.is_some() {
@@ -2335,7 +2385,9 @@ impl eframe::App for ReaderApp {
         }
         let settings = AppSettings::from_app(self);
         if self.last_saved_settings.as_ref() != Some(&settings) {
-            settings.save(&self.data_dir);
+            if let Err(error) = settings.save(&self.data_dir) {
+                self.error_msg = Some(error);
+            }
             self.last_saved_settings = Some(settings);
         }
     }
@@ -2425,7 +2477,7 @@ mod first_reader_preferences_tests {
         app.force_single_column = true;
         app.font_size = 23.;
         let settings = AppSettings::from_app(&app);
-        settings.save(&path);
+        settings.save(&path).unwrap();
         let restored = ReaderApp::from_data_dir(path);
         assert!(restored.force_single_column);
         assert_eq!(restored.font_size, 23.);
@@ -2451,7 +2503,7 @@ mod first_reader_preferences_tests {
         saved.scroll_mode = true;
         saved.reader_page_animation = "Slide".into();
         saved.reader_introduction_seen = Some(true);
-        saved.save(&path);
+        saved.save(&path).unwrap();
         let restored = ReaderApp::from_data_dir(path.clone());
         assert!(restored.scroll_mode && restored.reader_introduction_seen);
         assert_eq!(restored.reader_page_animation, "Slide");
@@ -2516,7 +2568,7 @@ mod reading_theme_settings_tests {
         assert_eq!(themes.custom.as_ref(), Some(&custom));
         assert_eq!(themes.pair("warm").dark, warm.dark);
         assert_eq!(themes.pair("warm").light.paper, [11, 22, 33, 255]);
-        settings.save(&path);
+        settings.save(&path).unwrap();
         let restored = ReaderApp::from_data_dir(path);
         assert_eq!(&restored.reading_themes, themes);
         assert_eq!(restored.reader_bg_color, Color32::from_rgb(11, 22, 33));
@@ -2765,5 +2817,45 @@ mod reading_navigation_tests {
         assert!(restored.book.is_some());
         restored.close_book_presentation();
         assert!(AppSettings::from_app(&restored).last_book_path.is_none());
+    }
+    #[test]
+    fn batch_import_keeps_valid_books_and_reports_bad_inputs_without_opening_them() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let dir = tempfile::tempdir().unwrap();
+        let input = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for name in ["One", "Two"] {
+            let txt = input.path().join(format!("{name}.txt"));
+            std::fs::write(&txt, format!("第一章 {name}\n{name} body text")).unwrap();
+            paths.push(
+                reader_core::txt::convert_txt_to_epub(&txt, input.path(), &Default::default())
+                    .unwrap()
+                    .epub_path,
+            );
+        }
+        paths.push(paths[0].clone());
+        let invalid = input.path().join("bad.epub");
+        std::fs::write(&invalid, b"not an epub").unwrap();
+        paths.push(invalid);
+        let txt = input.path().join("manual.txt");
+        std::fs::write(&txt, b"body").unwrap();
+        paths.push(txt);
+        let mut app = ReaderApp::from_data_dir(dir.path().to_string_lossy().into_owned());
+        app.import_epub_batch(paths);
+        for _ in 0..500 {
+            app.poll_book_open();
+            if app.pending_batch_import.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.pending_batch_import.is_none());
+        assert_eq!(app.library.books.len(), 2);
+        assert!(app.book.is_none());
+        assert!(app
+            .error_msg
+            .as_ref()
+            .is_some_and(|e| e.contains("bad.epub") && e.contains("manual.txt")));
+        assert!(app.library.books.iter().all(|b| b.last_opened == 0));
     }
 }

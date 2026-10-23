@@ -139,7 +139,7 @@ internal fun ContentBlockView(
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, androidx.compose.ui.geometry.Offset) -> Unit = { _, _ -> }
-) {
+, latinFamily: FontFamily? = null) {
     val native=block.nativeStyle()
     if(native.hidden)return
     BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -147,7 +147,7 @@ internal fun ContentBlockView(
         val left=(resolve(native.insetLeft)+resolve(native.paddingLeft)).coerceAtMost(maxWidth.value*0.4f)
         val right=(resolve(native.insetRight)+resolve(native.paddingRight)).coerceAtMost(maxWidth.value*0.4f)
         androidx.compose.foundation.layout.Box(Modifier.padding(start=left.dp,end=right.dp,top=(resolve(native.marginTop)+resolve(native.paddingTop)).dp,bottom=(resolve(native.marginBottom)+resolve(native.paddingBottom)).dp)) {
-            ContentBlockViewContent(chapterIndex=chapterIndex,blockIndex=blockIndex,block=block,sourceText=sourceText,sourceCharOffset=sourceCharOffset,imageMaxHeight=imageMaxHeight,fontSize=fontSize,textColor=textColor,linkColor=linkColor,bgColor=bgColor,fontFamily=fontFamily,onLinkClick=onLinkClick,onTextTapped=onTextTapped,lineSpacing=lineSpacing,paraSpacing=paraSpacing,textIndentChars=textIndentChars,titleFontScale=titleFontScale,textSelection=textSelection,onSelectionChange=onSelectionChange,blockLayoutRegistry=blockLayoutRegistry,highlights=highlights,cscBlockCorrections=cscBlockCorrections,cscMode=cscMode,ttsCurrentBlock=ttsCurrentBlock,onCscCorrectionClick=onCscCorrectionClick)
+            ContentBlockViewContent(chapterIndex=chapterIndex,blockIndex=blockIndex,block=block,sourceText=sourceText,sourceCharOffset=sourceCharOffset,imageMaxHeight=imageMaxHeight,fontSize=fontSize,textColor=textColor,linkColor=linkColor,bgColor=bgColor,fontFamily=fontFamily,onLinkClick=onLinkClick,onTextTapped=onTextTapped,lineSpacing=lineSpacing,paraSpacing=paraSpacing,textIndentChars=textIndentChars,titleFontScale=titleFontScale,textSelection=textSelection,onSelectionChange=onSelectionChange,blockLayoutRegistry=blockLayoutRegistry,highlights=highlights,cscBlockCorrections=cscBlockCorrections,cscMode=cscMode,ttsCurrentBlock=ttsCurrentBlock,onCscCorrectionClick=onCscCorrectionClick, latinFamily=latinFamily)
         }
     }
 }
@@ -179,7 +179,7 @@ private fun ContentBlockViewContent(
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, androidx.compose.ui.geometry.Offset) -> Unit = { _, _ -> }
-) {
+, latinFamily: FontFamily? = null) {
     val fragmentText = remember(block) { readerSourceText(block) }
     val source = sourceText ?: fragmentText
     val fragmentLength = fragmentText.length
@@ -210,13 +210,13 @@ private fun ContentBlockViewContent(
     val viewConfiguration = LocalViewConfiguration.current
     val textMeasurer = rememberTextMeasurer()
     if(native.list.isNotEmpty()) {
-        androidx.compose.foundation.layout.Column {for(item in native.list){androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(start=(fontSize*1.2f*(item.depth-native.listDepth).coerceAtLeast(0)).dp,bottom=(fontSize*0.3f).dp)) {Text(item.marker,fontSize=fontSize.sp,color=textColor,modifier=Modifier.padding(end=8.dp));Text(item.text,fontSize=fontSize.sp,lineHeight=(fontSize*lineSpacing).sp,color=textColor,fontFamily=fontFamily)}}}
+        androidx.compose.foundation.layout.Column {for(item in native.list){androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(start=(fontSize*1.2f*(item.depth-native.listDepth).coerceAtLeast(0)).dp,bottom=(fontSize*0.3f).dp)) {Text(item.marker,fontSize=fontSize.sp,color=textColor,modifier=Modifier.padding(end=8.dp));Text(mixedScriptText(item.text,fontFamily,latinFamily),fontSize=fontSize.sp,lineHeight=(fontSize*lineSpacing).sp,color=textColor,fontFamily=fontFamily)}}}
         return
     }
     native.table?.let {table->
         androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
             for(cell in table.cells) {
-                Text(cell.text,color=textColor,fontSize=fontSize.sp,fontFamily=fontFamily,fontWeight=if(cell.header)FontWeight.Bold else FontWeight.Normal,lineHeight=(fontSize*lineSpacing).sp,textAlign=when(cell.align){"right"->androidx.compose.ui.text.style.TextAlign.Right;"center"->androidx.compose.ui.text.style.TextAlign.Center;else->androidx.compose.ui.text.style.TextAlign.Left},modifier=Modifier.weight(cell.span.toFloat()).fillMaxHeight().border(0.5.dp,textColor.copy(alpha=0.25f)).run {if(cell.header)background(textColor.copy(alpha=0.06f))else this}.padding(6.dp))
+                Text(mixedScriptText(cell.text,fontFamily,latinFamily),color=textColor,fontSize=fontSize.sp,fontFamily=fontFamily,fontWeight=if(cell.header)FontWeight.Bold else FontWeight.Normal,lineHeight=(fontSize*lineSpacing).sp,textAlign=when(cell.align){"right"->androidx.compose.ui.text.style.TextAlign.Right;"center"->androidx.compose.ui.text.style.TextAlign.Center;else->androidx.compose.ui.text.style.TextAlign.Left},modifier=Modifier.weight(cell.span.toFloat()).fillMaxHeight().border(0.5.dp,textColor.copy(alpha=0.25f)).run {if(cell.header)background(textColor.copy(alpha=0.06f))else this}.padding(6.dp))
             }
             val missing=table.columns-table.cells.sumOf {it.span};if(missing>0)Spacer(Modifier.weight(missing.toFloat()))
         }
@@ -239,7 +239,7 @@ private fun ContentBlockViewContent(
                 fontFamily = fontFamily,
                 overrideWeight = FontWeight.Bold,
                 onLinkClick = onLinkClick, native = native, sourceCharOffset = sourceCharOffset
-            )
+            , latinFamily=latinFamily)
             val headingStyle = TextStyle(
                 letterSpacing = 0.sp,
                 fontSize = (fontSize * scale).sp,
@@ -365,7 +365,7 @@ private fun ContentBlockViewContent(
                 fontFamily = fontFamily,
                 overrideWeight = null,
                 onLinkClick = onLinkClick, native = native, sourceCharOffset = sourceCharOffset
-            )
+            , latinFamily=latinFamily)
             val baseStyle = TextStyle(
                 letterSpacing = 0.sp,
                 fontSize = fontSize.sp,

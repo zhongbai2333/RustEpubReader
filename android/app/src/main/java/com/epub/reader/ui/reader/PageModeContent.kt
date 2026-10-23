@@ -131,7 +131,7 @@ internal fun PageModeContent(
     onPageLabel: (String) -> Unit = {},
     onContentPrepared: () -> Unit = {},
     turnController: PageTurnController? = null,
-) {
+ latinFamily: FontFamily? = null,) {
     val highlightsByChapter = remember(highlights) { highlights.groupBy { it.chapter } }
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -157,14 +157,14 @@ internal fun PageModeContent(
     val spToPx = density.fontScale * density.density
     val showChapterTitle = remember(chapter) { shouldRenderChapterTitle(chapter) }
     val paginationCache=remember { PageLayoutCache(PAGINATION_CACHE_MAX_SIZE) }
-    val layoutTag="$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale-${fontFamily.hashCode()}"
+    val layoutTag="$fontSize-${availableHeightDp.value}-${contentWidthDp.value}-$lineSpacing-$paraSpacing-$textIndent-$titleFontScale-${fontFamily.hashCode()}-${latinFamily.hashCode()}"
     val pages=key(chapter,currentChapter,layoutTag) {
         val prepared by produceState<List<List<PaginatedBlock>>>(paginationCache.get(currentChapter,chapter,layoutTag) ?: emptyList()) {
             value=withContext(Dispatchers.Default) {
                 val backgroundMeasurer=androidx.compose.ui.text.TextMeasurer(fontResolver,density,layoutDirection,cacheSize=16)
                 val measured=paginationCache.get(currentChapter,chapter,layoutTag) ?: paginateContent(
                     chapter,fontSize,availableHeightDp,contentWidthDp,density,showChapterTitle,
-                    titleVPaddingDp,lineSpacing,paraSpacing,textIndent,titleFontScale,backgroundMeasurer,fontFamily).ifEmpty { listOf(emptyList()) }
+                    titleVPaddingDp,lineSpacing,paraSpacing,textIndent,titleFontScale,backgroundMeasurer,fontFamily, latinFamily=latinFamily).ifEmpty { listOf(emptyList()) }
                 coroutineContext.ensureActive()
                 // Prepare only the restored visible leaf/spread; neighbours are optional warmup.
                 val first=measured.indexOfFirst {page->page.any {it.sourceBlockIndex==initialBlock}}.let {if(it>=0) it else measured.lastIndex.coerceAtLeast(0)}
@@ -201,7 +201,7 @@ internal fun PageModeContent(
         paraSpacing,
         textIndent,
         titleFontScale,
-        fontFamily,
+        fontFamily, latinFamily,
     ) {
         withContext(Dispatchers.Default) {
             val backgroundMeasurer=androidx.compose.ui.text.TextMeasurer(fontResolver,density,layoutDirection,cacheSize=16)
@@ -210,7 +210,7 @@ internal fun PageModeContent(
                 if(paginationCache.get(adjIdx,adjChapter,layoutTag)==null) {
                     val prepared=paginateContent(adjChapter,fontSize,availableHeightDp,contentWidthDp,density,
                         shouldRenderChapterTitle(adjChapter),titleVPaddingDp,lineSpacing,paraSpacing,textIndent,titleFontScale,
-                        backgroundMeasurer,fontFamily)
+                        backgroundMeasurer,fontFamily, latinFamily=latinFamily)
                     coroutineContext.ensureActive()
                     paginationCache.put(adjIdx,adjChapter,layoutTag,prepared)
                 }
@@ -851,7 +851,7 @@ internal fun PageModeContent(
                     cscMode = cscMode,
                     ttsCurrentBlock = ttsCurrentBlock,
                     onCscCorrectionClick = onCscCorrectionClick,
-                )
+                 latinFamily=latinFamily,)
             }
         } else if (pageAnimation == "Realistic") {
             PageCurl(
@@ -969,7 +969,7 @@ internal fun PageModeContent(
                     cscMode = cscMode,
                     ttsCurrentBlock = ttsCurrentBlock,
                     onCscCorrectionClick = onCscCorrectionClick,
-                )
+                 latinFamily=latinFamily,)
             }
         } else {
             HorizontalPager(
@@ -1162,7 +1162,7 @@ internal fun PageModeContent(
                         cscMode = cscMode,
                         ttsCurrentBlock = ttsCurrentBlock,
                         onCscCorrectionClick = onCscCorrectionClick,
-                    )
+                     latinFamily=latinFamily,)
                 }
             }
         }
@@ -1204,7 +1204,7 @@ private fun PageRenderLayer(
     cscMode: String = "none",
     ttsCurrentBlock: Int = -1,
     onCscCorrectionClick: (CscBlockCorrection, Offset) -> Unit = { _, _ -> },
-) {
+ latinFamily: FontFamily? = null,) {
     androidx.compose.foundation.layout.Box(
         modifier = Modifier.fillMaxSize().background(bgColor).graphicsLayer { clip = true }
     ) {
@@ -1280,7 +1280,7 @@ private fun PageRenderLayer(
                             cscMode = cscMode,
                             ttsCurrentBlock = ttsCurrentBlock,
                             onCscCorrectionClick = onCscCorrectionClick,
-                        )
+                         latinFamily=latinFamily,)
                     }
                 }
             }

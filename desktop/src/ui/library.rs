@@ -243,6 +243,10 @@ impl ReaderApp {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.heading(self.i18n.t("library.title"));
+                            if self.pending_batch_import.is_some() {
+                                ui.spinner();
+                                ui.small(self.i18n.t("common.processing"));
+                            }
                             if self.cloud_sync.is_syncing() {
                                 ui.add_space(4.0);
                                 ui.add(egui::Spinner::new().size(14.0));

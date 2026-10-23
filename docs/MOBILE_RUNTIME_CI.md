@@ -40,14 +40,22 @@ python3 scripts/check-mobile-runtime.py ios \
   --timeout 240 --output /absolute/new/evidence-directory
 ```
 
-Both runners passed locally on macOS/arm64. Hosted Ubuntu x86_64 Android and the
-workflow's selected Xcode runtime still require an actual hosted run. Simulator
-checks do not establish physical-device performance or acceptance.
+Local macOS/arm64 passes have been recorded. Hosted results must be checked
+against their exact source commit, runner and selected runtime; local results do
+not establish a hosted pass for later source. Simulator checks do not establish
+physical-device performance or acceptance.
 
 The simulator build explicitly sets `READER_APP_BUNDLE_ID=local.reader.columns`;
 release archives keep their normal bundle identifier. The iOS runner refuses a
 non-diagnostic bundle before creating a simulator. The separate Files UI target
 uses `local.reader.ui-files`, also allowed by the owned support-panel harness.
+The collector selects `ReaderSelectionUITests` explicitly, then runs the five
+`TxtImportUITests` cases once against the same admitted installation: title
+exclusion/source selection/conversion, invalid rules, service settings, failure
+retry, and removing a contribution sample without submitting it. It retains a
+separate log and XCResult and fails the gate if the additional suite fails.
+`BackupFilesUITests` remains separate and is not executed by this collector.
+Local passes and configuration changes do not establish a hosted run. See the [platform capability audit](PLATFORM_PARITY.md).
 
 Both workflows now enable `--with-corpus`. The committed typography and script
 fixtures are rendered under all three style policies at widths320/640. Native
@@ -79,8 +87,8 @@ entry for actual shelf touch → system Back → late-completion observation →
 book reopening. Supply an owned `cache/book-opening.epub`; the app namespace must
 be `local.reader.columns`, and `cache/book-opening-runtime` must be new. It writes
 its own summary and screenshots. `--with-book-opening` includes this functional
-gate in the Android workflow; hosted execution is still unverified. It is not a
-Release timing baseline. Native
+gate in the Android workflow. It is a functional check, not a Release timing
+baseline. Native
 `IOException` cancellation must not publish a stale opening-failed alert.
 
 When TalkBack was not configured before the test, cleanup also closes the service

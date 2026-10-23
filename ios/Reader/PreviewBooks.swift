@@ -175,6 +175,7 @@ struct SyncMeter: Decodable {
     let covers: ShelfCoverStore
     lazy var bookSharing = BookSharing(library: self)
     @Published var receivingSharedBooks = false
+    @Published var txtImport: TxtImportRequest?
     private var saveTask: Task<Void, Never>?
     private var pendingOpenToken: UInt64?
     private var saveRevisions: [String:UInt64] = [:]
@@ -200,7 +201,21 @@ struct SyncMeter: Decodable {
             anchors = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0.anchor) })
         } catch { fail(error, title: L("library.error_read_failed")) }
     }
+    func importBooks(_ urls: [URL]) async {
+        guard !busy else { return }
+        if urls.count == 1, let url=urls.first { await importBook(url); return }
+        busy=true; defer { busy=false }
+        var failures:[String]=[]
+        for url in urls {
+            guard url.pathExtension.lowercased()=="epub" else { failures.append(L("services.single_txt")); continue }
+            let scoped=url.startAccessingSecurityScopedResource();defer {if scoped {url.stopAccessingSecurityScopedResource()}}
+            do {_ = try await store.importBook(path:url.path)}catch {failures.append("\(url.lastPathComponent): \(error.localizedDescription)")}
+        }
+        await reload()
+        if !failures.isEmpty {fail(CoreFailure(message:failures.joined(separator:"\n")),title:L("library.error_import_failed"))}
+    }
     func importBook(_ url: URL) async {
+        if url.pathExtension.lowercased() == "txt" { txtImport = TxtImportRequest(url: url); return }
         busy = true; defer { busy = false }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -226,8 +241,8 @@ struct SyncMeter: Decodable {
         do { _ = try await store.rename(id: entry.id, title: title); await reload(); return true }
         catch { fail(error, title: L("common.error_operation_failed")); return false }
     }
-    func exportBooks(_ ids: [String], directory: URL) async throws -> [URL] {
-        try await store.exportBooks(ids: ids, directory: directory.path).map { URL(fileURLWithPath: $0) }
+    func exportBooks(_ ids: [String], directory: URL, mode:String="original") async throws -> [URL] {
+        try await store.exportBooks(ids: ids, directory: directory.path,mode:mode).map { URL(fileURLWithPath: $0) }
     }
     func backupDidRestore() async {
         offer=nil; progressRevision &+= 1; annotationSyncRevision &+= 1

@@ -142,3 +142,6 @@ pub fn bytes_hash(data: &[u8]) -> String {
 pub mod annotations;
 pub mod backup;
 pub mod reading_activity;
+
+#[cfg(feature = "github-sync")]
+pub mod reading_services;

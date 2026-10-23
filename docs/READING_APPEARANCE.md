@@ -16,7 +16,7 @@ All three native implementations consume `core/tests/fixtures/appearance-linkage
 
 - Android registers public `TYPE_LIGHT` only while the application is resumed and at least one active automatic group uses Ambient. Leaving the reader does not disable an ambient-controlled app interface. Below 15 lux continuously for three seconds selects dark; above 40 lux continuously for three seconds selects light. Values between thresholds keep the current appearance. Invalid readings are ignored. System changes do not reset an active ambient decision. Before valid data, or if the sensor is unavailable or registration fails, the selected group follows system appearance and shows the appropriate waiting/unavailable message.
 - iOS reads system appearance from screen traits while applying the resolved app theme at the presentation root, including native chrome. The system signal is refreshed only in the foreground and cannot feed back from a manually overridden app theme.
-- iOS includes the read-only private IOHID path previously verified in the separate device probe, in both Debug and Release. It loads IOKit dynamically, matches usage page `0xff00` / usage `4`, schedules a default event client, and polls ambient event type `12`, field `12 << 16`, once per second. It samples only while the application is active and an active automatic group uses Ambient. No private entitlements, sensor-property writes or screen-brightness inference are used. Its native sensor scale is not presented as calibrated lux: below 5 continuously for five seconds selects dark; above 12 continuously for three seconds selects light. Values from 5 through 12 retain a settled appearance; on startup they settle to light after three seconds so a dim room does not indefinitely inherit system dark mode. Returning to the current appearance or missing a reading cancels a pending switch. Before a stable decision it follows system appearance. These more conservative iOS thresholds replace the original 15/40 pair following real-use feedback; they still need subjective calibration in normal dim and dark rooms. Missing symbols/services and five seconds without valid readings use the unavailable fallback; sensor recovery resumes the selected source. Backgrounding or disabling the last ambient group releases the client and clears transient decisions. The existing setting displays waiting, active or unavailable status as appropriate. The private interface is an intentional distribution choice and may change across iOS versions.
+- iOS includes a read-only private IOHID path, in both Debug and Release. It loads IOKit dynamically, matches usage page `0xff00` / usage `4`, schedules a default event client, and polls ambient event type `12`, field `12 << 16`, once per second. It samples only while the application is active and an active automatic group uses Ambient. No private entitlements, sensor-property writes or screen-brightness inference are used. Its native sensor scale is not presented as calibrated lux: below 5 continuously for five seconds selects dark; above 12 continuously for three seconds selects light. Values from 5 through 12 retain a settled appearance; on startup they settle to light after three seconds so a dim room does not indefinitely inherit system dark mode. Returning to the current appearance or missing a reading cancels a pending switch. Before a stable decision it follows system appearance. These more conservative iOS thresholds replace the original 15/40 pair following real-use feedback; they still need subjective calibration in normal dim and dark rooms. Missing symbols/services and five seconds without valid readings use the unavailable fallback; sensor recovery resumes the selected source. Backgrounding or disabling the last ambient group releases the client and clears transient decisions. The existing setting displays waiting, active or unavailable status as appropriate. The private interface is an intentional distribution choice and may change across iOS versions.
 - Desktop preserves the Ambient selection but explicitly displays that ambient light is unavailable and that system appearance is used instead. An unused source does not display a misleading active fallback message.
 
 ## Storage and migration
@@ -53,19 +53,13 @@ The iOS AppIcon catalog uses the existing iOS/Android brand, exported as an opaq
 - Debug iOS launch arguments `--appearance-reader --appearance-settings` open `Documents/appearance.epub` in the production reader and display its settings. Use an isolated diagnostic bundle for runtime checks.
 - Debug iOS `--appearance-reader --verify-ambient` injects a sensor into the production coordinator and checks native reading paint in both appearances, independent reading, background release, missing-data fallback, recovery, manual override, persistence and anchor/font preservation. `--appearance-reader --verify-ambient-device` uses the real IOHID reader and records three minutes of foreground sensor and native paint observations in `Documents/ambient-reader-check.json`, capturing each resolved appearance. These arguments are absent from Release and do not change Release sensor access.
 
-Runtime screenshots, build logs and review decisions for this integration are kept in the ignored task directory `target/mobile-appearance-20261015`. Simulator checks do not establish physical-device acceptance.
-
-The subsequent iOS IOHID integration evidence is in `target/ios-ambient-integration-20261015`: signed physical-device and simulator Debug builds, device-target type checking without DEBUG, shared and ambient policy checks, native coordinator/paint regression results, and real iPhone observations and screenshots. The iPhone check observed light → dark → light while system appearance stayed dark, with the reading anchor and font preserved; the user also confirmed the automatic switch. The physical-device report is a snapshot of the diagnostic session, not a claim of validation on other iPhone models or iOS versions.
-
-The iOS glass/icon and horizontal-chain revision is recorded in `target/ios-liquidglass-20261015`. It includes plan/visual review decisions, native screenshots, an ordinary final simulator build with the Rust phase enabled, shared policy checks and native reading-mode/background/anchor checks. Earlier failed workspace dependency resolution and UI-only builds are retained separately; they are not the final full build. Runtime visual verification for this revision uses iOS 27.2, with older-version and Reduce Transparency runtime checks still outside that evidence. Android and desktop preview windows are intentionally left running.
-
 ## First reading defaults and introduction
 
 A new mobile profile selects ambient light as its automatic source, keeps both appearance links enabled, and displays time plus a battery icon. Missing sensor data still falls back to system appearance. All three platforms start in paging mode with the realistic curl animation. Stored settings, including an explicit disabled status display or a different page animation, take precedence; legacy source decoding remains unchanged. Display reset also restores paging with a realistic curl.
 
 The first prepared reader presents a short introduction after its book-opening transition. Mobile uses one bottom sheet; desktop uses one modal. The introduction explains page turns, revealing controls, the bottom-right menu, appearance settings, and mobile status information. The versioned local `reader.introduction.v1` flag (desktop `reader_introduction_seen`) is recorded on actual presentation. Dismissal does not change reading position; subsequent books, restarts and foreground changes do not trigger another presentation. Existing readers migrate to seen from prior reading evidence, while preferences such as language alone do not suppress the first-reading introduction.
 
-## Color selection (2026-10-15)
+## Color selection
 
 All three clients offer the same 12 opaque paper swatches and 12 ink swatches.
 Quick selections update the current light/dark draft and its sample, preserving
@@ -85,16 +79,3 @@ rainbow slider, precise entry and common colors. Cancel discards that dialog's
 local choice. A debug-only sample activity exercises the production editor
 without writing the user's appearance preferences. iOS retains its native system
 ColorPicker and adds always-visible quick-color grids beneath both color rows.
-
-Current evidence is in `target/reading-color-picker-20261015/`, including native
-screenshots, palette parity and saved variant checks. Desktop theme tests and
-Android appearance tests pass. The Android full test run also exposed a separate
-pagination JVM failure: `android.icu.text.BreakIterator.getLineInstance` is not
-mocked in `PaginationUtils.kt`. This is recorded separately and is not reported
-as a passing full suite.
-
-Pre-commit follow-up (2026-10-15): pagination position tests now inject JVM line
-boundaries at the platform boundary. Production retains Android ICU strict
-Chinese line breaks. All 37 JVM tests and release lint passed on this snapshot;
-the earlier failure above describes the previous review rather than the current
-full-suite result. Native ICU behavior still needs device/instrumentation coverage.

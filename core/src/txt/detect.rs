@@ -1,48 +1,50 @@
-//! 编码检测与文件读取。
-//!
-//! 使用 chardetng（Mozilla 编码检测库）探测 TXT 文件编码，
-//! 再用 encoding_rs 完成实际转码。
-
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-
-use chardetng::EncodingDetector;
-
+//! Bounded, strict decoding. Never silently replace undecodable book text.
 use super::TxtError;
-
-/// 读取 TXT 文件并自动检测编码，返回 UTF-8 字符串。
-///
-/// 探测策略：读取文件前 8KB 喂给 chardetng，然后用 encoding_rs 转码全部内容。
-/// 支持 UTF-8 / GBK / GB18030 / BIG5 / Shift-JIS / EUC-KR 等常见编码。
-pub fn read_txt_file(path: &Path) -> Result<String, TxtError> {
-    let mut file = File::open(path).map_err(TxtError::Io)?;
+use chardetng::EncodingDetector;
+use std::{fs::File, io::Read, path::Path};
+pub const MAX_TXT_BYTES: u64 = 64 * 1024 * 1024;
+pub struct DecodedText {
+    pub text: String,
+    pub encoding: String,
+}
+pub fn read_txt_file(path: &Path) -> Result<DecodedText, TxtError> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.len() > MAX_TXT_BYTES {
+        return Err(TxtError::Parse("TXT_TOO_LARGE".into()));
+    }
+    if !metadata.is_file() {
+        return Err(TxtError::Parse("TXT_NOT_REGULAR_FILE".into()));
+    }
     let mut raw = Vec::new();
-    file.read_to_end(&mut raw).map_err(TxtError::Io)?;
-
-    if raw.is_empty() {
-        return Ok(String::new());
+    file.take(MAX_TXT_BYTES + 1).read_to_end(&mut raw)?;
+    if raw.len() as u64 > MAX_TXT_BYTES {
+        return Err(TxtError::Parse("TXT_TOO_LARGE".into()));
     }
-
-    // 去除 UTF-8 BOM（EF BB BF）
-    let content = if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &raw[3..]
+    let (encoding, content) = if raw.starts_with(&[0xFF, 0xFE]) {
+        (encoding_rs::UTF_16LE, &raw[2..])
+    } else if raw.starts_with(&[0xFE, 0xFF]) {
+        (encoding_rs::UTF_16BE, &raw[2..])
+    } else if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        (encoding_rs::UTF_8, &raw[3..])
     } else {
-        &raw
+        let content = &raw[..];
+        if let Ok(text) = std::str::from_utf8(content) {
+            return Ok(DecodedText {
+                text: text.into(),
+                encoding: "UTF-8".into(),
+            });
+        }
+        let mut detector = EncodingDetector::new();
+        detector.feed(content, true);
+        (detector.guess(Some(b"cn"), true), content)
     };
-
-    // 探测编码：取前 8KB
-    let probe_len = content.len().min(8192);
-    let mut detector = EncodingDetector::new();
-    detector.feed(&content[..probe_len], probe_len == content.len());
-    let encoding = detector.guess(None, true);
-
-    // 使用 encoding_rs 转码
-    let (decoded, _, had_errors) = encoding.decode(content);
-    if had_errors {
-        // 如果推测编码解码失败，尝试用 UTF-8 有损解码
-        Ok(String::from_utf8_lossy(content).into_owned())
-    } else {
-        Ok(decoded.into_owned())
+    let (text, errors) = encoding.decode_without_bom_handling(content);
+    if errors {
+        return Err(TxtError::Encoding("TXT_ENCODING_FAILED".into()));
     }
+    Ok(DecodedText {
+        text: text.into_owned(),
+        encoding: encoding.name().into(),
+    })
 }

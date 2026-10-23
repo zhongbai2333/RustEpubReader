@@ -217,6 +217,19 @@ def collect_ios_selection(args, identifier, bundle):
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
         if result.returncode != 0:
             raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
+        # Same admitted installation; synthetic roots and no live API contribution.
+        parity_command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest),
+                          "-destination", "id=" + identifier, "-parallel-testing-enabled", "NO",
+                          "-only-testing:ReaderUITests/TxtImportUITests",
+                          "-resultBundlePath", str(args.output / "platform-parity.xcresult")]
+        with (args.output / "platform-parity-ui.log").open("wb") as log:
+            parity = subprocess.run(parity_command, stdout=log, stderr=subprocess.STDOUT,
+                                    timeout=max(300, args.timeout))
+        if parity.returncode != 0:
+            raise RuntimeError("Native TXT/service/contribution XCTest failed; inspect platform-parity-ui.log and XCResult")
+        (args.output / "platform-parity-ui.json").write_text(json.dumps({
+            "passed": True, "suite": "TxtImportUITests",
+            "live_service_requests": False, "public_contributions": False}) + "\n")
     except BaseException:
         execution_failed = True
         raise
@@ -251,6 +264,7 @@ def collect_ios_selection(args, identifier, bundle):
         raise RuntimeError("XCTest replaced the admitted target app or data container")
     rows = [validate_report((args.output / ("selection-ui-" + mode + ".json")).read_bytes()) for mode in ("none", "curl", "slide", "cover", "scroll")]
     selection = validate_selection({"passed": True, "cases": rows}, "ios")
+    selection["platform_parity"] = validate_report((args.output / "platform-parity-ui.json").read_bytes())
     selection["input_readiness"] = validate_ios_input_runs(args.output)
     selection["reduced_motion"] = validate_reduced_motion(validate_report((args.output / "reduced-motion-verification.json").read_bytes()), "ios")
     return selection

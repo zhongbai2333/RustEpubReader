@@ -11,13 +11,13 @@ Static regular faces are preferred; Lora, Alegreya and EB Garamond use their
 upstream variable fonts with regular defaults. Variable files whose default face is ExtraLight are excluded. It is an offline catalog: changing its entries requires an
 app update; there is no remote manifest or arbitrary download URL UI.
 
-Desktop and iOS expose **Same as Chinese font** at the top of the English
+All three clients expose **Same as Chinese font** at the top of the English
 font picker. It disables the independent Latin override and uses the selected
 Chinese face first, with the normal fallback chain for missing characters.
 Existing explicit selections and defaults are preserved. The saved empty Latin
 name represents this mode; it is not a missing font and must survive font
-registration and restart. Android currently uses a single reader-font selection
-for both scripts, so it already follows this rule without a second override.
+registration and restart. Android applies its Latin override to both text painting
+and pagination measurement, with font changes invalidating cached pages.
 
 ## iOS
 
@@ -47,14 +47,12 @@ system selection reports an error and preserves the previous selection.
 ## Downloads
 
 All three clients enter a separate download view from the font picker, following
-the iOS navigation pattern. Desktop/iOS filter by the edited Chinese/English
-slot and apply to that slot; Android has a Chinese/English filter for its single
-reading-font slot. Each entry shows its size, download state, source
+the iOS navigation pattern. All clients filter by the edited Chinese/English
+slot and apply to that slot. Each entry shows its size, download state, source
 and license, then a Use action. All three show the same offline specimen before
 download and after installation. Selecting a face uses the existing native reflow and saved-font path;
 Classic style retains its existing restrictions on overriding publication fonts.
-Desktop applies downloaded faces to the Chinese or English slot being edited; Android uses its current
-single reading-font slot; iOS retains separate Chinese and English slots.
+All clients apply downloaded faces to the Chinese or English slot being edited.
 
 All clients stage files before verifying and installing. A failed or partial
 transfer is not discoverable as a font and can be retried independently. Desktop
@@ -99,17 +97,6 @@ source-font fingerprints. `--files <directory>` also verifies actual font artifa
 The main CI runs the metadata and official-only schema checks without downloading fonts.
 Font artifact checks remain opt-in to avoid large network downloads in each CI run.
 
-Evidence is under `target/font-library-20261015/`: real official-font downloads,
-iOS import/duplicate/invalid-file/re-registration/glyph checks, Android SHA-256 /
-Typeface glyph / persistent discovery checks, and desktop failures for corrupt,
-oversized and non-font responses preserving an existing file. Native UI checks
-cover system selection and incompatible-selection feedback on iOS, plus applying
-downloaded fonts on desktop and Android. Simulator system selection does not
-establish access to third-party font-provider apps on a physical iPhone; that
-requires correctly signed device acceptance. The iOS system document-picker
-entry and cancellation were inspected; external-provider selection remains a
-manual device check in addition to the importer runtime tests.
-
 ## Offline specimens
 
 `scripts/render-font-previews.swift <font-directory>` renders all twenty exact
@@ -129,9 +116,3 @@ desktop uploads textures only for visible entries, Android uses Coil's asset
 cache and iOS uses a bounded UIImage cache. Download state never changes the
 specimen size or list position. Reader size, device metrics and layout settings
 can make actual reading differ from the fixed sample.
-
-`target/font-preview-20-20261015/` contains exact-font fixture validation,
-desktop image decoding/native face checks, iOS CoreText/UIImage runtime checks,
-Android Typeface/Bitmap runtime checks and screenshots from the three running
-clients. Physical-device font-provider acceptance is still separate from these
-simulator checks.

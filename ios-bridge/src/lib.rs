@@ -3,6 +3,7 @@ mod annotations;
 mod image_transport;
 mod nearby;
 mod sync;
+mod txt_import;
 use reader_core::{
     cloud_sync::{valid_device_id, SyncJournal},
     epub::{ContentBlock, EpubBook},
@@ -177,6 +178,9 @@ fn dispatch_inner(v: Value) -> Result<Value, String> {
     }
     std::fs::create_dir_all(root).map_err(|_| "Cannot create library storage")?;
     match field(&v, "op")? {
+        "txt_analyze" => txt_import::analyze(&v),
+        "txt_lines" => txt_import::lines(&v),
+        "txt_convert" => txt_import::convert(root, device, &v),
         "backup" if v["action"].as_str() == Some("status") => {
             reader_core::backup::command(root, &v)
         }
@@ -209,6 +213,29 @@ fn dispatch_inner(v: Value) -> Result<Value, String> {
         }
         "peer_state" | "peer_start" | "peer_connect" | "peer_remove" => {
             nearby::dispatch(root, device, &v)
+        }
+        "csc_samples" => {
+            let entry = entry(root, field(&v, "id")?)?;
+            let cfg =
+                Library::load_book_config(root, &entry.id)?.ok_or("Missing book configuration")?;
+            Ok(json!(reader_core::csc::contribution::samples(
+                book(root, &entry)?.as_ref(),
+                &cfg
+            )?))
+        }
+        "csc_submit" => {
+            let samples: Vec<reader_core::csc::contribution::Sample> =
+                serde_json::from_value(v["samples"].clone())
+                    .map_err(|_| "Invalid contribution samples")?;
+            Ok(json!(reader_core::csc::contribution::submit(
+                field(&v, "token")?,
+                &samples
+            )?))
+        }
+        "reading_service" => {
+            let request =
+                serde_json::from_value(v.clone()).map_err(|_| "Invalid service request")?;
+            reader_core::reading_services::query(&request).map(Value::String)
         }
         "sync_status" => Ok(json!(reader_core::github_sync::sync_meter(root))),
         "sync" => {
@@ -318,7 +345,11 @@ fn dispatch_inner(v: Value) -> Result<Value, String> {
                     if !directory.is_absolute() {
                         return Err("Invalid export directory".into());
                     }
-                    let paths = reader_core::export::export_originals(&books, &directory)?;
+                    let mode = reader_core::export::ExportMode::parse(
+                        v["mode"].as_str().unwrap_or("original"),
+                    )?;
+                    let paths =
+                        reader_core::export::export_selection(root, &books, &directory, mode)?;
                     Ok(json!(paths))
                 }
                 "library" => Ok(json!(Library::load_from(root)?
@@ -1079,5 +1110,71 @@ mod tests {
             false
         );
         assert!(SESSION.lock().unwrap().active.is_none());
+    }
+    #[test]
+    fn txt_preview_manual_boundaries_and_import_use_normal_library_admission() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let path = dir.path().join("sample.txt");
+        let text = "第一章 起点\n正文很短也不能丢。\n\n§ 新式标题 §\n完整的第二段正文。";
+        std::fs::write(&path, text).unwrap();
+        let lines = request(root, "txt_lines", json!({"path":path,"query":"新式"}));
+        assert_eq!(lines["ok"], true);
+        let line = lines["result"][0]["line_start"].as_u64().unwrap();
+        let preview = request(
+            root,
+            "txt_analyze",
+            json!({"path":path,"use_heuristic":false,"included_lines":[line]}),
+        );
+        assert_eq!(preview["result"]["heading_count"], 2);
+        let imported = request(
+            root,
+            "txt_convert",
+            json!({"path":path,"title":"TXT 测试","use_heuristic":false,"included_lines":[line]}),
+        );
+        assert_eq!(imported["ok"], true, "{imported}");
+        assert_eq!(imported["result"]["chapter_count"], 2);
+        assert_eq!(
+            request(root, "library", json!({}))["result"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let opened = request(
+            root,
+            "open",
+            json!({"id":imported["result"]["entry"]["id"]}),
+        );
+        assert_eq!(opened["ok"], true, "{opened}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(!std::fs::read_dir(root).unwrap().any(|p| p
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".txt-import-")));
+    }
+    #[test]
+    fn txt_invalid_rule_and_stale_selection_do_not_change_the_library() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let path = dir.path().join("bad.txt");
+        std::fs::write(&path, "第一章 开始\n正文。").unwrap();
+        for fields in [
+            json!({"path":path,"custom_regex":"["}),
+            json!({"path":path,"included_lines":[99999]}),
+            json!({"path":path,"excluded_lines":[-1]}),
+        ] {
+            let result = request(root, "txt_convert", fields);
+            assert_eq!(result["ok"], false, "{result}");
+        }
+        assert_eq!(request(root, "library", json!({}))["result"], json!([]));
+        assert!(!std::fs::read_dir(root).unwrap().any(|p| p
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".txt-import-")));
     }
 }

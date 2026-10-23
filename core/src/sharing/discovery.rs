@@ -147,6 +147,8 @@ pub fn get_all_local_ips() -> Vec<String> {
 /// Broadcasts on all detected network interfaces and includes multiple IP
 /// addresses so peers on different subnets can reach us.
 pub fn start_broadcast(ann: DiscoveryAnnouncement, stop: Arc<AtomicBool>) {
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    super::bonjour::advertise(ann.clone(), stop.clone());
     std::thread::spawn(move || {
         let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
             dbg_log!("BROADCAST: failed to bind UDP socket");
@@ -203,6 +205,8 @@ pub fn start_listener(
     stop: Arc<AtomicBool>,
 ) -> Arc<Mutex<Vec<DiscoveredPeer>>> {
     let peers: Arc<Mutex<Vec<DiscoveredPeer>>> = Arc::new(Mutex::new(Vec::new()));
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    super::bonjour::browse(own_device_id.to_owned(), peers.clone(), stop.clone());
     let peers_out = peers.clone();
     let own_id = own_device_id.to_string();
 

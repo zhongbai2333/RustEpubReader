@@ -18,6 +18,7 @@ sys-locale = "0.3.2"
 rbook = { version = "0.7.6", default-features = false, features = ["threadsafe"] }
 scraper = "0.21"
 ego-tree = "0.9"
+quick-xml = "0.39.2"
 rquickjs = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
@@ -58,3 +59,6 @@ rquickjs = { version = "0.11", default-features = false, features = ["bindgen"] 
 [target.'cfg(target_os = "android")'.dependencies]
 # Generate NDK bindings: the interpreter has no bundled Android ABI bindings.
 rquickjs = { version = "0.11", default-features = false, features = ["bindgen"] }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+mdns-sd = "0.21.4"

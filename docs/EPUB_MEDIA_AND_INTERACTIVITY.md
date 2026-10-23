@@ -42,8 +42,10 @@ shared Rust core. Selectors, inheritance and important declarations contribute t
 native block styles. This is a CSS subset: flex/grid, fixed-layout fidelity,
 positioned boxes, embedded web fonts, pseudo-elements and arbitrary CSS animations
 are not implemented. Existing semantic HTML formatting and native illustration
-support remain available in every style. Chinese and Latin reader fonts remain
-separate; classic family resolution falls back to installed fonts.
+support remain available in every style. All clients have separate Chinese and Latin reader-font selections; an empty
+Latin selection follows the Chinese font. Android uses the same mixed-font spans
+for rendering and pagination measurement. Classic family resolution falls back to installed fonts. See the
+[platform capability audit](PLATFORM_PARITY.md) for client differences.
 
 Publication scripts have an independent switch, initially enabled. QuickJS runs
 book-local classic scripts and inline event handlers with a small native document

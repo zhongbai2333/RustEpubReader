@@ -72,10 +72,20 @@ pub(super) struct AppSettings {
     pub(super) tts_volume: i32,
     #[serde(default)]
     pub(super) translate_api_url: String,
+    #[serde(default = "default_service_model")]
+    pub(super) translate_api_model: String,
+    #[serde(default = "legacy_service_provider")]
+    pub(super) translate_api_provider: String,
+    #[serde(default)]
+    pub(super) service_keys_configured: bool,
     #[serde(default)]
     pub(super) translate_api_key: String,
     #[serde(default)]
     pub(super) dictionary_api_url: String,
+    #[serde(default = "default_service_model")]
+    pub(super) dictionary_api_model: String,
+    #[serde(default = "legacy_service_provider")]
+    pub(super) dictionary_api_provider: String,
     #[serde(default)]
     pub(super) dictionary_api_key: String,
     #[serde(default)]
@@ -113,11 +123,16 @@ impl AppSettings {
         serde_json::from_str(&text).ok()
     }
 
-    pub(super) fn save(&self, data_dir: &str) {
-        let path = Self::path(data_dir);
-        if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, text);
-        }
+    pub(super) fn save(&self, data_dir: &str) -> Result<(), String> {
+        crate::ui::reading_services::save_keys([
+            self.translate_api_key.clone(),
+            self.dictionary_api_key.clone(),
+        ])?;
+        let mut stored = self.clone();
+        stored.translate_api_key.clear();
+        stored.dictionary_api_key.clear();
+        let bytes = serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?;
+        reader_core::storage::replace(&Self::path(data_dir), &bytes)
     }
 
     fn from_color(c: Color32) -> [u8; 4] {
@@ -196,8 +211,14 @@ impl AppSettings {
             tts_rate: app.tts_rate,
             tts_volume: app.tts_volume,
             translate_api_url: app.translate_api_url.clone(),
+            translate_api_model: app.translate_api_model.clone(),
+            translate_api_provider: app.translate_api_provider.clone(),
+            service_keys_configured: !app.translate_api_key.is_empty()
+                || !app.dictionary_api_key.is_empty(),
             translate_api_key: app.translate_api_key.clone(),
             dictionary_api_url: app.dictionary_api_url.clone(),
+            dictionary_api_model: app.dictionary_api_model.clone(),
+            dictionary_api_provider: app.dictionary_api_provider.clone(),
             dictionary_api_key: app.dictionary_api_key.clone(),
             csc_mode: app.csc_mode.clone(),
             csc_threshold: app.csc_threshold.clone(),
@@ -256,9 +277,52 @@ impl AppSettings {
         app.tts_rate = self.tts_rate;
         app.tts_volume = self.tts_volume;
         app.translate_api_url = self.translate_api_url.clone();
+        app.translate_api_model = self.translate_api_model.clone();
+        app.translate_api_provider = if self.translate_api_provider == "auto" {
+            if self.translate_api_url.is_empty()
+                || self.translate_api_url.contains("/chat/completions")
+            {
+                "openai".into()
+            } else {
+                "json".into()
+            }
+        } else {
+            self.translate_api_provider.clone()
+        };
         app.translate_api_key = self.translate_api_key.clone();
         app.dictionary_api_url = self.dictionary_api_url.clone();
+        app.dictionary_api_model = self.dictionary_api_model.clone();
+        app.dictionary_api_provider = if self.dictionary_api_provider == "auto" {
+            if self.dictionary_api_url.is_empty()
+                || self.dictionary_api_url.contains("/chat/completions")
+            {
+                "openai".into()
+            } else {
+                "json".into()
+            }
+        } else {
+            self.dictionary_api_provider.clone()
+        };
         app.dictionary_api_key = self.dictionary_api_key.clone();
+        if !self.translate_api_key.is_empty() || !self.dictionary_api_key.is_empty() {
+            if let Err(error) = self.save(&app.data_dir) {
+                app.error_msg = Some(error);
+            }
+        } else if self.service_keys_configured
+            || !self.translate_api_url.is_empty()
+            || !self.dictionary_api_url.is_empty()
+        {
+            match crate::ui::reading_services::load_keys() {
+                Ok([translate, dictionary]) => {
+                    app.translate_api_key = translate;
+                    app.dictionary_api_key = dictionary;
+                }
+                Err(error) => {
+                    app.error_msg = Some(error);
+                }
+            }
+        }
+
         app.csc_mode = self.csc_mode.clone();
         app.csc_threshold = self.csc_threshold.clone();
         app.github_username = self.github_username.clone();
@@ -274,4 +338,11 @@ impl AppSettings {
         }
         // last_book_path/last_chapter applied in Default::default after call
     }
+}
+
+fn default_service_model() -> String {
+    "gpt-4o-mini".into()
+}
+fn legacy_service_provider() -> String {
+    "auto".into()
 }

@@ -69,6 +69,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: ReaderViewModel = viewModel()
             DisposableEffect(vm) {
+                // Isolated debug preview uses synthetic text; never opens a user's book.
+                if (BuildConfig.DEBUG && packageName.startsWith("local.reader.") && intent.getBooleanExtra("txt_import_preview", false)) {
+                    vm.updateLanguage("zh_cn")
+                    vm.markReaderIntroductionShown()
+                    val sample = java.io.File(cacheDir, "TXT preview.txt")
+                    assets.open("txt-preview.txt").use { input -> sample.outputStream().use { input.copyTo(it) } }
+                    vm.openTxtImportDialog(sample.path)
+                }
                 if (BuildConfig.READER_PERFORMANCE_CHECKS && intent.getBooleanExtra("shelf_performance", false)) {
                     Class.forName("com.zhongbai233.epub.reader.ui.reader.ShelfPerformanceHooks")
                         .getMethod("attach", MainActivity::class.java, ReaderViewModel::class.java).invoke(null, this@MainActivity, vm)
@@ -272,6 +280,39 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
         if (!vm.isLoading || bookMotion.active) {
             val book = currentBook
 
+            var pendingExportPaths by remember {mutableStateOf<List<String>?>(null)}
+            val exportBooks:(List<String>,String)->Unit={paths,mode->
+                                preparingBookExport = true
+                                scope.launch {
+                                    try {
+                                        val uris = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            val dir = java.io.File(context.cacheDir, "exports/${java.util.UUID.randomUUID()}")
+                                            val request = org.json.JSONArray(paths).toString()
+                                            val result = org.json.JSONObject(RustBridge.prepareBookExports(context.filesDir.absolutePath, request, dir.absolutePath, mode) ?: error("Reader core returned no result"))
+                                            check(result.optBoolean("ok")) { result.optString("error") }
+                                            val exported = result.getJSONArray("paths")
+                                            (0 until exported.length()).map { index ->
+                                                val file = java.io.File(exported.getString(index))
+                                                androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.exports", file)
+                                            }
+                                        }
+                                        val intent = android.content.Intent(if (uris.size == 1) android.content.Intent.ACTION_SEND else android.content.Intent.ACTION_SEND_MULTIPLE).apply {
+                                            type = "application/epub+zip"
+                                            if (uris.size == 1) putExtra(android.content.Intent.EXTRA_STREAM, uris.first())
+                                            else putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, ArrayList(uris))
+                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            clipData = android.content.ClipData.newUri(context.contentResolver, "EPUB", uris.first()).apply { uris.drop(1).forEach { addItem(android.content.ClipData.Item(it)) } }
+                                        }
+                                        context.startActivity(android.content.Intent.createChooser(intent, I18n.t("book.export")))
+                                    } catch (error: Exception) { vm.reportExportFailure(error.message ?: I18n.t("common.error_unknown")) }
+                                    finally { preparingBookExport = false }
+                                }
+            }
+            pendingExportPaths?.let{paths->
+                AlertDialog(onDismissRequest={pendingExportPaths=null},title={Text(I18n.t("book.export"))},text={Column{
+                    listOf("original" to "export.mode_original","corrections" to "export.mode_corrections","annotations" to "export.mode_annotations","full" to "export.mode_full").forEach{(mode,key)->TextButton(onClick={pendingExportPaths=null;exportBooks(paths,mode)},modifier=Modifier.fillMaxWidth()){Text(I18n.t(key),modifier=Modifier.fillMaxWidth())}}
+                }},confirmButton={},dismissButton={TextButton(onClick={pendingExportPaths=null}){Text(I18n.t("common.cancel"))}})
+            }
             Box(Modifier.fillMaxSize().graphicsLayer { alpha=if(book==null || bookMotion.showShelf) 1f else 0f }.then(if(book!=null) Modifier.clearAndSetSemantics { } else Modifier)) {
                 Box(Modifier.fillMaxSize().then(if (showLibrarySettings) Modifier.clearAndSetSemantics { } else Modifier)) {
                     // ---- 书库界面 ----
@@ -305,33 +346,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             onReceiveBooks = { vm.bookSharing.resetReceiver(); vm.receivingSharedBooks = true },
                             onRenameBook = { uri, title -> vm.renameBook(uri, title) },
                             exportingBooks = preparingBookExport,
-                            onExportBooks = { paths ->
-                                preparingBookExport = true
-                                scope.launch {
-                                    try {
-                                        val uris = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            val dir = java.io.File(context.cacheDir, "exports/${java.util.UUID.randomUUID()}")
-                                            val request = org.json.JSONArray(paths).toString()
-                                            val result = org.json.JSONObject(RustBridge.prepareBookExports(context.filesDir.absolutePath, request, dir.absolutePath) ?: error("Reader core returned no result"))
-                                            check(result.optBoolean("ok")) { result.optString("error") }
-                                            val exported = result.getJSONArray("paths")
-                                            (0 until exported.length()).map { index ->
-                                                val file = java.io.File(exported.getString(index))
-                                                androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.exports", file)
-                                            }
-                                        }
-                                        val intent = android.content.Intent(if (uris.size == 1) android.content.Intent.ACTION_SEND else android.content.Intent.ACTION_SEND_MULTIPLE).apply {
-                                            type = "application/epub+zip"
-                                            if (uris.size == 1) putExtra(android.content.Intent.EXTRA_STREAM, uris.first())
-                                            else putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, ArrayList(uris))
-                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                            clipData = android.content.ClipData.newUri(context.contentResolver, "EPUB", uris.first()).apply { uris.drop(1).forEach { addItem(android.content.ClipData.Item(it)) } }
-                                        }
-                                        context.startActivity(android.content.Intent.createChooser(intent, I18n.t("book.export")))
-                                    } catch (error: Exception) { vm.reportExportFailure(error.message ?: I18n.t("common.error_unknown")) }
-                                    finally { preparingBookExport = false }
-                                }
-                            },
+                            onExportBooks = { paths -> pendingExportPaths=paths },
                             onRequestCover = { uri -> vm.requestCover(uri) },
                             onOpenFilePicker = {
                                 filePicker.launch(
@@ -363,12 +378,14 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                     customRegex = vm.txtImportRegex,
                     useHeuristic = vm.txtImportHeuristic,
                     previews = vm.txtImportPreviews,
+                    headingCount=vm.txtHeadingCount,chapterCount=vm.txtChapterCount,analyzing=vm.txtAnalyzing, excluded=vm.txtExcluded, sourceQuery=vm.txtSourceQuery, sourceHits=vm.txtSourceHits,
+                    onHeading=vm::setTxtHeading,onQuery={vm.txtSourceQuery=it},onSearch=vm::searchTxtSource,onAdd=vm::addTxtHeading,
                     converting = vm.txtImportConverting,
                     error = vm.txtImportError,
                     onTitleChange = { vm.txtImportTitle = it },
                     onAuthorChange = { vm.txtImportAuthor = it },
-                    onRegexChange = { vm.txtImportRegex = it },
-                    onHeuristicChange = { vm.txtImportHeuristic = it },
+                    onRegexChange = { vm.setTxtRule(regex=it) },
+                    onHeuristicChange = { vm.setTxtRule(heuristic=it) },
                     onRefreshPreview = { vm.refreshTxtPreviews() },
                     onConvert = { vm.convertTxtToEpub() },
                     onDismiss = { vm.dismissTxtImport() },
@@ -436,6 +453,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             fontColorIndex = vm.readerFontColorIndex,
                             customFontColorArgb = vm.readerCustomFontColorArgb,
                             fontFamilyName = vm.readerFontFamily,
+                            latinFontFamilyName=vm.readerLatinFontFamily,onUpdateLatinFontFamily=vm::updateLatinFontFamily,
                             pageAnimation = vm.readerPageAnimation,
                             bgImageUri = vm.readerBgImageUri,
                             bgImageAlpha = vm.readerBgImageAlpha,
@@ -498,6 +516,10 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             onTextIndentChange = { vm.updateTextIndent(it) },
                             onTitleFontScaleChange = { vm.updateTitleFontScale(it) },
                             translateApiUrl = vm.translateApiUrl,
+                            translateApiModel=vm.translateApiModel,dictionaryApiModel=vm.dictionaryApiModel,
+                            translateApiProvider=vm.translateApiProvider,dictionaryApiProvider=vm.dictionaryApiProvider,
+                            onTranslateApiModelChange=vm::updateTranslateApiModel,onDictionaryApiModelChange=vm::updateDictionaryApiModel,
+                            onTranslateApiProviderChange=vm::updateTranslateApiProvider,onDictionaryApiProviderChange=vm::updateDictionaryApiProvider,
                             translateApiKey = vm.translateApiKey,
                             dictionaryApiUrl = vm.dictionaryApiUrl,
                             dictionaryApiKey = vm.dictionaryApiKey,
@@ -643,6 +665,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                             show = vm.showContributeDialog && !showMultiPlatformSyncDialog,
                             sampleCount = vm.contributeSampleCount,
                             samples = vm.contributeSamples,
+                            onSamplesChange=vm::updateContributionSamples,
                             githubUsername = vm.githubUsername,
                             inProgress = vm.contributeInProgress,
                             status = vm.contributeStatus,

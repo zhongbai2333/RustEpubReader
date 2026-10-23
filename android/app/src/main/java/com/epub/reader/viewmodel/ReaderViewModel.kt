@@ -45,8 +45,9 @@ import com.zhongbai233.epub.reader.util.GitHubTokenStore
 import com.zhongbai233.epub.reader.util.resolveResumeChapter
 import com.zhongbai233.epub.reader.util.canApplyGithubSync
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.withLock
 
-data class TxtChapterPreview(val title: String, val lineStart: Int, val charCount: Int)
+data class TxtChapterPreview(val title: String, val lineStart: Int, val charCount: Int, val isHeading: Boolean = true, val excerpt: String = "")
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
     // Resume may follow a cached library load without suspending. Its session
@@ -182,6 +183,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         private set
     var readerCustomFontColorArgb by mutableIntStateOf(0xFF1A1A1A.toInt())
         private set
+    var readerLatinFontFamily by mutableStateOf("")
+        private set
+    fun updateLatinFontFamily(value:String){readerLatinFontFamily=value;prefs.edit().putString("reader.latin_font_family",value).apply()}
     var readerFontFamily by mutableStateOf("Sans")
         private set
     var readerPageAnimation by mutableStateOf("Realistic")
@@ -217,6 +221,18 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     var titleFontScale by mutableFloatStateOf(1.5f)
         private set
 
+    var translateApiModel by mutableStateOf("gpt-4o-mini")
+        private set
+    var dictionaryApiModel by mutableStateOf("gpt-4o-mini")
+        private set
+    var translateApiProvider by mutableStateOf("openai")
+        private set
+    var dictionaryApiProvider by mutableStateOf("openai")
+        private set
+    fun updateTranslateApiModel(value:String){translateApiModel=value;persistSettings()}
+    fun updateDictionaryApiModel(value:String){dictionaryApiModel=value;persistSettings()}
+    fun updateTranslateApiProvider(value:String){translateApiProvider=value;persistSettings()}
+    fun updateDictionaryApiProvider(value:String){dictionaryApiProvider=value;persistSettings()}
     // ---- API 设置 ----
     var translateApiUrl by mutableStateOf("")
         private set
@@ -558,6 +574,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         readerFontColorIndex = prefs.getInt(PrefKeys.FONT_COLOR_INDEX, 0).coerceAtLeast(0)
         readerCustomFontColorArgb = prefs.getInt(PrefKeys.CUSTOM_FONT_COLOR, 0xFF1A1A1A.toInt())
 
+        readerLatinFontFamily=prefs.getString("reader.latin_font_family","")?:""
         readerFontFamily = prefs.getString(PrefKeys.FONT_FAMILY, "Sans") ?: "Sans"
         readerPageAnimation = prefs.getString(PrefKeys.PAGE_ANIMATION, "Realistic") ?: "Realistic"
         readerBgImageUri = prefs.getString(PrefKeys.BG_IMAGE_URI, null)
@@ -587,9 +604,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         textIndent = prefs.getInt(PrefKeys.TEXT_INDENT, 2).coerceIn(0, 4)
         titleFontScale = prefs.getFloat(PrefKeys.TITLE_FONT_SCALE, 1.5f).coerceIn(1.0f, 2.5f)
         translateApiUrl = prefs.getString(PrefKeys.TRANSLATE_API_URL, "") ?: ""
-        translateApiKey = prefs.getString(PrefKeys.TRANSLATE_API_KEY, "") ?: ""
+        translateApiModel=prefs.getString("translate_api_model","gpt-4o-mini")?:"gpt-4o-mini"
+        dictionaryApiModel=prefs.getString("dictionary_api_model","gpt-4o-mini")?:"gpt-4o-mini"
+        translateApiProvider=prefs.getString("translate_api_provider",if(translateApiUrl.isEmpty()||translateApiUrl.contains("/chat/completions"))"openai" else "json")?:"openai"
+        dictionaryApiProvider=prefs.getString("dictionary_api_provider",if((prefs.getString(PrefKeys.DICTIONARY_API_URL,"")?:"").let{it.isEmpty()||it.contains("/chat/completions")})"openai" else "json")?:"openai"
+        translateApiKey = loadServiceKey("translate",PrefKeys.TRANSLATE_API_KEY)
         dictionaryApiUrl = prefs.getString(PrefKeys.DICTIONARY_API_URL, "") ?: ""
-        dictionaryApiKey = prefs.getString(PrefKeys.DICTIONARY_API_KEY, "") ?: ""
+        dictionaryApiKey = loadServiceKey("dictionary",PrefKeys.DICTIONARY_API_KEY)
         ttsVoiceName = prefs.getString(PrefKeys.TTS_VOICE_NAME, "zh-CN-XiaoxiaoNeural") ?: "zh-CN-XiaoxiaoNeural"
         ttsRate = prefs.getInt(PrefKeys.TTS_RATE, 0)
         ttsVolume = prefs.getInt(PrefKeys.TTS_VOLUME, 0)
@@ -618,10 +639,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             .putFloat(PrefKeys.PARA_SPACING, paraSpacing)
             .putInt(PrefKeys.TEXT_INDENT, textIndent)
             .putFloat(PrefKeys.TITLE_FONT_SCALE, titleFontScale)
+            .putString("translate_api_model",translateApiModel).putString("dictionary_api_model",dictionaryApiModel)
+            .putString("translate_api_provider",translateApiProvider).putString("dictionary_api_provider",dictionaryApiProvider)
             .putString(PrefKeys.TRANSLATE_API_URL, translateApiUrl)
-            .putString(PrefKeys.TRANSLATE_API_KEY, translateApiKey)
             .putString(PrefKeys.DICTIONARY_API_URL, dictionaryApiUrl)
-            .putString(PrefKeys.DICTIONARY_API_KEY, dictionaryApiKey)
             .putString(PrefKeys.TTS_VOICE_NAME, ttsVoiceName)
             .putInt(PrefKeys.TTS_RATE, ttsRate)
             .putInt(PrefKeys.TTS_VOLUME, ttsVolume)
@@ -1318,7 +1339,21 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         persistSettings()
     }
 
+    private fun loadServiceKey(kind:String,legacyKey:String):String {
+        val saved=GitHubTokenStore.load(context,"service_$kind")
+        if(saved!=null)return saved
+        val legacy=prefs.getString(legacyKey,"")?:""
+        if(legacy.isNotEmpty() && saveServiceKey(kind,legacy))prefs.edit().remove(legacyKey).commit()
+        return legacy
+    }
+    private fun saveServiceKey(kind:String,value:String):Boolean {
+        val result=if(value.isEmpty())runCatching{GitHubTokenStore.delete(context,"service_$kind")}else GitHubTokenStore.save(context,value,"service_$kind")
+        result.exceptionOrNull()?.let{errorMessage=it.message?:I18n.t("common.error_unknown")}
+        return result.isSuccess
+    }
     fun updateTranslateApiKey(value: String) {
+        if(!saveServiceKey("translate",value))return
+        prefs.edit().remove(PrefKeys.TRANSLATE_API_KEY).apply()
         translateApiKey = value
         persistSettings()
     }
@@ -1329,6 +1364,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updateDictionaryApiKey(value: String) {
+        if(!saveServiceKey("dictionary",value))return
+        prefs.edit().remove(PrefKeys.DICTIONARY_API_KEY).apply()
         dictionaryApiKey = value
         persistSettings()
     }
@@ -1655,6 +1692,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         if (json.optBoolean("ok")) {
                             sharingServerRunning = true
                             sharingServerAddr = json.optString("addr", "")
+                            val identity=org.json.JSONObject(RustBridge.readingTools(org.json.JSONObject().put("op","peer_identity").put("root",dataDir).toString())?:"{}").optJSONObject("result")
+                            if(identity!=null)bonjour.publish(identity.optString("id"),identity.optString("name"),sharingServerAddr.substringAfterLast(':').toIntOrNull()?:0)
                             sharingStatus = ""
                         } else {
                             sharingStatus = json.optString("error", I18n.t("common.error_unknown"))
@@ -1668,6 +1707,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopSharingServer() {
+        bonjour.unpublish()
         viewModelScope.launch(Dispatchers.IO) {
             RustBridge.stopSharingServer()
             withContext(Dispatchers.Main) {
@@ -1786,7 +1826,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private var bonjourPeers:List<DiscoveredPeer> = emptyList()
+    private val bonjour by lazy {com.zhongbai233.epub.reader.util.NearbyDiscovery(context){peers->
+        bonjourPeers=peers;refreshDiscoveredPeers()
+    }}
     fun startDiscovery() {
+        bonjour.start()
         if (!discoveryStarted) {
             addLog("startDiscovery")
             // Acquire multicast lock so Android doesn't filter UDP broadcasts
@@ -1825,7 +1870,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         addLog("refreshPeers: $result")
         withContext(Dispatchers.Main) {
             try {
-                val peers = jsonParser.decodeFromString<List<DiscoveredPeer>>(result)
+                val peers = (jsonParser.decodeFromString<List<DiscoveredPeer>>(result)+bonjourPeers).distinctBy{it.deviceId}
                 discoveredPeers.clear()
                 discoveredPeers.addAll(peers)
                 tryAutoSyncWithPairedPeer(peers)
@@ -1836,53 +1881,77 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     // ── TXT 导入 ──
 
     fun openTxtImportDialog(path: String) {
+        txtExcluded=emptySet();txtIncluded=emptySet();txtSourceQuery="";txtSourceHits=emptyList();txtImportPreviews=emptyList()
         txtImportPath = path
         txtImportTitle = File(path).nameWithoutExtension
         txtImportAuthor = ""
         txtImportRegex = ""
-        txtImportHeuristic = false
+        txtImportHeuristic = true
         txtImportError = null
         txtImportConverting = false
         showTxtImport = true
         refreshTxtPreviews()
     }
 
+    var txtExcluded by mutableStateOf<Set<Int>>(emptySet())
+    var txtIncluded by mutableStateOf<Set<Int>>(emptySet())
+    var txtSourceQuery by mutableStateOf("")
+    var txtSourceHits by mutableStateOf<List<TxtChapterPreview>>(emptyList())
+    var txtHeadingCount by mutableIntStateOf(0)
+    var txtChapterCount by mutableIntStateOf(0)
+    var txtAnalyzing by mutableStateOf(false)
+    private var txtPreviewJob:Job?=null
+    private val txtWorkLock=kotlinx.coroutines.sync.Mutex()
+    private var txtPreviewRevision = 0L
+    private var txtSearchRevision = 0L
+    private fun txtRequest(action: String) = org.json.JSONObject().put("op", "txt").put("action", action)
+        .put("path", txtImportPath).put("use_heuristic", txtImportHeuristic).put("custom_regex", txtImportRegex)
+        .put("excluded_lines", org.json.JSONArray(txtExcluded.toList())).put("included_lines", org.json.JSONArray(txtIncluded.toList()))
+    private fun txtRows(arr: org.json.JSONArray) = (0 until arr.length()).map { i -> val obj=arr.getJSONObject(i)
+        TxtChapterPreview(obj.getString("title"),obj.getInt("line_start"),obj.optInt("char_count"),obj.optBoolean("is_heading"),obj.optString("excerpt")) }
+    fun setTxtHeading(line: Int, selected: Boolean) { txtExcluded=if(selected)txtExcluded-line else txtExcluded+line; refreshTxtPreviews() }
+    fun setTxtRule(regex: String = txtImportRegex, heuristic: Boolean = txtImportHeuristic) {
+        txtImportRegex=regex;txtImportHeuristic=heuristic;txtExcluded=emptySet();txtIncluded=emptySet();txtImportPreviews=emptyList();refreshTxtPreviews()
+    }
+    fun searchTxtSource() {
+        val path=txtImportPath?:return;val revision=++txtSearchRevision;val request=txtRequest("lines").put("query",txtSourceQuery).toString()
+        viewModelScope.launch(Dispatchers.IO) { try {
+            val envelope=org.json.JSONObject(RustBridge.readingTools(request)?:error("Invalid TXT response"));if(!envelope.optBoolean("ok"))error(envelope.optString("error"))
+            val rows=txtRows(envelope.getJSONArray("result")).take(80)
+            withContext(Dispatchers.Main){if(revision==txtSearchRevision && txtImportPath==path && showTxtImport)txtSourceHits=rows}
+        }catch(e:kotlinx.coroutines.CancellationException){throw e}catch(e:Exception){withContext(Dispatchers.Main){if(revision==txtSearchRevision)txtImportError=e.message}} }
+    }
+    fun addTxtHeading(line: Int){txtIncluded=txtIncluded+line;txtExcluded=txtExcluded-line;refreshTxtPreviews()}
+
     fun refreshTxtPreviews() {
         val path = txtImportPath ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            val json = RustBridge.previewTxtChapters(
-                path,
-                txtImportHeuristic,
-                txtImportRegex.ifEmpty { null }
-            ) ?: "[]"
-            val arr = org.json.JSONArray(json)
-            val list = (0 until arr.length()).map { i ->
-                val obj = arr.getJSONObject(i)
-                TxtChapterPreview(
-                    title = obj.getString("title"),
-                    lineStart = obj.getInt("lineStart"),
-                    charCount = obj.getInt("charCount")
-                )
-            }
-            withContext(Dispatchers.Main) {
-                txtImportPreviews = list
-            }
+        val revision = ++txtPreviewRevision
+        txtAnalyzing=true
+        val request=txtRequest("analyze").toString()
+        txtPreviewJob?.cancel()
+        txtPreviewJob=viewModelScope.launch(Dispatchers.IO) {
+            delay(250)
+            try {
+                val envelope=org.json.JSONObject(txtWorkLock.withLock {RustBridge.readingTools(request)?:error("Invalid TXT response")})
+                if(!envelope.optBoolean("ok"))error(envelope.optString("error"))
+                val analysis=envelope.getJSONObject("result");val rows=txtRows(analysis.getJSONArray("chapters"))
+                withContext(Dispatchers.Main) { if(revision==txtPreviewRevision && path==txtImportPath && showTxtImport){
+                    val unchecked=txtImportPreviews.filter {it.lineStart in txtExcluded}
+                    txtHeadingCount=analysis.getInt("heading_count");txtChapterCount=analysis.getInt("chapter_count")
+                    txtImportPreviews=(unchecked+rows).distinctBy {it.lineStart}.sortedBy {it.lineStart};txtImportError=null;txtAnalyzing=false
+                } }
+            }catch(e:kotlinx.coroutines.CancellationException){throw e}catch(e:Exception){withContext(Dispatchers.Main){if(revision==txtPreviewRevision && path==txtImportPath && showTxtImport){txtImportError=e.message;txtAnalyzing=false}}}
         }
     }
 
     fun convertTxtToEpub() {
         val path = txtImportPath ?: return
+        if(txtAnalyzing || txtImportError!=null)return
+        val request=txtRequest("convert").put("directory",booksDir).put("title",txtImportTitle).put("author",txtImportAuthor).toString()
         txtImportConverting = true
         txtImportError = null
         viewModelScope.launch(Dispatchers.IO) {
-            val result = RustBridge.convertTxtToEpub(
-                path,
-                booksDir,
-                txtImportTitle.ifEmpty { null },
-                txtImportAuthor.ifEmpty { null },
-                txtImportHeuristic,
-                txtImportRegex.ifEmpty { null }
-            )
+            val result = RustBridge.readingTools(request)
             withContext(Dispatchers.Main) {
                 txtImportConverting = false
                 if (result == null) {
@@ -1891,12 +1960,13 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 try {
                     val obj = org.json.JSONObject(result)
-                    if (obj.has("error")) {
-                        txtImportError = obj.getString("error")
+                    if (!obj.optBoolean("ok")) {
+                        txtImportError = obj.optString("error")
                     } else {
-                        val epubPath = obj.getString("epubPath")
+                        val epubPath = obj.getJSONObject("result").getString("epubPath")
                         showTxtImport = false
                         txtImportPath = null
+                        viewModelScope.launch(Dispatchers.IO){discardOwnedTxt(path)}
                         openFromPath(epubPath, 0)
                     }
                 } catch (e: Exception) {
@@ -1907,15 +1977,18 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun dismissTxtImport() {
+        if(txtImportConverting)return
+        ++txtPreviewRevision;++txtSearchRevision;txtPreviewJob?.cancel();txtAnalyzing=false
         showTxtImport = false
-        // 清理临时 TXT 文件
-        txtImportPath?.let { path ->
-            val file = File(path)
-            if (file.exists() && file.parentFile?.name == "imports") {
-                runCatching { file.delete() }
-            }
-        }
+        txtImportPath?.let{path->viewModelScope.launch(Dispatchers.IO){discardOwnedTxt(path)}}
         txtImportPath = null
+    }
+
+    private fun discardOwnedTxt(path:String){
+        runCatching{
+            val file=File(path)
+            if(file.name.startsWith("import_") && file.extension.equals("txt",true) && file.canonicalFile.parentFile==File(context.cacheDir,"imports").canonicalFile){file.delete()}
+        }
     }
 
     // ── CSC Contribution ──
@@ -2172,6 +2245,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         githubSyncOffer = null
     }
 
+    fun updateContributionSamples(value:String){if(contributeInProgress)return;contributeSamples=value;contributeSampleCount=value.lineSequence().count{it.isNotBlank()}}
     /** Submit collected samples to GitHub. */
     fun submitContribution() {
         val token = githubToken ?: return
@@ -2340,9 +2414,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         ttsManager.destroy()
         cscEngine.release()
         discoveryPollingJob?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
-            RustBridge.stopDiscoveryListener()
-        }
+        bonjour.close()
+        RustBridge.stopDiscoveryListener()
         discoveryStarted = false
         autoSyncInProgress = false
         autoSyncLastAttemptAt.clear()

@@ -93,6 +93,8 @@ fun ReaderScreen(
     fontColorIndex: Int,
     customFontColorArgb: Int,
     fontFamilyName: String,
+    latinFontFamilyName: String = "",
+    onUpdateLatinFontFamily: (String)->Unit = {},
     pageAnimation: String,
     bgImageUri: String?,
     bgImageAlpha: Float,
@@ -154,6 +156,14 @@ fun ReaderScreen(
     // API
     translateApiUrl: String = "",
     translateApiKey: String = "",
+    translateApiModel:String="gpt-4o-mini",
+    dictionaryApiModel:String="gpt-4o-mini",
+    translateApiProvider:String="openai",
+    dictionaryApiProvider:String="openai",
+    onTranslateApiModelChange:(String)->Unit={},
+    onDictionaryApiModelChange:(String)->Unit={},
+    onTranslateApiProviderChange:(String)->Unit={},
+    onDictionaryApiProviderChange:(String)->Unit={},
     dictionaryApiUrl: String = "",
     dictionaryApiKey: String = "",
     onTranslateApiUrlChange: (String) -> Unit = {},
@@ -691,6 +701,12 @@ fun ReaderScreen(
             }
         }
 
+    val latinFamily:FontFamily?=remember(latinFontFamilyName,availableFonts){
+        if(latinFontFamilyName.isEmpty())null else when(latinFontFamilyName){
+            "Sans"->FontFamily.SansSerif;"Serif"->FontFamily.Serif;"Monospace"->FontFamily.Monospace
+            else->availableFonts.find{it.displayName==latinFontFamilyName}?.let{fontFamilyFromFile(it.path)}?:FontFamily.SansSerif
+        }
+    }
     // 沉浸式模式: 隐藏/显示系统栏
     val view = LocalView.current
     LaunchedEffect(showControls) {
@@ -983,7 +999,7 @@ fun ReaderScreen(
                         initialCharOffset = currentCharOffset,
                         positionRevision = positionRevision,
                         onPositionChange = onPositionChange,
-                    )
+                     latinFamily=latinFamily,)
 
                     // 书签下拉指示文字
                     AnimatedVisibility(
@@ -1089,7 +1105,7 @@ fun ReaderScreen(
                         positionRevision = positionRevision,
                     onPositionChange = onPositionChange,
                     onPageLabel = onPageLabel,
-                )
+                 latinFamily=latinFamily,)
             }
 
             }
@@ -1296,6 +1312,7 @@ fun ReaderScreen(
                     fontColorIndex = fontColorIndex,
                     customFontColor = customFontColor,
                     fontFamilyName = fontFamilyName,
+                    latinFontFamilyName=latinFontFamilyName,onLatinFontFamilyChange=onUpdateLatinFontFamily,
                     pageAnimation = pageAnimation,
                     bgImageEnabled = !activeBgImageUri.isNullOrBlank(),
                     bgImageUri = activeBgImageUri,
@@ -1328,6 +1345,10 @@ fun ReaderScreen(
                     onTitleFontScaleChange = onTitleFontScaleChange,
                     translateApiUrl = translateApiUrl,
                     translateApiKey = translateApiKey,
+                    translateApiModel=translateApiModel,dictionaryApiModel=dictionaryApiModel,
+                    translateApiProvider=translateApiProvider,dictionaryApiProvider=dictionaryApiProvider,
+                    onTranslateApiModelChange=onTranslateApiModelChange,onDictionaryApiModelChange=onDictionaryApiModelChange,
+                    onTranslateApiProviderChange=onTranslateApiProviderChange,onDictionaryApiProviderChange=onDictionaryApiProviderChange,
                     dictionaryApiUrl = dictionaryApiUrl,
                     dictionaryApiKey = dictionaryApiKey,
                     onTranslateApiUrlChange = onTranslateApiUrlChange,
@@ -1534,6 +1555,7 @@ fun ReaderScreen(
                         selectedText = currentSelectedText,
                         translateApiUrl = translateApiUrl,
                         translateApiKey = translateApiKey,
+                        model=translateApiModel,provider=translateApiProvider,
                         onDismiss = { activeSelectionAction = null },
                     )
                 }
@@ -1542,6 +1564,7 @@ fun ReaderScreen(
                         selectedText = currentSelectedText,
                         dictionaryApiUrl = dictionaryApiUrl,
                         dictionaryApiKey = dictionaryApiKey,
+                        model=dictionaryApiModel,provider=dictionaryApiProvider,
                         onDismiss = { activeSelectionAction = null },
                     )
                 }

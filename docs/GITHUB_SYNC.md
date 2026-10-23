@@ -34,6 +34,8 @@ before retrying. The client never deletes or changes repository visibility.
   for each large file, with a shorter final part. They remain unpublished so
   repository release immutability cannot prevent repair or permanent deletion.
 - `devices/<device-id>.json`: device-specific book inventory, reading positions, recent-reading events and daily reading/listening activity.
+- `annotation-books-v1/<device>/<book hash>/<object hash>.json`: immutable, hash-verified annotation state objects.
+- `annotation-devices-v1/<device>.json`: annotation index, uploaded only after all referenced objects have been uploaded.
 
 The existing private repository and authorization are reused; users configure no
 additional storage. Device snapshots retain schema version 1 and add an optional
@@ -41,7 +43,12 @@ additional storage. Device snapshots retain schema version 1 and add an optional
 ignoring this field; large files require an updated client on each device.
 
 EPUB files, reading progress, recently read ordering / continue-reading selection,
-and per-device daily reading/listening activity are synchronized. Bookmarks, highlights and notes remain local, along with settings.
+and per-device daily reading/listening activity are synchronized. Updated clients
+also synchronize bookmarks, highlights and notes through separate annotation
+objects and indices. Annotation revisions preserve concurrent note edits and
+explicit deletions; their merge does not resolve conflicts based on device wall-clock time.
+Settings remain local. Older clients can still exchange progress but do not gain
+annotation sync. See [annotation synchronization](ANNOTATION_SYNC.md).
 Activity merges preserve device ownership and avoid double-counting; see
 [reading activity](READING_ACTIVITY.md). Positions currently use the
 shared parser's chapter/block/character coordinates; EPUB CFI is not implemented.
@@ -71,8 +78,10 @@ normalized and retained as best-effort history; past ordering already distorted 
 sync behavior cannot be reconstructed. Old snapshots without this optional field remain
 readable, but all devices need upgrading to publish new recent-reading events.
 
-All three clients sync and apply reading progress before starting EPUB transfers.
-The file phase uses validated device manifests as an index to avoid checking every
+All three clients sync and apply reading progress first. The subsequent file
+phase transfers annotation metadata before EPUB files. The apply step rechecks the active account and operation state before merging
+staged annotations, including partial results from a failed book transfer. Results
+from cancelled tasks or a signed-out account cannot apply. The file phase uses validated device manifests as an index to avoid checking every
 already uploaded book individually. Automatic sync runs while the desktop app is
 open or a mobile app is in the foreground, normally every five minutes when idle. Changed reading positions are scheduled
 within about five seconds in the foreground, subject to network/backoff and an

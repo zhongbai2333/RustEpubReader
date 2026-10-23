@@ -74,7 +74,7 @@ actor CoreStore {
     func archiveList() throws -> [ArchivedEntry] { try client.call("archive") }
     func archiveAction(hash: String, action: String) throws { let _: [String:Int] = try client.call("archive",["action":action,"hash":hash]) }
     func rename(id: String, title: String) throws -> LibraryEntry { try client.call("rename", ["id": id, "title": title]) }
-    func exportBooks(ids: [String], directory: String) throws -> [String] { try client.call("export_books", ["ids": ids, "directory": directory]) }
+    func exportBooks(ids: [String], directory: String, mode:String="original") throws -> [String] { try client.call("export_books", ["ids": ids, "directory": directory,"mode":mode]) }
     func open(id: String, token: UInt64? = nil) throws -> PreviewBook {
         var fields: [String:Any] = ["id":id]
         if let token { fields["open_token"] = token }

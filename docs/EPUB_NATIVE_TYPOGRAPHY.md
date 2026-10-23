@@ -48,7 +48,7 @@ a single row attachment. Desktop pagination now measures native line/image bound
 paragraphs/table rows across leaves with canonical source anchors. Android also
 uses native font measurements and splits oversized headings; oversized mobile
 tables retain the existing complete-text fallback. See
-[Pagination and image performance verification](EPUB_PAGINATION_AND_PERFORMANCE.md).
+[Pagination and image loading](EPUB_PAGINATION_AND_PERFORMANCE.md).
 
 Multiple supplemental images in one canonical paragraph currently share that
 paragraph's first illustration sizing policy. Ordinary invalid resources retain
@@ -75,10 +75,6 @@ all source chapters in three styles with scripts disabled, records resource SHA-
 checks presentation ranges and canonical text stability, and reports structural
 features. It does not prove that every source block is visibly correct.
 
-Local results and source snapshots are in `target/native-typography-review/`:
-`corpus-audit.json`, `books/sources.json`, platform build/test logs, and runtime
-JSON reports. Public books are kept there and are not redistributed in the repo.
-
 ## Corpus
 
 The corpus includes two published literary ebooks and three IDPF feature samples:
@@ -91,9 +87,6 @@ The corpus includes two published literary ebooks and three IDPF feature samples
 | Hefty Water | [IDPF EPUB 3 samples](https://idpf.github.io/epub3-samples/30/samples.html) | Small ruby feature sample |
 | Kusamakura | [IDPF EPUB 3 samples](https://idpf.github.io/epub3-samples/30/samples.html) | Extensive Japanese ruby; vertical writing remains unsupported |
 
-Original publication/license notices remain inside each downloaded EPUB. The
-source manifest records exact download URLs, sizes, and fingerprints. The shared
-audit covers all 65 chapters; Android and iOS runtime checks each reflow one
-selected chapter per book at 320 and 640 logical units. CoreText additionally
-paints representative pages. A five-book corpus cannot establish a market-wide
-compatibility percentage, and a parser pass is not visual acceptance.
+Keep original publication/license notices inside downloaded EPUBs and record
+download URLs, sizes and fingerprints in a local corpus manifest. Run parser
+audits and native drawing checks separately; a parser pass is not visual acceptance.

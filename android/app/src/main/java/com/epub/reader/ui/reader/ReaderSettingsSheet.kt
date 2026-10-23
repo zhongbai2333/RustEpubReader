@@ -56,6 +56,8 @@ internal fun ReaderSettingsSheet(
     fontColorIndex: Int,
     customFontColor: Color,
     fontFamilyName: String,
+    latinFontFamilyName:String="",
+    onLatinFontFamilyChange:(String)->Unit = {},
     pageAnimation: String,
     bgImageEnabled: Boolean,
     bgImageAlpha: Float,
@@ -92,6 +94,14 @@ internal fun ReaderSettingsSheet(
     // API
     translateApiUrl: String = "",
     translateApiKey: String = "",
+    translateApiModel:String="gpt-4o-mini",
+    dictionaryApiModel:String="gpt-4o-mini",
+    translateApiProvider:String="openai",
+    dictionaryApiProvider:String="openai",
+    onTranslateApiModelChange:(String)->Unit={},
+    onDictionaryApiModelChange:(String)->Unit={},
+    onTranslateApiProviderChange:(String)->Unit={},
+    onDictionaryApiProviderChange:(String)->Unit={},
     dictionaryApiUrl: String = "",
     dictionaryApiKey: String = "",
     onTranslateApiUrlChange: (String) -> Unit = {},
@@ -105,6 +115,7 @@ internal fun ReaderSettingsSheet(
 ) {
     var more by rememberSaveable { mutableStateOf(false) }
     var fontPicker by remember { mutableStateOf(false) }
+    var latinPicker by remember {mutableStateOf(false)}
     var confirmReset by rememberSaveable { mutableStateOf(false) }
     val readingScroll = rememberScrollState()
     val moreScroll = rememberScrollState()
@@ -163,18 +174,30 @@ internal fun ReaderSettingsSheet(
             Spacer(Modifier.height(16.dp))
             HorizontalDivider()
             Spacer(Modifier.height(12.dp))
-            Text(I18n.t("settings.api_settings"), style = MaterialTheme.typography.titleMedium)
+            Text(I18n.t("services.title"), style = MaterialTheme.typography.titleMedium)
+            Text(I18n.t("services.notice"),style=MaterialTheme.typography.bodySmall)
+            var showServiceProtocol by remember{mutableStateOf(false)}
+            TextButton(onClick={showServiceProtocol=!showServiceProtocol}){Text(I18n.t("services.json"))}
+            if(showServiceProtocol)Text(I18n.t("services.protocol"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
 
             Text(I18n.t("settings.translate_section"), style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                FilterChip(selected=translateApiProvider=="openai",onClick={onTranslateApiProviderChange("openai")},label={Text(I18n.t("services.openai"))})
+                FilterChip(selected=translateApiProvider=="json",onClick={onTranslateApiProviderChange("json")},label={Text(I18n.t("services.json"))})
+            }
+            if(translateApiProvider=="openai"){
+                OutlinedTextField(value=translateApiModel,onValueChange=onTranslateApiModelChange,label={Text(I18n.t("services.model"))},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=ReaderGeometry.Shape)
+                Text(I18n.t("services.openai_hint"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = translateApiUrl,
                 onValueChange = onTranslateApiUrlChange,
                 label = { Text(I18n.t("settings.translate_api_url")) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("https://api.example.com/translate") },
+
                 shape = ReaderGeometry.Shape,
             )
             Spacer(Modifier.height(4.dp))
@@ -205,13 +228,21 @@ internal fun ReaderSettingsSheet(
             Spacer(Modifier.height(12.dp))
             Text(I18n.t("settings.dictionary_section"), style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                FilterChip(selected=dictionaryApiProvider=="openai",onClick={onDictionaryApiProviderChange("openai")},label={Text(I18n.t("services.openai"))})
+                FilterChip(selected=dictionaryApiProvider=="json",onClick={onDictionaryApiProviderChange("json")},label={Text(I18n.t("services.json"))})
+            }
+            if(dictionaryApiProvider=="openai"){
+                OutlinedTextField(value=dictionaryApiModel,onValueChange=onDictionaryApiModelChange,label={Text(I18n.t("services.model"))},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=ReaderGeometry.Shape)
+                Text(I18n.t("services.openai_hint"),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             OutlinedTextField(
                 value = dictionaryApiUrl,
                 onValueChange = onDictionaryApiUrlChange,
                 label = { Text(I18n.t("settings.dictionary_api_url")) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("https://api.example.com/dictionary") },
+
                 shape = ReaderGeometry.Shape,
             )
             Spacer(Modifier.height(4.dp))
@@ -267,10 +298,14 @@ internal fun ReaderSettingsSheet(
                         Slider(value = fontSize.coerceIn(12f,40f), onValueChange = onFontSizeChange, valueRange = 12f..40f, enabled = manualTypography)
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = manualTypography) { fontPicker = true }, verticalAlignment = Alignment.CenterVertically) {
-                            Text(I18n.t("settings.font").trim().trimEnd(':','：')); Spacer(Modifier.width(12.dp))
+                            Text(I18n.t("settings.chinese_font")); Spacer(Modifier.width(12.dp))
                             Text(friendlyFontLabel(fontFamilyName), modifier = Modifier.weight(1f).padding(end = 8.dp), textAlign = TextAlign.End, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Icon(Icons.Default.ChevronRight, null)
                         }
+                        Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clickable {latinPicker=true},verticalAlignment=Alignment.CenterVertically){
+                            Text(I18n.t("settings.english_font"),Modifier.weight(1f));Text(if(latinFontFamilyName.isEmpty())I18n.t("fonts.follow_chinese")else friendlyFontLabel(latinFontFamilyName),color=MaterialTheme.colorScheme.onSurfaceVariant);Icon(Icons.Default.ChevronRight,null)
+                        }
+
                         if (!manualTypography) Text(I18n.t("settings.publisher_locked"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     SettingsGroup(I18n.t("settings.layout_style")) {
@@ -312,6 +347,7 @@ internal fun ReaderSettingsSheet(
         }) {Text(I18n.t("settings.reset_confirm"))}},
         dismissButton={TextButton(onClick={confirmReset=false}) {Text(I18n.t("common.cancel"))}},
     )
+    if(latinPicker) ReaderSettingFontPicker(latinFontFamilyName,systemFonts,onDismiss={latinPicker=false},onSelect=onLatinFontFamilyChange,latin=true)
     if(fontPicker) ReaderSettingFontPicker(fontFamilyName, systemFonts, onDismiss = { fontPicker = false }, onSelect = onFontFamilyChange)
 }
 
@@ -350,7 +386,7 @@ private fun SettingValueSlider(title:String, label:String, value:Float, range:Cl
 }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReaderSettingFontPicker(selected:String, fonts:List<FontItem>, onDismiss:()->Unit,onSelect:(String)->Unit) {
+private fun ReaderSettingFontPicker(selected:String, fonts:List<FontItem>, onDismiss:()->Unit,onSelect:(String)->Unit,latin:Boolean=false) {
     var search by rememberSaveable {mutableStateOf("")}
     var downloads by rememberSaveable {mutableStateOf(false)}
     val catalog = remember(fonts) { (listOf(FontItem("Sans",""),FontItem("Serif",""),FontItem("Monospace",""))+fonts).distinctBy {it.displayName} }
@@ -363,15 +399,25 @@ private fun ReaderSettingFontPicker(selected:String, fonts:List<FontItem>, onDis
                 Text(I18n.t(if(downloads) "fonts.library" else "settings.font"),style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f)); TextButton(onClick=closeSheet){Text(I18n.t("settings.done"))}
             }
             if(downloads) {
-                FontLibrarySettings(selected, true, onSelect)
+                FontLibrarySettings(selected, !latin, onSelect)
             } else {
+            if(latin) TextButton(onClick={onSelect("");closeSheet()}){Text(I18n.t("fonts.follow_chinese"))}
             FontImportAction()
             TextButton(onClick={downloads=true}) { Text(I18n.t("fonts.library")); Spacer(Modifier.weight(1f));Icon(Icons.Default.ChevronRight,null) }
             OutlinedTextField(value=search,onValueChange={search=it},placeholder={Text(I18n.t("settings.search_font"))},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(12.dp))
-            val filtered = catalog.filter {it.displayName.contains(search,ignoreCase=true)||friendlyFontLabel(it.displayName).contains(search,ignoreCase=true)}
-            if(filtered.isEmpty()) Text(I18n.t("settings.no_font_match"),modifier=Modifier.padding(16.dp))
+            val covered by produceState<List<FontItem>?>(null,catalog,latin){
+                value=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){catalog.filter { item ->
+                    if(item.path.isEmpty())true else runCatching{
+                        val paint=android.graphics.Paint();paint.typeface=android.graphics.Typeface.createFromFile(item.path)
+                        if(latin)paint.hasGlyph("A")&&paint.hasGlyph("a") else paint.hasGlyph(0x6625.toChar().toString())
+                    }.getOrDefault(false)
+                }}
+            }
+            val filtered=(covered?:emptyList()).filter {it.displayName.contains(search,ignoreCase=true)||friendlyFontLabel(it.displayName).contains(search,ignoreCase=true)}
+            if(covered==null)LinearProgressIndicator(Modifier.fillMaxWidth())
+            if(covered!=null && filtered.isEmpty()) Text(I18n.t("settings.no_font_match"),modifier=Modifier.padding(16.dp))
             LazyColumn { items(filtered,key={it.displayName}) { item ->
-                ListItem(headlineContent={Text(friendlyFontLabel(item.displayName),maxLines=1,overflow=TextOverflow.Ellipsis)},supportingContent={Text(fontPreviewText(item.displayName),fontFamily=previewFontFamily(item.displayName,item.path.takeIf {it.isNotEmpty()}))},trailingContent={if(selected==item.displayName)Icon(Icons.Default.Check,null)},modifier=Modifier.clickable{onSelect(item.displayName);closeSheet()})
+                ListItem(headlineContent={Text(friendlyFontLabel(item.displayName),maxLines=1,overflow=TextOverflow.Ellipsis)},supportingContent={Text(if(latin)I18n.t("fonts.sample_latin")else fontPreviewText(item.displayName),fontFamily=previewFontFamily(item.displayName,item.path.takeIf {it.isNotEmpty()}))},trailingContent={if(selected==item.displayName)Icon(Icons.Default.Check,null)},modifier=Modifier.clickable{onSelect(item.displayName);closeSheet()})
             } }
             }
         }

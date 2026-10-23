@@ -75,27 +75,11 @@ success. Incoming LAN publication validation/catalog mutation holds the same roo
 lease. This does not make every unrelated app file a multi-file transaction or
 merge arbitrary stale in-memory `Library` objects.
 
-## Verification status
+## Regression coverage
 
-Implemented with focused core regressions for round-trip, identity remapping,
-duplicate import, legacy statistics, newer positions/deletion, invalid packages,
-path boundaries, publication failure and an abrupt child-process exit followed by
-normal library access. Source-bound logs remain under the ignored
-`target/project-improvements-20261019/stage05-*` directories, including failed first
-attempts. The source-bound stage05 local checkpoint records three-client builds,
-actual mobile bridge runs, desktop/Android native file-provider save/inspection/
-merge and malformed-package rejection. Physical providers/devices, large-library
-provider resource limits and hosted acceptance remain separate from those local
-results.
-
-
-The iOS local Files interaction gate passed separately in
-`verification-stage05-files-ui-local.md/json`: public XCTest created a package,
-saved it through the system Files UI, selected it from an empty owned library,
-verified and merged it. Independent collection rechecked the saved ZIP/manifest,
-restored EPUB hash and eleven untouched owned catalogs. A malformed package
-exposed no merge action. The selected system accessibility audit also passed.
-The previous folder assertion targeted a static text, whereas the system title
-is an action button; the corrected browsing-root assertion passes the original
-SwiftUI importer. These are local simulator results, not physical-provider or
-hosted-CI acceptance.
+Core tests cover round-trip, identity remapping, duplicate import, legacy
+statistics, newer positions/deletion, invalid packages, path boundaries,
+publication failure and abrupt child-process exit followed by normal library
+access. Native file-provider tests should cover saving, selecting, verifying,
+merging and rejecting malformed packages in isolated libraries. Test external
+providers and large libraries separately on physical devices.

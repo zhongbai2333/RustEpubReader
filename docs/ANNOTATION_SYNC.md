@@ -1,18 +1,5 @@
 # Annotation protocol and offline Markdown export
 
-Implementation status: the shared core and full-workspace regression passed at
-source `8ac53ac25b273b5bc3f93c35398338db0b9862db119d4ae58f20adb8bbd4aa26`
-(293 tests, zero failures; five explicitly ignored entries). Native iPad and
-Android diagnostic bridge checks also passed; Android's first new probe used the
-wrong case for its paragraph tag and that failed record is retained. Subsequent
-desktop layout changes have a focused bilingual/large-text regression. Runtime
-reports bind to each actual build, not to an assumed common final source tree.
-Later local checkpoints include actual mobile annotation panels and two visual
-review rounds (`verification-stage05-local.md`), plus scalar-coordinate and
-native renderer checks. Real-account cloud sync, physical devices and hosted CI
-remain separate, unfinished acceptance gates. Native selection gestures are a
-separate check from bridge mutation and coordinate conversion.
-
 ## Commit and merge boundary
 
 Each managed book configuration contains its visible bookmark/highlight/note
@@ -116,6 +103,5 @@ union/deletion, concurrent notes, stale configuration/editor saves, failed commi
 archive/restore, counter recovery, invalid remote objects and immutable object/index
 ordering. New Android/iOS diagnostic checks exercise actual JNI/C ABI tools,
 conflicting drafts, details, export and deletion under isolated installations.
-Their source presence is not a passing runtime result. Local bridge/native runs,
-three-client annotation screenshots and visual review are recorded in the stage05
-checkpoint. Hosted CI, real accounts and physical-device acceptance remain open.
+Run diagnostic checks separately from real-account sync and physical-device tests;
+a source-level test definition alone is not a runtime result.

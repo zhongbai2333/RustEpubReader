@@ -119,8 +119,23 @@ impl Default for ReadingPaintPair {
 impl ReaderApp {
     #[cfg(debug_assertions)]
     pub(crate) fn capture_appearance_preview(&self, ctx: &egui::Context) {
+        let parity = std::env::args().any(|a| a == "--parity-preview")
+            && std::env::args().any(|a| a == "--ui-preview");
+        if parity
+            && (self
+                .txt_import
+                .as_ref()
+                .is_some_and(|s| s.pending.is_some() || s.previews.is_empty())
+                || self.pending_batch_import.is_some())
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
         let introduction = std::env::args().any(|a| a == "--reader-introduction-preview");
-        if !introduction && !std::env::args().any(|a| a == "--appearance-linkage-preview") {
+        if !parity
+            && !introduction
+            && !std::env::args().any(|a| a == "--appearance-linkage-preview")
+        {
             return;
         }
         if introduction && !self.show_reader_introduction {
@@ -153,11 +168,16 @@ impl ReaderApp {
             if let Some(image) =
                 image::RgbaImage::from_raw(image.size[0] as u32, image.size[1] as u32, rgba)
             {
-                let _ = image.save(std::path::Path::new(&self.data_dir).join(if introduction {
+                let _ = image.save(std::path::Path::new(&self.data_dir).join(if parity {
+                    "parity-preview.png"
+                } else if introduction {
                     "reader-introduction.png"
                 } else {
                     "appearance-linkage.png"
                 }));
+                if parity {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else {

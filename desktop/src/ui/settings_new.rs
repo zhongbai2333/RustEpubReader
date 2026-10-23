@@ -61,12 +61,24 @@ impl ReaderApp {
                             palette,
                             |ui| self.render_settings_layout(ui),
                         );
+                        let focus_services = ui
+                            .ctx()
+                            .data_mut(|data| {
+                                data.remove_temp::<bool>(egui::Id::new("focus-reading-services"))
+                            })
+                            .unwrap_or(false);
                         egui::CollapsingHeader::new(self.i18n.t("settings.more"))
                             .id_salt("appearance_more")
+                            .open(focus_services.then_some(true))
                             .show(ui, |ui| {
                                 self.render_settings_language(ui, palette.text);
                                 ui.add_space(12.);
-                                self.render_settings_api(ui, palette.text, palette.muted);
+                                let services = ui.scope(|ui| {
+                                    self.render_settings_api(ui, palette.text, palette.muted)
+                                });
+                                if focus_services {
+                                    services.response.scroll_to_me(Some(egui::Align::Center));
+                                }
                                 ui.add_space(12.);
                                 if ui
                                     .checkbox(
@@ -792,6 +804,14 @@ impl ReaderApp {
         );
         ui.add_space(4.0);
 
+        ui.label(
+            egui::RichText::new(self.i18n.t("services.notice"))
+                .small()
+                .color(subtitle_color),
+        );
+        ui.collapsing(self.i18n.t("services.title"), |ui| {
+            ui.label(self.i18n.t("services.protocol"));
+        });
         // Translation API
         ui.label(
             egui::RichText::new(self.i18n.t("settings.translate_section"))
@@ -801,6 +821,32 @@ impl ReaderApp {
         );
         ui.add_space(2.0);
 
+        egui::ComboBox::from_id_salt("translate-api-provider")
+            .selected_text(self.i18n.t(if self.translate_api_provider == "json" {
+                "services.json"
+            } else {
+                "services.openai"
+            }))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.translate_api_provider,
+                    "openai".into(),
+                    self.i18n.t("services.openai"),
+                );
+                ui.selectable_value(
+                    &mut self.translate_api_provider,
+                    "json".into(),
+                    self.i18n.t("services.json"),
+                );
+            });
+        if self.translate_api_provider == "openai" {
+            ui.label(self.i18n.t("services.model"));
+            ui.add(
+                super::design::text_edit(&mut self.translate_api_model)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.small(self.i18n.t("services.openai_hint"));
+        }
         ui.label(
             egui::RichText::new(self.i18n.t("settings.api_url"))
                 .size(12.0)
@@ -808,7 +854,7 @@ impl ReaderApp {
         );
         ui.add(
             super::design::text_edit(&mut self.translate_api_url)
-                .hint_text("https://api.example.com/translate")
+                .hint_text("https://api.example.com/v1")
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(2.0);
@@ -835,6 +881,32 @@ impl ReaderApp {
         );
         ui.add_space(2.0);
 
+        egui::ComboBox::from_id_salt("dictionary-api-provider")
+            .selected_text(self.i18n.t(if self.dictionary_api_provider == "json" {
+                "services.json"
+            } else {
+                "services.openai"
+            }))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.dictionary_api_provider,
+                    "openai".into(),
+                    self.i18n.t("services.openai"),
+                );
+                ui.selectable_value(
+                    &mut self.dictionary_api_provider,
+                    "json".into(),
+                    self.i18n.t("services.json"),
+                );
+            });
+        if self.dictionary_api_provider == "openai" {
+            ui.label(self.i18n.t("services.model"));
+            ui.add(
+                super::design::text_edit(&mut self.dictionary_api_model)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.small(self.i18n.t("services.openai_hint"));
+        }
         ui.label(
             egui::RichText::new(self.i18n.t("settings.api_url"))
                 .size(12.0)
@@ -842,7 +914,7 @@ impl ReaderApp {
         );
         ui.add(
             super::design::text_edit(&mut self.dictionary_api_url)
-                .hint_text("https://api.example.com/dict")
+                .hint_text("https://api.example.com/v1")
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(2.0);

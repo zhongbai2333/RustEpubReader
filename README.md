@@ -4,6 +4,8 @@
 
 一个以 Rust 为共享核心的 EPUB 阅读器，提供 Windows、macOS、Linux、Android 和 iOS / iPadOS 客户端。桌面使用 egui / eframe，Android 使用 Jetpack Compose，iOS 使用 SwiftUI / UIKit；正文由各客户端本地排版，不依赖 WebView。
 
+以下功能状态对应当前源码；Release 版本可能滞后于源码。
+
 ## 平台与安装
 
 | 平台 | 获取方式与要求 |
@@ -14,24 +16,27 @@
 | Android | Android 8.0 / API 26 及以上；按设备架构选择 APK |
 | iOS / iPadOS | 开发预览，最低 iOS 17；arm64 真机可使用 Release 中的未签名 IPA，自行签名后安装；也可通过 Xcode 构建 |
 
-发布流程会生成桌面安装包、Android APK 和 **iOS 未签名 IPA**。iOS IPA 需自行签名后安装，详见[签名说明](ios/UNSIGNED_IPA.md)。普通 CI 和 PR 构建的全部产物可在 Actions 下载；GitHub Release 附带 IPA、SHA-256 校验文件和签名说明，iOS 模拟器应用和未签名真机归档保留在 Actions。尚未配置 TestFlight 或 App Store 发布流程。各系统的实际兼容性仍需分别验证，构建通过不等于完成真机验收。
+按当前配置，发布流程会生成桌面安装包、Android APK 和 **iOS 未签名 IPA**。iOS IPA 需自行签名后安装，详见[签名说明](ios/UNSIGNED_IPA.md)。普通 CI 和 PR 构建产物上传到 Actions；Release 流程附带 IPA、SHA-256 校验文件和签名说明，iOS 模拟器应用和未签名真机归档保留在 Actions。尚未配置 TestFlight 或 App Store 发布流程。各系统的实际兼容性仍需分别验证，构建通过不等于完成真机验收。
 
 iOS 的环境光读取使用私有 IOHID 接口，Debug 和 Release 构建均包含该实现（模拟器不启用）。构建成功不代表已具备 App Store 分发条件，详见 [iOS 说明](ios/README.md)。
 
 ## 阅读与书库
 
-- 导入 EPUB，管理书库、目录与阅读位置；支持书内搜索、书签、划线和笔记。
-- 支持连续滚动和分页阅读。桌面与 Android 提供多种翻页效果；iOS 使用系统卷曲翻页与滑动过渡，具体范围见 [iOS 说明](ios/README.md)。
-- 可调整中英文字体、字号、行距、段距、页边距、纸张颜色及背景图片。应用界面和阅读外观可联动，也可分别设置。
+- 导入 EPUB，管理[书库](docs/LIBRARY.md)、目录与阅读位置；支持书内搜索、书签、划线和笔记。
+- 支持连续滚动和分页阅读。桌面与 Android 提供多种翻页效果；iOS 提供系统卷曲、滑动、覆盖及无动画翻页，具体范围见 [iOS 说明](ios/README.md)。
+- 可调整字体、字号、行距、段距、页边距、纸张颜色及背景图片。三端可分别选择中英文字体，英文字体也可跟随中文字体。字体库支持按需下载，详见[字体说明](docs/FONTS.md)。应用界面和阅读外观可联动，也可分别设置。
 - 提供阅读统计、朗读和可选的中文纠错（CSC）功能。在线语音与模型下载需要网络连接，具体实现随平台而异。
-- 桌面与 Android 支持 TXT 转 EPUB；iOS 当前通过文件导入器导入 EPUB。
+- 支持 TXT 转 EPUB，可识别一本书中混用的多种章节标题。识别结果可逐项取消、从原文补选，或结合正文摘录和自定义正则校正。当前 TXT 上限为 64 MiB，详见[三端功能对照](docs/PLATFORM_PARITY.md)。
+- 三端均可将书签、高亮和笔记导出为 Markdown，并提供书库备份导出、校验与合并恢复。备份不加密，也不包含账号凭据、配对密钥、下载字体和模型，详见[备份说明](docs/BACKUPS.md)。
 - 界面支持简体中文、English，并可跟随系统语言。
 
 EPUB 的样式、媒体与脚本支持有明确边界。项目保留共享文本坐标来恢复位置，不把不同设备的页码当作同一个位置。详见[原生排版](docs/EPUB_NATIVE_TYPOGRAPHY.md)、[媒体与交互](docs/EPUB_MEDIA_AND_INTERACTIVITY.md)和[分页与性能](docs/EPUB_PAGINATION_AND_PERFORMANCE.md)。
 
+各平台功能和限制见[三端功能对照](docs/PLATFORM_PARITY.md)。
+
 ## 同步与分享
 
-**多平台同步**用于自己的设备：支持局域网配对与 GitHub 私有仓库，可同步 EPUB、阅读进度及按设备记录的每日阅读／朗读时长。GitHub 同步需要授权并单独启用；阅读中收到其他设备更新的有效进度时，会自动跳转，左下角的返回按钮可回到跳转前的位置。
+**多平台同步**用于自己的设备：支持局域网配对与 GitHub 私有仓库，可同步 EPUB、阅读进度及按设备记录的每日阅读／朗读时长。GitHub 同步需要授权并单独启用，也支持书签、高亮和笔记同步。多台设备同时修改同一笔记时，各自的修改内容会保留；删除操作也会同步，详见[标注同步](docs/ANNOTATION_SYNC.md)。阅读中收到其他设备更新的有效进度时，会自动跳转，左下角的返回按钮可回到跳转前的位置。
 
 **书本分享**用于向他人发送选定书籍：提供局域网传输和 GitHub 加密分享链接 / 二维码。它与私有书库同步使用不同的流程和存储。收到的书籍先验证，再由接收者确认导入。
 
@@ -50,7 +55,7 @@ GitHub 私有同步需要 `repo` 权限，该权限范围大于单个同步仓�
 cargo build --locked --release -p rust_epub_reader
 ```
 
-运行生成的程序即可。需要缩短本地构建时间时，可改用 `--profile release-fast`。macOS 本地开发签名见[桌面签名说明](desktop/scripts/README.md)，公开分发仍需另行配置签名与公证。
+构建完成后运行生成的程序。需要缩短本地构建时间时，可改用 `--profile release-fast`。macOS 本地开发签名见[桌面签名说明](desktop/scripts/README.md)，公开分发仍需另行配置签名与公证。
 
 ### Android
 
@@ -81,7 +86,6 @@ open ios/RustEpubReader.xcodeproj
 - [贡献指南](CONTRIBUTING.md#简体中文)：开发环境、检查命令、Issue 与 PR 提交流程。
 - [提交 Issue](https://github.com/zhongbai2333/RustEpubReader/issues/new/choose)：请附客户端版本、系统与设备、复现步骤及必要日志。iOS 问题请注明真机或模拟器。
 - [构建与 CI](docs/BUILD_AND_CI.md)：各工作流、构建产物与本地检查。
-- [提交前检查记录](docs/PRECOMMIT_REVIEW.md)：本次检查的结果和未验证项。
 
 不要在 Issue、PR 或测试材料中附上令牌、签名密钥或完整私有书籍；优先使用可公开复现的样例。
 

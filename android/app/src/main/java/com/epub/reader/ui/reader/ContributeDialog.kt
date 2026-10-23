@@ -21,6 +21,7 @@ fun ContributeDialog(
     show: Boolean,
     sampleCount: Int,
     samples: String,
+    onSamplesChange:(String)->Unit,
     githubUsername: String?,
     inProgress: Boolean,
     status: String,
@@ -103,7 +104,7 @@ fun ContributeDialog(
             ) {
                 // Description
                 Text(
-                    text = I18n.t("csc.contribute_desc"),
+                    text = I18n.t("contribution.public"),
                     style = MaterialTheme.typography.bodyMedium,
                 )
 
@@ -121,22 +122,14 @@ fun ContributeDialog(
                         text = I18n.t("csc.contribute_preview"),
                         style = MaterialTheme.typography.labelMedium,
                     )
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = samples.lines().take(5).joinToString("\n"),
-                            modifier = Modifier.padding(8.dp),
-                            style =
-                                MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                ),
-                            maxLines = 5,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    val rows=samples.lineSequence().filter{it.isNotBlank()}.toList()
+                    androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().heightIn(max=250.dp)){
+                        items(rows.size){index->val row=runCatching{org.json.JSONObject(rows[index])}.getOrNull()
+                            Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
+                                Column(Modifier.weight(1f)){Text(row?.optString("input")?:"",color=MaterialTheme.colorScheme.onSurfaceVariant);Text(row?.optString("output")?:"")}
+                                TextButton(onClick={onSamplesChange(rows.filterIndexed{i,_->i!=index}.joinToString("\n"))},enabled=!inProgress){Text("×")}
+                            };HorizontalDivider()
+                        }
                     }
                 }
 

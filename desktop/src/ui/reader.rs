@@ -1752,6 +1752,10 @@ impl ReaderApp {
                 );
                 match res {
                     SelToolbarResult::KeepOpen => {}
+                    SelToolbarResult::Service(kind) => {
+                        self.start_reading_service(kind, selected_text.clone(), ui.ctx());
+                        self.text_selection = None;
+                    }
                     SelToolbarResult::Close => {
                         self.text_selection = None;
                     }

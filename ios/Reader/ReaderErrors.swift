@@ -2,6 +2,10 @@ import Foundation
 
 enum ReaderErrors {
     static func display(_ raw: String) -> String {
+        for (code, key) in [("TXT_INVALID_REGEX", "txt.error_regex"), ("TXT_PATTERN_NO_MATCH", "txt.error_no_match"), ("TXT_ENCODING_FAILED", "txt.error_encoding"), ("TXT_TOO_LARGE", "txt.error_size"), ("TXT_EMPTY", "txt.error_empty"), ("TXT_INVALID_SELECTION", "txt.error_selection")] {
+            if raw.contains(code) { return L(key) }
+        }
+        if raw.hasPrefix("Reading service") || raw.hasPrefix("Service requires") || raw.hasPrefix("Invalid service") || raw.hasPrefix("No text result") || raw.hasPrefix("Credentials must") {return L("services.error")}
         if raw.hasPrefix("无法打开 EPUB 文件:") || raw.hasPrefix("无法读取资源:") { return L("reader.error_epub_read_failed") }
         if raw == "EPUB has no readable chapters" { return L("reader.error_epub_no_readable_chapters") }
         if raw == "EPUB exceeds the local 100 MiB limit" || raw == "EPUB exceeds the local 1 GiB limit" { return L("reader.error_file_exceeds_limit") }

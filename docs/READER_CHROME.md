@@ -12,7 +12,9 @@ area. The overflow fallback pins its footer to the scroll viewport.
 
 The optional time and battery information uses the same paper-owned footer,
 aligned to the bottom-left. Scroll reading uses viewport footers instead.
-The setting is off by default and is available under Themes & Settings > More.
+The setting defaults to on when no saved preference exists and is available under Themes & Settings
+> More. The `preview.showImmersiveStatus` preference retains an existing choice, including off.
+See [first-reading defaults](READING_APPEARANCE.md#first-reading-defaults-and-introduction).
 The clock and battery refresh every 15 seconds while the reader is active.
 Battery monitoring is reference-counted and restores its prior state when no
 reader needs it. An unknown battery level displays time alone. Menu visibility
@@ -56,14 +58,3 @@ time and battery in the bottom-left viewport corner.
 
 Desktop, Android and iOS place Layout Style immediately before Layout, keeping
 the Native/Mixed/Classic choice next to the spacing controls it governs.
-
-## Verification
-
-`target/ios-page-footer-20261015/` contains builds, native snapshots and reports.
-Eight iOS native cases cover portrait/landscape and curl/slide/cover/none,
-checking paper ownership, safe bottom-right placement, correct page numbers
-after turns and status toggles without repagination. Native phone screenshots
-also show time and page number remaining visible under an open menu.
-Android menu persistence and adjacent settings groups were verified through the
-actual emulator UI. Desktop settings order was checked in source and compiled;
-this change does not add a new desktop runtime acceptance claim.

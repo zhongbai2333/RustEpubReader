@@ -1,498 +1,401 @@
-//! 章节识别 — 规则引擎。
-//!
-//! 三级优先级匹配 + 可选启发式 + 用户自定义正则。
-
+//! Chapter boundaries are evaluated locally; a book may mix heading styles.
 use regex::Regex;
-use std::sync::OnceLock;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
-/// 识别出的原始章节。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RawChapter {
     pub title: String,
     pub content: String,
     pub line_start: usize,
+    pub is_heading: bool,
 }
-
-/// 章节预览信息（供 UI 展示）。
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChapterPreview {
     pub title: String,
     pub line_start: usize,
     pub char_count: usize,
+    pub is_heading: bool,
+    pub excerpt: String,
 }
-
-/// 拆分配置。
 #[derive(Debug, Clone)]
 pub struct SplitConfig {
-    /// 最小章节字数（低于此值的章节合并到上一章），默认 100。
+    /// Minimum body evidence for ambiguous numbered/unnumbered headings.
+    /// Explicit chapter headings are never merged for being short.
     pub min_chapter_chars: usize,
-    /// 是否启用启发式检测，默认 false。
     pub use_heuristic: bool,
-    /// 用户自定义正则表达式（匹配整行作为章节标题）。
     pub custom_regex: Option<String>,
 }
-
 impl Default for SplitConfig {
     fn default() -> Self {
         Self {
             min_chapter_chars: 100,
-            use_heuristic: false,
+            use_heuristic: true,
             custom_regex: None,
         }
     }
 }
-
-// ── 规则正则 ────────────────────────────────────────────────────
-
-/// 高优先级：中文数字 第X章/节/回/卷/部/篇/集/幕
-fn re_chinese_numeral_chapter() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| {
-        Regex::new(r"(?m)^[\s　]*第[零〇一二三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟]+[章节回卷部篇集幕]").unwrap()
-    })
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Explicit,
+    Numbered,
+    Plain,
 }
-
-/// 高优先级：阿拉伯数字 第X章/节/回/卷/部/篇/集/幕
-fn re_arabic_numeral_chapter() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?m)^[\s　]*第\d+[章节回卷部篇集幕]").unwrap())
+struct Candidate {
+    line: usize,
+    kind: Kind,
+    ordinal: Option<u32>,
 }
-
-/// 高优先级：英文 Chapter/CHAPTER
-fn re_english_chapter() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?im)^[\s]*(?:chapter|part|book|volume)\s+\d+").unwrap())
+fn rules() -> &'static [Regex; 5] {
+    static RULES: OnceLock<[Regex; 5]> = OnceLock::new();
+    RULES.get_or_init(|| [
+        Regex::new(r"^第\s*([零〇○一二两三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+)\s*[章节回卷部篇集幕]").unwrap(),
+        Regex::new(r"(?i)^(?:chapter|part|book|volume)\s+([0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b").unwrap(),
+        Regex::new(r"^卷\s*([零〇一二两三四五六七八九十百千万0-9０-９]+)").unwrap(),
+        Regex::new(r"(?i)^(?:序章|序言|序|楔子|引子|前言|引言|开篇|尾声|终章|后记|番外[零〇一二两三四五六七八九十百0-9０-９]*|完结感言|完本感言|作品相关|prologue|foreword|preface|introduction|epilogue|afterword|conclusion)(?:$|[\s:：·—\-].*)").unwrap(),
+        Regex::new(r"^([0-9０-９]{1,6}(?:[-－.．][0-9０-９]{1,6})*)(?:[.．、:：\-－]\s*\S.*|\s+\S.*|$)").unwrap(),
+    ])
 }
-
-/// 高优先级：卷X
-fn re_volume_prefix() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?m)^[\s　]*卷[零〇一二三四五六七八九十百千万\d]+").unwrap())
-}
-
-/// 高优先级：带括号的卷名 【第X卷...】
-fn re_bracketed_volume() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| {
-        Regex::new(r"(?m)^[\s　]*【第[零〇一二三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟\d]+[卷部篇集].*】\s*$").unwrap()
-    })
-}
-
-/// 中优先级：起始特殊章节
-fn re_special_start() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| {
-        Regex::new(r"(?m)^[\s　]*(序章|序言|楔子|引子|前言|引言|开篇|Prologue|Foreword|Preface|Introduction)\s*$").unwrap()
-    })
-}
-
-/// 中优先级：结尾特殊章节
-fn re_special_end() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| {
-        Regex::new(r"(?m)^[\s　]*(尾声|终章|后记|番外|完结感言|完本感言|作品相关|Epilogue|Afterword|Conclusion)").unwrap()
-    })
-}
-
-/// 低优先级：数字编号行（带分隔符）
-fn re_numbered_with_sep() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?m)^[\s　]*\d{1,4}[\.、]\s*\S").unwrap())
-}
-
-/// 低优先级：纯数字行
-fn re_pure_number() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?m)^[\s　]*\d{1,4}\s*$").unwrap())
-}
-
-// ── 核心拆分逻辑 ────────────────────────────────────────────────
-
-/// 拆分文本为章节列表。
-pub fn split_chapters(text: &str, config: &SplitConfig) -> Vec<RawChapter> {
-    let lines: Vec<&str> = text.lines().collect();
-
-    // 1. 用户自定义正则优先
-    if let Some(ref pattern) = config.custom_regex {
-        if let Ok(re) = Regex::new(pattern) {
-            let matches = find_matches_by_regex(&lines, &re);
-            if matches.len() >= 2 {
-                return build_chapters_from_matches(&lines, &matches, config.min_chapter_chars);
+fn ordinal(s: &str) -> Option<u32> {
+    let s: String = s
+        .chars()
+        .map(|c| {
+            if ('０'..='９').contains(&c) {
+                char::from_u32(c as u32 - '０' as u32 + '0' as u32).unwrap()
+            } else {
+                c
             }
-            if matches.len() == 1 {
-                return build_chapters_from_matches(&lines, &matches, config.min_chapter_chars);
-            }
-        }
-    }
-
-    // 2. 高优先级规则
-    let high_regexes: Vec<&Regex> = vec![
-        re_chinese_numeral_chapter(),
-        re_arabic_numeral_chapter(),
-        re_english_chapter(),
-        re_volume_prefix(),
-        re_bracketed_volume(),
-    ];
-    // 特殊标记（序章/番外等）始终参与合并
-    let special_regexes: Vec<&Regex> = vec![re_special_start(), re_special_end()];
-
-    for re in &high_regexes {
-        let matches = find_matches_by_regex(&lines, re);
-        if matches.len() >= 2 && is_spacing_reasonable(&matches, lines.len()) {
-            // 高优先级命中后，追加特殊标记（番外/序章等）
-            let merged = merge_special_markers(&lines, matches, &special_regexes);
-            return build_chapters_from_matches(&lines, &merged, config.min_chapter_chars);
-        }
-    }
-
-    // 合并所有高优先级结果看看
-    let mut all_high: Vec<(usize, String)> = Vec::new();
-    for re in &high_regexes {
-        all_high.extend(find_matches_by_regex(&lines, re));
-    }
-    all_high.sort_by_key(|(idx, _)| *idx);
-    all_high.dedup_by_key(|(idx, _)| *idx);
-    if all_high.len() >= 2 && is_spacing_reasonable(&all_high, lines.len()) {
-        let merged = merge_special_markers(&lines, all_high, &special_regexes);
-        return build_chapters_from_matches(&lines, &merged, config.min_chapter_chars);
-    }
-
-    // 3. 中优先级：特殊章节标记（与高优先级合并后尝试）
-    let all_mid = {
-        let mut v: Vec<(usize, String)> = Vec::new();
-        for re in &high_regexes {
-            v.extend(find_matches_by_regex(&lines, re));
-        }
-        for re in &special_regexes {
-            v.extend(find_matches_by_regex(&lines, re));
-        }
-        v.sort_by_key(|(idx, _)| *idx);
-        v.dedup_by_key(|(idx, _)| *idx);
-        v
-    };
-    if all_mid.len() >= 2 && is_spacing_reasonable(&all_mid, lines.len()) {
-        return build_chapters_from_matches(&lines, &all_mid, config.min_chapter_chars);
-    }
-
-    // 4. 低优先级：数字编号（仅在高/中无结果时）
-    if all_mid.is_empty() {
-        let low_regexes: Vec<&Regex> = vec![re_numbered_with_sep(), re_pure_number()];
-        for re in &low_regexes {
-            let matches = find_matches_by_regex(&lines, re);
-            if matches.len() >= 2 && is_spacing_reasonable(&matches, lines.len()) {
-                return build_chapters_from_matches(&lines, &matches, config.min_chapter_chars);
-            }
-        }
-    }
-
-    // 5. 启发式（需用户开启）
-    if config.use_heuristic {
-        let heuristic_matches = heuristic_detect(&lines);
-        if heuristic_matches.len() >= 2 && is_spacing_reasonable(&heuristic_matches, lines.len()) {
-            return build_chapters_from_matches(
-                &lines,
-                &heuristic_matches,
-                config.min_chapter_chars,
-            );
-        }
-    }
-
-    // 6. 如果有单个匹配点（来自高/中），构建两章
-    if all_mid.len() == 1 {
-        return build_chapters_from_matches(&lines, &all_mid, config.min_chapter_chars);
-    }
-
-    // 7. 回退：机械分割
-    fallback_split(&lines)
-}
-
-/// 在每行上运行正则，收集匹配行号和标题文本。
-fn find_matches_by_regex(lines: &[&str], re: &Regex) -> Vec<(usize, String)> {
-    let mut matches = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() && re.is_match(trimmed) {
-            matches.push((i, trimmed.to_string()));
-        }
-    }
-    matches
-}
-
-/// 将特殊标记（番外/序章等）追加到已有匹配中，去重排序。
-fn merge_special_markers(
-    lines: &[&str],
-    mut matches: Vec<(usize, String)>,
-    special_regexes: &[&Regex],
-) -> Vec<(usize, String)> {
-    for re in special_regexes {
-        matches.extend(find_matches_by_regex(lines, re));
-    }
-    matches.sort_by_key(|(idx, _)| *idx);
-    matches.dedup_by_key(|(idx, _)| *idx);
-    matches
-}
-
-/// 检查候选匹配的间距是否合理。
-fn is_spacing_reasonable(matches: &[(usize, String)], total_lines: usize) -> bool {
-    if matches.len() < 2 {
-        return false;
-    }
-
-    // 间距列表
-    let spacings: Vec<usize> = matches
-        .windows(2)
-        .map(|w| w[1].0.saturating_sub(w[0].0))
+        })
         .collect();
-
-    // 中位数
-    let mut sorted = spacings.clone();
-    sorted.sort();
-    let median = sorted[sorted.len() / 2];
-
-    // 间距中位数合理性：10~10000 行
-    if !(10..=10000).contains(&median) {
-        return false;
+    if let Ok(n) = s.parse() {
+        return Some(n);
     }
-
-    // 数量合理性：候选数 / 总行数 < 5%
-    if total_lines > 0 && (matches.len() as f64 / total_lines as f64) > 0.05 {
-        return false;
+    // Compound labels such as 1-1 are assessed structurally, not as decimals.
+    if s.contains(['-', '－', '.', '．']) {
+        return None;
     }
-
-    true
-}
-
-/// 从匹配结果构建章节列表。
-fn build_chapters_from_matches(
-    lines: &[&str],
-    matches: &[(usize, String)],
-    min_chars: usize,
-) -> Vec<RawChapter> {
-    let mut chapters = Vec::new();
-
-    // 第一个匹配点之前的内容（如果有足够内容）
-    if matches[0].0 > 0 {
-        let content: String = lines[..matches[0].0].join("\n");
-        let trimmed = content.trim();
-        if !trimmed.is_empty() && trimmed.chars().count() >= min_chars {
-            chapters.push(RawChapter {
-                title: "前言".to_string(),
-                content: trimmed.to_string(),
-                line_start: 0,
-            });
+    let mut total = 0u32;
+    let mut digit = 0u32;
+    for c in s.chars() {
+        match c {
+            '零' | '〇' | '○' => digit = 0,
+            '一' | '壹' => digit = 1,
+            '二' | '两' | '贰' => digit = 2,
+            '三' | '叁' => digit = 3,
+            '四' | '肆' => digit = 4,
+            '五' | '伍' => digit = 5,
+            '六' | '陆' => digit = 6,
+            '七' | '柒' => digit = 7,
+            '八' | '捌' => digit = 8,
+            '九' | '玖' => digit = 9,
+            '十' | '拾' => {
+                total = total.checked_add(digit.max(1) * 10)?;
+                digit = 0
+            }
+            '百' | '佰' => {
+                total = total.checked_add(digit.max(1) * 100)?;
+                digit = 0
+            }
+            '千' | '仟' => {
+                total = total.checked_add(digit.max(1) * 1000)?;
+                digit = 0
+            }
+            '万' => {
+                total = total.checked_add(digit)?.max(1).checked_mul(10000)?;
+                digit = 0
+            }
+            _ => return None,
         }
     }
-
-    // 每个匹配点到下一个匹配点之间的内容
-    for (i, (line_idx, title)) in matches.iter().enumerate() {
-        let content_start = line_idx + 1;
-        let content_end = if i + 1 < matches.len() {
-            matches[i + 1].0
-        } else {
-            lines.len()
-        };
-
-        let content = if content_start < content_end {
-            lines[content_start..content_end].join("\n")
-        } else {
-            String::new()
-        };
-
-        chapters.push(RawChapter {
-            title: title.clone(),
-            content: content.trim().to_string(),
-            line_start: *line_idx,
-        });
-    }
-
-    // 合并过短章节到上一章
-    merge_short_chapters(&mut chapters, min_chars);
-
-    chapters
+    total.checked_add(digit)
 }
-
-/// 合并内容过短的章节到前一章。
-fn merge_short_chapters(chapters: &mut Vec<RawChapter>, min_chars: usize) {
-    if chapters.len() <= 1 {
-        return;
+fn candidate(line: &str, index: usize, heuristic: bool) -> Option<Candidate> {
+    let text = line.trim();
+    let len = text.chars().count();
+    if len == 0 || len > 96 {
+        return None;
     }
-
-    let mut i = 1;
-    while i < chapters.len() {
-        if chapters[i].content.chars().count() < min_chars && i > 0 {
-            let merged_content = {
-                let prev = &chapters[i - 1];
-                let curr = &chapters[i];
-                format!("{}\n\n{}\n{}", prev.content, curr.title, curr.content)
-            };
-            chapters[i - 1].content = merged_content;
-            chapters.remove(i);
-        } else {
-            i += 1;
-        }
-    }
-}
-
-/// 回退：按 200 行机械分割。
-fn fallback_split(lines: &[&str]) -> Vec<RawChapter> {
-    let chunk_size = 200;
-    let mut chapters = Vec::new();
-
-    for (i, chunk) in lines.chunks(chunk_size).enumerate() {
-        let content = chunk.join("\n");
-        let trimmed = content.trim();
-        if !trimmed.is_empty() {
-            chapters.push(RawChapter {
-                title: format!("第{}部分", i + 1),
-                content: trimmed.to_string(),
-                line_start: i * chunk_size,
-            });
-        }
-    }
-
-    if chapters.is_empty() {
-        chapters.push(RawChapter {
-            title: "全文".to_string(),
-            content: lines.join("\n").trim().to_string(),
-            line_start: 0,
-        });
-    }
-
-    chapters
-}
-
-// ── 启发式检测 ──────────────────────────────────────────────────
-
-/// 启发式检测候选章节标题。
-fn heuristic_detect(lines: &[&str]) -> Vec<(usize, String)> {
-    let mut candidates: Vec<(usize, String)> = Vec::new();
-
-    // 句末标点
-    let end_puncts = ['。', '！', '？', '；', '…', '」', '』', '"', ')', '）'];
-    // 对话引号
-    let dialog_chars = ['"', '「', '『', '"'];
-    // 人称代词
-    let pronouns = ["我", "你", "他", "她", "它", "们"];
-    // 语气词
-    let particles = ["吗", "呢", "啊", "哦", "嗯", "吧", "了", "的"];
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-
-        // 基本长度约束
-        if trimmed.is_empty() || trimmed.chars().count() > 30 {
-            continue;
-        }
-
-        // 不以句末标点结尾
-        if let Some(last) = trimmed.chars().last() {
-            if end_puncts.contains(&last) {
+    let bare = text.trim_start_matches(['【', '[', '（', '(']).trim();
+    for re in &rules()[..4] {
+        if let Some(c) = re.captures(bare) {
+            let suffix = &bare[c.get(0).unwrap().end()..];
+            // A prose sentence referring to a chapter is not its heading.
+            if suffix.starts_with(['中', '里', '的']) && suffix.contains(['，', '。', ',']) {
                 continue;
             }
+            if text.ends_with('。') {
+                continue;
+            }
+            return Some(Candidate {
+                line: index,
+                kind: Kind::Explicit,
+                ordinal: c.get(1).and_then(|n| ordinal(n.as_str())),
+            });
         }
-
-        // 不含对话引号
-        if trimmed.chars().any(|c| dialog_chars.contains(&c)) {
-            continue;
-        }
-
-        // 不含人称代词
-        if pronouns.iter().any(|p| trimmed.contains(p)) {
-            continue;
-        }
-
-        // 不含常见语气词
-        if particles.iter().any(|p| trimmed.contains(p)) {
-            continue;
-        }
-
-        // 非纯标点/符号
-        let has_content = trimmed.chars().any(|c| c.is_alphanumeric() || c > '\x7F');
-        if !has_content {
-            continue;
-        }
-
-        // 前后均有空行（首尾行特殊处理）
-        let prev_blank = i == 0 || lines[i - 1].trim().is_empty();
-        let next_blank = i >= lines.len() - 1 || lines[i + 1].trim().is_empty();
-        if !prev_blank || !next_blank {
-            continue;
-        }
-
-        candidates.push((i, trimmed.to_string()));
     }
-
-    // 全局校验
-    if candidates.len() < 2 {
-        return candidates;
+    if len <= 64 && !text.ends_with(['。', '，', '；', ',', ';']) {
+        if let Some(c) = rules()[4].captures(bare) {
+            return Some(Candidate {
+                line: index,
+                kind: Kind::Numbered,
+                ordinal: c.get(1).and_then(|n| ordinal(n.as_str())),
+            });
+        }
     }
-
-    let total = lines.len();
-
-    // 数量合理性
-    if total > 0 && (candidates.len() as f64 / total as f64) > 0.02 {
-        return Vec::new();
+    if heuristic
+        && (2..=32).contains(&len)
+        && text.chars().any(char::is_alphanumeric)
+        && !text.contains([
+            '。', '，', '；', '：', '“', '”', '「', '」', ',', ';', ':', '"',
+        ])
+        && !text.ends_with(['！', '？', '!', '?', '.'])
+    {
+        return Some(Candidate {
+            line: index,
+            kind: Kind::Plain,
+            ordinal: None,
+        });
     }
+    None
+}
 
-    // 间距分析
-    let spacings: Vec<usize> = candidates
-        .windows(2)
-        .map(|w| w[1].0.saturating_sub(w[0].0))
+pub fn split_chapters(text: &str, config: &SplitConfig) -> Vec<RawChapter> {
+    split_chapters_excluding(text, config, &[])
+}
+/// Excluding a boundary preserves its heading line in the adjacent body.
+pub fn split_chapters_excluding(
+    text: &str,
+    config: &SplitConfig,
+    excluded: &[usize],
+) -> Vec<RawChapter> {
+    split_chapters_selected(text, config, excluded, &[])
+}
+pub fn split_chapters_selected(
+    text: &str,
+    config: &SplitConfig,
+    excluded: &[usize],
+    included: &[usize],
+) -> Vec<RawChapter> {
+    let lines: Vec<&str> = text.lines().collect();
+    let omitted: HashSet<usize> = excluded.iter().copied().collect();
+    let matches: Vec<usize> = if let Some(pattern) = config
+        .custom_regex
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        match Regex::new(pattern) {
+            Ok(re) => lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| !l.trim().is_empty() && re.is_match(l.trim()))
+                .map(|(i, _)| i)
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        detect(&lines, config)
+    };
+    let mut selected: Vec<usize> = matches
+        .into_iter()
+        .chain(included.iter().copied())
+        .filter(|i| *i < lines.len() && !lines[*i].trim().is_empty() && !omitted.contains(i))
         .collect();
-
-    if spacings.is_empty() {
-        return Vec::new();
+    selected.sort_unstable();
+    selected.dedup();
+    if selected.is_empty() {
+        return fallback(&lines);
     }
-
-    let mut sorted_spacings = spacings.clone();
-    sorted_spacings.sort();
-    let median = sorted_spacings[sorted_spacings.len() / 2];
-
-    // 间距中位数合理性
-    if !(50..=5000).contains(&median) {
-        return Vec::new();
+    let mut chapters = Vec::new();
+    let front = lines[..selected[0]].join("\n");
+    if !front.trim().is_empty() {
+        chapters.push(RawChapter {
+            title: "前言".into(),
+            content: front.trim().into(),
+            line_start: 0,
+            is_heading: false,
+        });
     }
-
-    // 间距规律性（标准差/均值 ≤ 0.5）
-    let mean = spacings.iter().sum::<usize>() as f64 / spacings.len() as f64;
-    if mean > 0.0 {
-        let variance = spacings
-            .iter()
-            .map(|&s| (s as f64 - mean).powi(2))
-            .sum::<f64>()
-            / spacings.len() as f64;
-        let std_dev = variance.sqrt();
-        if std_dev / mean > 0.5 {
-            return Vec::new();
+    for (n, &start) in selected.iter().enumerate() {
+        let end = selected.get(n + 1).copied().unwrap_or(lines.len());
+        chapters.push(RawChapter {
+            title: lines[start].trim().into(),
+            content: lines[start + 1..end].join("\n").trim().into(),
+            line_start: start,
+            is_heading: true,
+        });
+    }
+    chapters
+}
+fn detect(lines: &[&str], config: &SplitConfig) -> Vec<usize> {
+    let isolated = |i: usize| {
+        (i == 0 || lines[i - 1].trim().is_empty())
+            && (i + 1 == lines.len() || lines[i + 1].trim().is_empty())
+    };
+    let candidates: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| candidate(line, i, config.use_heuristic))
+        .filter(|c| c.kind != Kind::Plain || isolated(c.line))
+        .collect();
+    let mut prefix = vec![0usize];
+    for line in lines {
+        prefix.push(prefix.last().unwrap() + line.trim().chars().count());
+    }
+    let bodies: Vec<_> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            prefix[candidates.get(i + 1).map_or(lines.len(), |n| n.line)] - prefix[c.line + 1]
+        })
+        .collect();
+    let threshold = config.min_chapter_chars.max(24);
+    let numeric_peers = candidates
+        .iter()
+        .zip(&bodies)
+        .filter(|(c, n)| c.kind == Kind::Numbered && **n >= threshold)
+        .count();
+    let plain_peers = candidates
+        .iter()
+        .zip(&bodies)
+        .filter(|(c, n)| c.kind == Kind::Plain && **n >= threshold)
+        .count();
+    let explicit = candidates.iter().any(|c| c.kind == Kind::Explicit);
+    let mut selected = Vec::new();
+    for (i, c) in candidates.iter().enumerate() {
+        let body = bodies[i];
+        let ordinal_link = c.ordinal.is_some_and(|n| {
+            i > 0
+                && candidates[i - 1]
+                    .ordinal
+                    .is_some_and(|p| p.checked_add(1) == Some(n))
+                && candidates[i - 1].kind == Kind::Explicit
+                || candidates.get(i + 1).is_some_and(|next| {
+                    next.kind == Kind::Explicit && next.ordinal == n.checked_add(1)
+                })
+        });
+        let list_tail = i > 0
+            && candidates[i - 1].kind == Kind::Numbered
+            && bodies[i - 1] < 24
+            && c.line - candidates[i - 1].line <= 3;
+        let accept = match c.kind {
+            Kind::Explicit => true,
+            Kind::Numbered => {
+                !list_tail
+                    && (body >= threshold && (numeric_peers >= 2 || explicit && isolated(c.line))
+                        || body > 0 && ordinal_link)
+            }
+            Kind::Plain => body >= threshold && (plain_peers >= 2 || explicit) && isolated(c.line),
+        };
+        if accept {
+            selected.push(c.line)
         }
     }
-
-    // 二次过滤：标题后跟长段落 + 标题前有标点结尾行
-    candidates.retain(|(idx, _)| {
-        // 后面 3 行中至少 1 行 >30 字
-        let has_following_paragraph = (1..=3).any(|offset| {
-            let next_idx = idx + offset;
-            next_idx < lines.len() && lines[next_idx].trim().chars().count() > 30
-        });
-
-        // 前面最近的非空行以标点结尾
-        let has_preceding_end = (1..=3).any(|offset| {
-            if *idx < offset {
-                return false;
+    // Keep an initial printed TOC as text instead of importing duplicate empty chapters.
+    let candidate_lines: HashSet<_> = candidates
+        .iter()
+        .filter(|c| c.kind != Kind::Plain)
+        .map(|c| c.line)
+        .collect();
+    let last_occurrence: HashMap<_, _> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.trim(), i))
+        .collect();
+    for (i, line) in lines.iter().enumerate() {
+        if !matches!(
+            line.trim().to_lowercase().as_str(),
+            "目录" | "目 录" | "contents" | "table of contents"
+        ) {
+            continue;
+        }
+        let mut run = Vec::new();
+        let mut seen_titles = HashSet::new();
+        for (j, l) in lines.iter().enumerate().skip(i + 1) {
+            if l.trim().is_empty() {
+                continue;
             }
-            let prev_line = lines[idx - offset].trim();
-            if prev_line.is_empty() {
-                return false;
+            if candidate_lines.contains(&j) {
+                if !seen_titles.insert(l.trim()) {
+                    break;
+                }
+                run.push(j)
+            } else {
+                break;
             }
-            let end_puncts = ['。', '！', '？', '；', '…', '」', '』', '"'];
-            prev_line
-                .chars()
-                .last()
-                .is_some_and(|c| end_puncts.contains(&c))
+        }
+        if run.len() >= 2
+            && run
+                .iter()
+                .filter(|&&j| {
+                    last_occurrence
+                        .get(lines[j].trim())
+                        .is_some_and(|&last| last > j)
+                })
+                .count()
+                >= 2
+        {
+            let toc: HashSet<_> = run.into_iter().collect();
+            selected.retain(|j| !toc.contains(j));
+        }
+    }
+    selected
+}
+fn fallback(lines: &[&str]) -> Vec<RawChapter> {
+    const LIMIT: usize = 8000;
+    let mut result = Vec::new();
+    let mut content = String::new();
+    let mut count = 0;
+    let mut start = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let mut rest = *line;
+        while !rest.is_empty() {
+            let room = LIMIT - count;
+            let end = rest.char_indices().nth(room).map_or(rest.len(), |(n, _)| n);
+            if content.is_empty() {
+                start = i
+            }
+            content.push_str(&rest[..end]);
+            count += rest[..end].chars().count();
+            rest = &rest[end..];
+            if count == LIMIT {
+                result.push(RawChapter {
+                    title: format!("第{}部分", result.len() + 1),
+                    content: content.trim().into(),
+                    line_start: start,
+                    is_heading: false,
+                });
+                content.clear();
+                count = 0;
+            }
+        }
+        if !content.is_empty() {
+            content.push('\n')
+        }
+        // Prefer paragraph boundaries rather than forcing every part to its upper bound.
+        if count >= 6000 {
+            result.push(RawChapter {
+                title: format!("第{}部分", result.len() + 1),
+                content: content.trim().into(),
+                line_start: start,
+                is_heading: false,
+            });
+            content.clear();
+            count = 0;
+        }
+    }
+    if !content.trim().is_empty() || result.is_empty() {
+        result.push(RawChapter {
+            title: if result.is_empty() {
+                "全文".into()
+            } else {
+                format!("第{}部分", result.len() + 1)
+            },
+            content: content.trim().into(),
+            line_start: start,
+            is_heading: false,
         });
-
-        has_following_paragraph && has_preceding_end
-    });
-
-    candidates
+    }
+    result
 }

@@ -36,7 +36,7 @@ internal fun buildSpanAnnotatedString(
     onLinkClick: ((String) -> Unit)? = null,
     native: NativeStyle = NativeStyle(),
     sourceCharOffset: Int = 0
-): AnnotatedString {
+, latinFamily: FontFamily? = null): AnnotatedString {
     return buildAnnotatedString {
         for (span in spans) {
             val weight = when (span.style) {
@@ -82,6 +82,15 @@ internal fun buildSpanAnnotatedString(
                 )
             }
         }
+        if(latinFamily != null) {
+            val value=toAnnotatedString().text;var start=-1;var i=0
+            while(i<value.length){val cp=value.codePointAt(i);val latin=Character.UnicodeScript.of(cp)==Character.UnicodeScript.LATIN || (cp in 0x21..0x7e)
+                if(latin && start<0)start=i
+                if(!latin && start>=0){addStyle(SpanStyle(fontFamily=latinFamily),start,i);start=-1}
+                i+=Character.charCount(cp)
+            }
+            if(start>=0)addStyle(SpanStyle(fontFamily=latinFamily),start,value.length)
+        }
         for(item in native.inline) {
             val start=(item.start-sourceCharOffset).coerceIn(0,length);val end=(item.end-sourceCharOffset).coerceIn(0,length);if(end<=start)continue
             val family=when(item.family){"serif"->FontFamily.Serif;"sans-serif"->FontFamily.SansSerif;"monospace"->FontFamily.Monospace;else->null}
@@ -114,4 +123,12 @@ internal fun normalizeInternalHref(raw: String): String {
 internal fun extractAnchorFromHref(raw: String): String? {
     val hashPos = raw.indexOf('#')
     return if (hashPos >= 0) raw.substring(hashPos + 1).trim() else null
+}
+
+internal fun mixedScriptText(text:String,family:FontFamily,latinFamily:FontFamily?):AnnotatedString = buildAnnotatedString {
+    append(text)
+    if(latinFamily!=null){var start=-1;var i=0;while(i<text.length){val cp=text.codePointAt(i);val latin=Character.UnicodeScript.of(cp)==Character.UnicodeScript.LATIN || cp in 0x21..0x7e
+        if(latin&&start<0)start=i
+        if(!latin&&start>=0){addStyle(SpanStyle(fontFamily=latinFamily),start,i);start=-1};i+=Character.charCount(cp)
+    };if(start>=0)addStyle(SpanStyle(fontFamily=latinFamily),start,text.length)}
 }

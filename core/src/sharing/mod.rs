@@ -78,3 +78,6 @@ mod tests {
         set_debug_logging_enabled(original);
     }
 }
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+mod bonjour;

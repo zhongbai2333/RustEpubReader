@@ -38,12 +38,9 @@ silently adopt a timing baseline or claim a successful timing comparison before
 a compatible baseline has been reviewed. Existing normal CI tests continue to
 check lazy loading, native pagination, cache behavior and large-shelf responsiveness.
 
-Local macOS/Apple M4 collection and a second compatible comparison passed. This
-does not measure application first paint, actual display/GPU presentation, reader
-menu responsiveness, cancellation latency, thousands of covers or device battery
-use. The separate native collector below measures client-specific timings. Native
-platforms and physical devices cannot inherit the shared-core timing result as
-their own acceptance.
+The core probe does not measure application first paint, GPU presentation, menu
+responsiveness, cancellation, shelf covers or battery use. Collect these through
+the appropriate native harness and device-specific measurements.
 
 ## Native client collection
 
@@ -135,8 +132,7 @@ Physical footprint/PSS/RSS remain distinct counters. The iOS/Android body walk
 runs through the production lazy source and style bridge in the background;
 desktop also lays out each walked chapter. Native continuous-scroll longevity,
 loading cancellation, dense shelves and physical-device calibration remain
-separate checks. These additions are implemented; media/short-book Release runs
-must still pass before this stage is marked verified.
+separate checks. Collect media and short-book runs separately from long-publication samples.
 
 ## Opening cancellation
 
@@ -289,16 +285,8 @@ This reduces startup interference; it cannot guarantee zero contention during a
 run, so raw traces, repeated processes and independent repeated collections remain
 necessary. Keep compilers and other heavy tests out of timed collection windows.
 
-On Apple M4 / Xcode 27.2 / iOS 27.2 Simulator, an unchanged Release app reproduced
-the 2,000-book, 1032×1376-point shelf's approximately 49ms median-run P95 when
-launched amid fresh Simulator startup work. With the CPU preflight, the same
-artifact's median-run P95 was 16.67ms. This establishes an environment confound,
-not an application speedup or a proof that all historical slow frames had that
-cause. Independent version3 samples additionally check actual callback cadence.
-Local evidence is under `target/stage03-autonomous-20261020/`; final repeatability
-results and exact build/corpus fingerprints are indexed in its verification report.
-Physical devices, other graphics backends and product latency targets still need
-their own baselines. Do not reuse simulator thresholds as physical-device promises.
+Physical devices, other graphics backends and product latency targets need their
+own baselines. Do not reuse simulator thresholds as physical-device promises.
 
 ### iOS shelf comparison policy
 
@@ -331,26 +319,16 @@ pass/failure and any unavailable end-of-collection source check. It never change
 the measured files or promotes their original status. An independent new collection
 must then validate the calibrated policy; reanalysis alone is not that validation.
 
-The isolated CPU/runloop diagnosis for this local shelf recorded 17 long callbacks.
-Those approximately 33ms gaps contained 5.08–8.14ms of main-thread CPU work; the
-longest continuous active runloop stretch was 5.57ms. The remaining gap was mostly
-waiting for callbacks, not one uninterrupted 33ms layout operation. This diagnosis
-used a separate instrumented artifact whose source/patch is retained; the normal
-harness was restored byte-for-byte. Its timings are excluded from the baseline.
-
-The reviewed local reference is
-`docs/performance-baselines/apple-m4-ios27.2-pro13-synthetic-2000.json`.
-It uses six processes and is specific to the recorded Apple M4, Xcode/runtime,
-large iPad viewport, build command and harness hashes. For a compatible future
-candidate (finish the recorded Release build before collecting):
+Keep reviewed baseline summaries and their raw reports in local storage. Use a
+baseline collected with the same runtime, viewport, build configuration and harness:
 
 ```sh
 python3 scripts/check-shelf-performance.py ios \
   --app /absolute/immutable/ReaderPreview.app --build-record /absolute/build.json \
-  --fixtures /absolute/shelf-fixtures-2000-v1 --device apple-m4-ios-pro13-local \
+  --fixtures /absolute/shelf-fixtures-2000-v1 --device local-ios-device \
   --ios-device-type com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-16GB \
   --runs 6 --pinned-build \
-  --baseline docs/performance-baselines/apple-m4-ios27.2-pro13-synthetic-2000.json \
+  --baseline /absolute/local-baseline/summary.json \
   --output /absolute/new/shelf-comparison
 ```
 

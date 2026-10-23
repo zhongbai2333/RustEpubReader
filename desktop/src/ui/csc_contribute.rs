@@ -1,11 +1,6 @@
 //! UI for contributing to the Chinese Spelling Correction dataset.
 use crate::app::ReaderApp;
 use eframe::egui;
-use reader_core::epub::ContentBlock;
-
-const MODEL_REPO_OWNER: &str = "zhongbai2333";
-const MODEL_REPO_NAME: &str = "RustEpubReader-Model";
-const SUBMISSION_DIR: &str = "datasets/submissions";
 
 /// Minimum number of accepted/rejected corrections before first prompt.
 const MIN_CORRECTIONS_TO_PROMPT: usize = 30;
@@ -13,18 +8,8 @@ const MIN_CORRECTIONS_TO_PROMPT: usize = 30;
 /// After first prompt, how many additional resolved corrections before prompting again.
 const PROMPT_INCREMENT: usize = 50;
 
-/// Max context chars on each side of the corrected character.
-const CONTEXT_RADIUS: usize = 10;
-
-/// Max chars per line (validation constraint).
-const MAX_LINE_LEN: usize = 50;
-
 /// A single training sample: input (with error) and output (corrected).
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CscSample {
-    pub input: String,
-    pub output: String,
-}
+pub type CscSample = reader_core::csc::contribution::Sample;
 
 /// Result of an async contribution operation.
 pub enum ContributeResult {
@@ -72,80 +57,12 @@ impl ReaderApp {
     /// Extract training samples from all corrections in current book.
     /// Returns Vec of (input_with_error, output_corrected) pairs.
     pub fn csc_collect_samples(&self) -> Vec<CscSample> {
-        let corrections = match &self.book_config {
-            Some(cfg) => &cfg.corrections,
-            None => return vec![],
-        };
-        let book = match &self.book {
-            Some(b) => b,
-            None => return vec![],
-        };
-
-        // Only take accepted corrections (user confirmed the replacement)
-        let accepted: Vec<_> = corrections
-            .iter()
-            .filter(|r| r.status == "accepted")
-            .collect();
-
-        let mut samples = Vec::new();
-
-        for rec in &accepted {
-            let chapter = match book.chapter(rec.chapter) {
-                Ok(ch) => ch,
-                Err(_) => continue,
-            };
-            let block = match chapter.blocks.get(rec.block_idx) {
-                Some(b) => b,
-                None => continue,
-            };
-
-            // Extract full block text
-            let block_text: String = match block {
-                ContentBlock::Paragraph { spans, .. } => {
-                    spans.iter().map(|s| s.text.as_str()).collect()
-                }
-                ContentBlock::Heading { spans, .. } => {
-                    spans.iter().map(|s| s.text.as_str()).collect()
-                }
-                _ => continue,
-            };
-
-            let chars: Vec<char> = block_text.chars().collect();
-            if rec.char_offset >= chars.len() {
-                continue;
+        match (&self.book, &self.book_config) {
+            (Some(book), Some(cfg)) => {
+                reader_core::csc::contribution::samples(book, cfg).unwrap_or_default()
             }
-
-            // Extract context window around the correction
-            let start = rec.char_offset.saturating_sub(CONTEXT_RADIUS);
-            let end = (rec.char_offset + 1 + CONTEXT_RADIUS).min(chars.len());
-            let context_chars = &chars[start..end];
-
-            // Build output (corrected) string from context
-            let mut output_chars: Vec<char> = context_chars.to_vec();
-            let local_offset = rec.char_offset - start;
-
-            // Build input (with error) string — replace the corrected char with original
-            let mut input_chars = output_chars.clone();
-            if let Some(orig_ch) = rec.original.chars().next() {
-                input_chars[local_offset] = orig_ch;
-            }
-            if let Some(corr_ch) = rec.corrected.chars().next() {
-                output_chars[local_offset] = corr_ch;
-            }
-
-            let input: String = input_chars.iter().collect();
-            let output: String = output_chars.iter().collect();
-
-            // Validation: same length, different content, within limits
-            if input.len() == output.len()
-                && input != output
-                && input.chars().count() <= MAX_LINE_LEN
-            {
-                samples.push(CscSample { input, output });
-            }
+            _ => Vec::new(),
         }
-
-        samples
     }
 
     /// Format samples as JSONL string.
@@ -178,7 +95,10 @@ impl ReaderApp {
             }
         };
 
-        let samples = self.csc_collect_samples();
+        let samples = self
+            .csc_contribution_samples
+            .clone()
+            .unwrap_or_else(|| self.csc_collect_samples());
         if samples.is_empty() {
             self.csc_contribute_status = self.i18n.t("csc.contribute_no_data").to_string();
             return;
@@ -193,7 +113,6 @@ impl ReaderApp {
         self.csc_contribute_in_progress = true;
 
         let ctx = self.last_egui_ctx.clone();
-        let logs = self.feedback_logs.clone();
         let (tx, rx) = std::sync::mpsc::channel::<ContributeResult>();
 
         self.push_feedback_log(format!(
@@ -202,7 +121,7 @@ impl ReaderApp {
         ));
 
         std::thread::spawn(move || {
-            let result = csc_contribute_worker(&token, &username, &filename, &jsonl, &logs);
+            let result = csc_contribute_worker(&token, &username, &filename, &jsonl);
             let _ = tx.send(result);
             if let Some(ctx) = ctx {
                 ctx.request_repaint();
@@ -239,7 +158,11 @@ impl ReaderApp {
     /// Render the contribution prompt dialog.
     pub fn render_csc_contribute_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_csc_contribute_dialog {
+            self.csc_contribution_samples = None;
             return;
+        }
+        if self.csc_contribution_samples.is_none() {
+            self.csc_contribution_samples = Some(self.csc_collect_samples());
         }
 
         let mut open = true;
@@ -253,11 +176,11 @@ impl ReaderApp {
 
                 if !self.csc_contribute_in_progress && self.csc_contribute_pr_url.is_none() {
                     // Initial prompt
-                    ui.label(self.i18n.t("csc.contribute_desc"));
+                    ui.label(self.i18n.t("contribution.public"));
                     ui.add_space(8.0);
 
                     // Show sample count
-                    let samples = self.csc_collect_samples();
+                    let samples = self.csc_contribution_samples.clone().unwrap_or_default();
                     ui.label(
                         egui::RichText::new(
                             self.i18n
@@ -275,25 +198,30 @@ impl ReaderApp {
                                     .small()
                                     .color(egui::Color32::GRAY),
                             );
-                            for s in samples.iter().take(3) {
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(220, 60, 50),
-                                        &s.input,
-                                    );
-                                    ui.label("→");
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(60, 180, 80),
-                                        &s.output,
-                                    );
+                            let mut remove = None;
+                            egui::ScrollArea::vertical()
+                                .max_height(240.)
+                                .show(ui, |ui| {
+                                    for (index, sample) in samples.iter().enumerate() {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label(&sample.input);
+                                                ui.label(
+                                                    egui::RichText::new(&sample.output).strong(),
+                                                );
+                                            });
+                                            if ui.small_button("×").clicked() {
+                                                remove = Some(index);
+                                            }
+                                        });
+                                        ui.separator();
+                                    }
                                 });
-                            }
-                            if samples.len() > 3 {
-                                ui.label(
-                                    egui::RichText::new(format!("... +{}", samples.len() - 3))
-                                        .small()
-                                        .color(egui::Color32::GRAY),
-                                );
+                            if let Some(index) = remove {
+                                self.csc_contribution_samples
+                                    .as_mut()
+                                    .unwrap()
+                                    .remove(index);
                             }
                         });
                     }
@@ -385,297 +313,19 @@ impl ReaderApp {
 /// Background worker: fork repo → create file on fork → open PR to upstream.
 fn csc_contribute_worker(
     token: &str,
-    username: &str,
-    filename: &str,
+    _username: &str,
+    _filename: &str,
     jsonl: &str,
-    logs: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 ) -> ContributeResult {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new());
-
-    let auth = format!("Bearer {}", token);
-    let ua = "RustEpubReader";
-
-    // Step 1: Fork the model repo (idempotent — if already forked, GitHub returns the existing fork)
-    crate::app::dbg_log(
-        logs,
-        format!(
-            "[CSC-Contribute] step 1: forking {}/{}",
-            MODEL_REPO_OWNER, MODEL_REPO_NAME
-        ),
-    );
-    let fork_resp = client
-        .post(format!(
-            "https://api.github.com/repos/{}/{}/forks",
-            MODEL_REPO_OWNER, MODEL_REPO_NAME
-        ))
-        .header("Authorization", &auth)
-        .header("User-Agent", ua)
-        .header("Accept", "application/vnd.github+json")
-        .send();
-
-    let fork_resp = match fork_resp {
-        Ok(r) => r,
-        Err(e) => {
-            return ContributeResult::Error(format!("Fork request failed: {}", e));
-        }
-    };
-
-    let fork_status = fork_resp.status();
-    if !fork_status.is_success() && fork_status.as_u16() != 202 {
-        let body = fork_resp.text().unwrap_or_default();
-        crate::app::dbg_log(
-            logs,
-            format!(
-                "[CSC-Contribute] fork failed: HTTP {} body={}",
-                fork_status, body
-            ),
-        );
-        return ContributeResult::Error(format!("Fork failed: HTTP {}", fork_status));
-    }
-    crate::app::dbg_log(logs, "[CSC-Contribute] fork OK (or already exists)");
-
-    // Brief pause to let GitHub process the fork
-    std::thread::sleep(std::time::Duration::from_secs(3));
-
-    // Step 2: Get default branch SHA from user's fork
-    crate::app::dbg_log(
-        logs,
-        format!(
-            "[CSC-Contribute] step 2: getting default branch of {}/{}",
-            username, MODEL_REPO_NAME
-        ),
-    );
-    let repo_resp = client
-        .get(format!(
-            "https://api.github.com/repos/{}/{}",
-            username, MODEL_REPO_NAME
-        ))
-        .header("Authorization", &auth)
-        .header("User-Agent", ua)
-        .header("Accept", "application/vnd.github+json")
-        .send();
-
-    let default_branch = match repo_resp {
-        Ok(r) if r.status().is_success() => {
-            let body: serde_json::Value = r.json().unwrap_or_default();
-            body["default_branch"]
-                .as_str()
-                .unwrap_or("main")
-                .to_string()
-        }
-        Ok(r) => {
-            let status = r.status();
-            let body = r.text().unwrap_or_default();
-            crate::app::dbg_log(
-                logs,
-                format!(
-                    "[CSC-Contribute] get fork info failed: HTTP {} {}",
-                    status, body
-                ),
-            );
-            return ContributeResult::Error(format!("Cannot access fork: HTTP {}", status));
-        }
-        Err(e) => {
-            return ContributeResult::Error(format!("Get fork info failed: {}", e));
-        }
-    };
-    crate::app::dbg_log(
-        logs,
-        format!("[CSC-Contribute] default_branch={}", default_branch),
-    );
-
-    // Step 3: Create file on user's fork via Contents API
-    let file_path = format!("{}/{}", SUBMISSION_DIR, filename);
-    crate::app::dbg_log(
-        logs,
-        format!(
-            "[CSC-Contribute] step 3: creating file {} on {}/{}",
-            file_path, username, MODEL_REPO_NAME
-        ),
-    );
-
-    use base64::Engine;
-    let content_b64 = base64::engine::general_purpose::STANDARD.encode(jsonl.as_bytes());
-
-    let commit_body = serde_json::json!({
-        "message": format!("Add correction data from {}", username),
-        "content": content_b64,
-        "branch": default_branch,
-    });
-
-    let create_resp = client
-        .put(format!(
-            "https://api.github.com/repos/{}/{}/contents/{}",
-            username, MODEL_REPO_NAME, file_path
-        ))
-        .header("Authorization", &auth)
-        .header("User-Agent", ua)
-        .header("Accept", "application/vnd.github+json")
-        .json(&commit_body)
-        .send();
-
-    match create_resp {
-        Ok(r) if r.status().is_success() || r.status().as_u16() == 201 => {
-            crate::app::dbg_log(logs, "[CSC-Contribute] file created OK");
-        }
-        Ok(r) => {
-            let status = r.status();
-            let body = r.text().unwrap_or_default();
-            crate::app::dbg_log(
-                logs,
-                format!(
-                    "[CSC-Contribute] create file failed: HTTP {} body={}",
-                    status, body
-                ),
-            );
-            // If file already exists (409), try updating with SHA
-            if status.as_u16() == 422 || status.as_u16() == 409 {
-                crate::app::dbg_log(
-                    logs,
-                    "[CSC-Contribute] file may exist, trying to get SHA for update",
-                );
-                // Get existing file SHA
-                let get_resp = client
-                    .get(format!(
-                        "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-                        username, MODEL_REPO_NAME, file_path, default_branch
-                    ))
-                    .header("Authorization", &auth)
-                    .header("User-Agent", ua)
-                    .header("Accept", "application/vnd.github+json")
-                    .send();
-
-                if let Ok(gr) = get_resp {
-                    if gr.status().is_success() {
-                        let gbody: serde_json::Value = gr.json().unwrap_or_default();
-                        if let Some(sha) = gbody["sha"].as_str() {
-                            let update_body = serde_json::json!({
-                                "message": format!("Update correction data from {}", username),
-                                "content": content_b64,
-                                "sha": sha,
-                                "branch": default_branch,
-                            });
-                            let update_resp = client
-                                .put(format!(
-                                    "https://api.github.com/repos/{}/{}/contents/{}",
-                                    username, MODEL_REPO_NAME, file_path
-                                ))
-                                .header("Authorization", &auth)
-                                .header("User-Agent", ua)
-                                .header("Accept", "application/vnd.github+json")
-                                .json(&update_body)
-                                .send();
-
-                            match update_resp {
-                                Ok(ur)
-                                    if ur.status().is_success() || ur.status().as_u16() == 200 =>
-                                {
-                                    crate::app::dbg_log(logs, "[CSC-Contribute] file updated OK");
-                                }
-                                Ok(ur) => {
-                                    let s = ur.status();
-                                    let b = ur.text().unwrap_or_default();
-                                    return ContributeResult::Error(format!(
-                                        "Update file failed: HTTP {} {}",
-                                        s, b
-                                    ));
-                                }
-                                Err(e) => {
-                                    return ContributeResult::Error(format!(
-                                        "Update file request failed: {}",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                return ContributeResult::Error(format!("Create file failed: HTTP {}", status));
-            }
-        }
-        Err(e) => {
-            return ContributeResult::Error(format!("Create file request failed: {}", e));
-        }
-    }
-
-    // Step 4: Create Pull Request from user's fork to upstream
-    crate::app::dbg_log(logs, "[CSC-Contribute] step 4: creating pull request");
-
-    let pr_body = serde_json::json!({
-        "title": format!("CSC correction data from {}", username),
-        "body": format!(
-            "Automatically submitted correction data from RustEpubReader.\n\n- User: @{}\n- Samples: {}\n- File: `{}`",
-            username,
-            jsonl.lines().count(),
-            file_path,
-        ),
-        "head": format!("{}:{}", username, default_branch),
-        "base": default_branch,
-    });
-
-    let pr_resp = client
-        .post(format!(
-            "https://api.github.com/repos/{}/{}/pulls",
-            MODEL_REPO_OWNER, MODEL_REPO_NAME
-        ))
-        .header("Authorization", &auth)
-        .header("User-Agent", ua)
-        .header("Accept", "application/vnd.github+json")
-        .json(&pr_body)
-        .send();
-
-    match pr_resp {
-        Ok(r) => {
-            let status = r.status();
-            let body: serde_json::Value = r.json().unwrap_or_default();
-            if status.is_success() || status.as_u16() == 201 {
-                let pr_url = body["html_url"].as_str().unwrap_or("").to_string();
-                crate::app::dbg_log(logs, format!("[CSC-Contribute] PR created: {}", pr_url));
-                ContributeResult::Success { pr_url }
-            } else if status.as_u16() == 422 {
-                // PR already exists — try to find it
-                crate::app::dbg_log(logs, "[CSC-Contribute] PR may already exist, searching...");
-                let search_resp = client
-                    .get(format!(
-                        "https://api.github.com/repos/{}/{}/pulls?head={}:{}&state=open",
-                        MODEL_REPO_OWNER, MODEL_REPO_NAME, username, default_branch
-                    ))
-                    .header("Authorization", &auth)
-                    .header("User-Agent", ua)
-                    .header("Accept", "application/vnd.github+json")
-                    .send();
-                if let Ok(sr) = search_resp {
-                    let prs: serde_json::Value = sr.json().unwrap_or_default();
-                    if let Some(first) = prs.as_array().and_then(|a| a.first()) {
-                        let url = first["html_url"].as_str().unwrap_or("").to_string();
-                        crate::app::dbg_log(
-                            logs,
-                            format!("[CSC-Contribute] found existing PR: {}", url),
-                        );
-                        return ContributeResult::Success { pr_url: url };
-                    }
-                }
-                ContributeResult::Success {
-                    pr_url: format!(
-                        "https://github.com/{}/{}/pulls",
-                        MODEL_REPO_OWNER, MODEL_REPO_NAME
-                    ),
-                }
-            } else {
-                crate::app::dbg_log(
-                    logs,
-                    format!(
-                        "[CSC-Contribute] PR creation failed: HTTP {} body={}",
-                        status, body
-                    ),
-                );
-                ContributeResult::Error(format!("Create PR failed: HTTP {}", status))
-            }
-        }
-        Err(e) => ContributeResult::Error(format!("Create PR request failed: {}", e)),
+    let samples = jsonl
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<Vec<reader_core::csc::contribution::Sample>, _>>();
+    match samples
+        .map_err(|e| e.to_string())
+        .and_then(|samples| reader_core::csc::contribution::submit(token, &samples))
+    {
+        Ok(pr_url) => ContributeResult::Success { pr_url },
+        Err(error) => ContributeResult::Error(error),
     }
 }

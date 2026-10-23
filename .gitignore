@@ -70,3 +70,9 @@ ios/build/
 
 # Python development-script cache
 **/__pycache__/
+
+# Local review and validation records (not project documentation)
+/local-validation/
+/docs/PRECOMMIT_REVIEW*.md
+/docs/*_REVIEW.md
+/android/*.log

@@ -43,7 +43,67 @@ impl ReaderApp {
             }
         });
     }
+    pub fn import_epub_batch(&mut self, paths: Vec<std::path::PathBuf>) {
+        if self.pending_batch_import.is_some() {
+            return;
+        }
+        let root = self.data_dir.clone();
+        let ctx = self.last_egui_ctx.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_batch_import = Some(rx);
+        std::thread::spawn(move || {
+            let mut errors = Vec::new();
+            for path in paths {
+                let result = (|| -> Result<(), String> {
+                    if !path
+                        .extension()
+                        .is_some_and(|s| s.eq_ignore_ascii_case("epub"))
+                    {
+                        return Err("Select TXT files one at a time".into());
+                    }
+                    if std::fs::metadata(&path).map_err(|e| e.to_string())?.len()
+                        > reader_core::cloud_sync::MAX_DOCUMENT_BYTES
+                    {
+                        return Err("Book exceeds 1 GiB".into());
+                    }
+                    let book = EpubBook::open_lazy(&path)?;
+                    let mut library = reader_core::library::Library::load_from(&root)?;
+                    library.add_or_update(
+                        &root,
+                        book.title,
+                        path.to_string_lossy().into_owned(),
+                        0,
+                        book.chapters.first().map(|c| c.title.clone()),
+                    )?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    errors.push(format!(
+                        "{}: {error}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+            }
+            let _ = tx.send(errors);
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+    }
     pub(super) fn poll_book_open(&mut self) {
+        if let Some(errors) = self
+            .pending_batch_import
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.pending_batch_import = None;
+            self.reload_library();
+            self.cloud_invalidate_journal();
+            if !errors.is_empty() {
+                self.error_msg = Some(errors.join("\n"));
+            }
+        }
+
         let result = self
             .pending_book_open
             .as_ref()

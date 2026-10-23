@@ -383,6 +383,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_prepareBookExports
     data_dir: JString,
     paths: JString,
     directory: JString,
+    mode: JString,
 ) -> jstring {
     let result = (|| -> Result<Vec<String>, String> {
         let data_dir: String = env.get_string(&data_dir).map_err(|e| e.to_string())?.into();
@@ -407,7 +408,16 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_prepareBookExports
                     .ok_or("Book is no longer in the library".to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        reader_core::export::export_originals(&books, std::path::Path::new(&directory))
+        let mode: String = env
+            .get_string(&mode)
+            .map_err(|_| "Invalid export mode")?
+            .into();
+        reader_core::export::export_selection(
+            &data_dir,
+            &books,
+            std::path::Path::new(&directory),
+            reader_core::export::ExportMode::parse(&mode)?,
+        )
     })();
     let json = match result {
         Ok(paths) => serde_json::json!({"ok":true, "paths":paths}),
@@ -1530,8 +1540,16 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_previewTxtChapters
         custom_regex: regex_str,
     };
 
-    let previews = reader_core::txt::preview_chapters(std::path::Path::new(&txt_path), &config)
-        .unwrap_or_default();
+    let previews =
+        match reader_core::txt::preview_chapters(std::path::Path::new(&txt_path), &config) {
+            Ok(previews) => previews,
+            Err(error) => {
+                return jni_string_or_null!(
+                    env,
+                    serde_json::json!({"error":error.to_string(),"errorKey":reader_core::txt::error_key(&error.to_string())}).to_string()
+                )
+            }
+        };
 
     let json: Vec<serde_json::Value> = previews
         .iter()
@@ -1997,8 +2015,6 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_collectCscSamples(
     book_path: JString,
     book_id: JString,
 ) -> jstring {
-    use reader_core::epub::ContentBlock;
-
     let data_dir: String = match env.get_string(&data_dir) {
         Ok(s) => s.into(),
         Err(_) => return std::ptr::null_mut(),
@@ -2017,77 +2033,16 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_collectCscSamples(
         None => return std::ptr::null_mut(),
     };
 
-    let accepted: Vec<_> = cfg
-        .corrections
-        .iter()
-        .filter(|r| r.status == "accepted")
-        .collect();
-    if accepted.is_empty() {
-        return std::ptr::null_mut();
-    }
-
-    let book = match get_book(&book_path) {
-        Ok(b) => b,
+    let samples = match get_book(&book_path)
+        .and_then(|book| reader_core::csc::contribution::samples(&book, &cfg))
+    {
+        Ok(samples) => samples,
         Err(_) => return std::ptr::null_mut(),
     };
-
-    const CONTEXT_RADIUS: usize = 10;
-    const MAX_LINE_LEN: usize = 50;
-
-    #[derive(serde::Serialize)]
-    struct CscSample {
-        input: String,
-        output: String,
+    match reader_core::csc::contribution::jsonl(&samples) {
+        Ok(lines) => jni_string_or_null!(env, lines),
+        Err(_) => std::ptr::null_mut(),
     }
-
-    let mut lines = String::new();
-    for rec in &accepted {
-        let chapter = match book.chapter(rec.chapter) {
-            Ok(ch) => ch,
-            Err(_) => continue,
-        };
-        let block = match chapter.blocks.get(rec.block_idx) {
-            Some(b) => b,
-            None => continue,
-        };
-        let block_text: String = match block {
-            ContentBlock::Paragraph { spans, .. } => {
-                spans.iter().map(|s| s.text.as_str()).collect()
-            }
-            ContentBlock::Heading { spans, .. } => spans.iter().map(|s| s.text.as_str()).collect(),
-            _ => continue,
-        };
-        let chars: Vec<char> = block_text.chars().collect();
-        if rec.char_offset >= chars.len() {
-            continue;
-        }
-        let start = rec.char_offset.saturating_sub(CONTEXT_RADIUS);
-        let end = (rec.char_offset + 1 + CONTEXT_RADIUS).min(chars.len());
-        let context_chars = &chars[start..end];
-        let mut output_chars: Vec<char> = context_chars.to_vec();
-        let local_offset = rec.char_offset - start;
-        let mut input_chars = output_chars.clone();
-        if let Some(orig_ch) = rec.original.chars().next() {
-            input_chars[local_offset] = orig_ch;
-        }
-        if let Some(corr_ch) = rec.corrected.chars().next() {
-            output_chars[local_offset] = corr_ch;
-        }
-        let input: String = input_chars.iter().collect();
-        let output: String = output_chars.iter().collect();
-        if input.len() == output.len() && input != output && input.chars().count() <= MAX_LINE_LEN {
-            if let Ok(line) = serde_json::to_string(&CscSample { input, output }) {
-                lines.push_str(&line);
-                lines.push('\n');
-            }
-        }
-    }
-
-    if lines.is_empty() {
-        return std::ptr::null_mut();
-    }
-
-    jni_string_or_null!(env, lines)
 }
 
 #[unsafe(no_mangle)]
@@ -2292,4 +2247,48 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_recordBookOpened(
     };
     let path: String = path.into();
     checked_storage!(env, github_sync::opened(&root, &path));
+}
+
+/// Native reading tools share one validated request/response contract.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_readingTools(
+    mut env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    let result = (|| -> Result<serde_json::Value, String> {
+        let request: String = env
+            .get_string(&request)
+            .map_err(|_| "Invalid tool request")?
+            .into();
+        let v: serde_json::Value =
+            serde_json::from_str(&request).map_err(|_| "Invalid tool request")?;
+        match v["op"].as_str() {
+            Some("peer_identity") => {
+                let store = get_peer_store(v["root"].as_str().ok_or("Missing storage")?);
+                let store = store.lock().unwrap_or_else(|e| e.into_inner());
+                Ok(serde_json::json!({"id":store.device_id,"name":store.device_name}))
+            }
+            Some("txt") => reader_core::txt::command(&v),
+            Some("csc_submit") => {
+                let samples: Vec<reader_core::csc::contribution::Sample> =
+                    serde_json::from_value(v["samples"].clone()).map_err(|_| "Invalid samples")?;
+                reader_core::csc::contribution::submit(
+                    v["token"].as_str().ok_or("Missing token")?,
+                    &samples,
+                )
+                .map(serde_json::Value::String)
+            }
+            Some("service") => {
+                let request = serde_json::from_value(v).map_err(|_| "Invalid service request")?;
+                reader_core::reading_services::query(&request).map(serde_json::Value::String)
+            }
+            _ => Err("Invalid reading tool".into()),
+        }
+    })();
+    let envelope = match result {
+        Ok(value) => serde_json::json!({"ok":true,"result":value}),
+        Err(error) => serde_json::json!({"ok":false,"error":error}),
+    };
+    jni_string_or_null!(env, envelope.to_string())
 }

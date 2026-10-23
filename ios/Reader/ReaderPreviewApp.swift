@@ -34,7 +34,9 @@ import UniformTypeIdentifiers
     } }
     @ViewBuilder private var home: some View {
         #if DEBUG
-        if CommandLine.arguments.contains("--verify-reduced-motion-ui") {ReaderMotionUITestHost()}
+        if CommandLine.arguments.contains("--verify-parity-ui") {NativeParityUITestHost()}
+        else if CommandLine.arguments.contains("--verify-txt-import-ui") {TxtImportUITestHost()}
+        else if CommandLine.arguments.contains("--verify-reduced-motion-ui") {ReaderMotionUITestHost()}
         else if CommandLine.arguments.contains("--verify-selection-ui") {ReaderSelectionUITestHost().ignoresSafeArea()}
         else if CommandLine.arguments.contains("--verify-backup-files-ui") {LibraryFilesUITestHost()}
         else {ordinaryHome}
@@ -188,9 +190,11 @@ struct AppHome: View {
                 library.receivingSharedBooks = true; library.bookSharing.receive(url.absoluteString)
             } else { Task { await library.importBook(url) } }
         }
+        .sheet(item: $library.txtImport) { request in TxtImportView(source: request.url, library: library) }
         .sheet(isPresented: $library.receivingSharedBooks, onDismiss: { library.bookSharing.cancel() }) { ReceiveBooksView(sharing: library.bookSharing, account: account) }
         .task {
             readerI18n.refresh(); account.setForeground(scenePhase == .active)
+            await nearby.resumeIfPaired(scenePhase == .active)
             if !attemptedReadingRestore && !CommandLine.arguments.contains(where: { $0.hasPrefix("--verify-") }) {
                 attemptedReadingRestore = true
                 await library.reload()
@@ -218,7 +222,7 @@ struct AppHome: View {
             #endif
             await releases.check()
         }
-        .onChange(of: scenePhase) { _, phase in account.setForeground(phase == .active); if phase != .active { nearby.stop() }; if phase == .background { library.bookSharing.cancel() }; if phase == .active { readerI18n.refresh(); Task { await releases.check() } } }
+        .onChange(of: scenePhase) { _, phase in account.setForeground(phase == .active); nearby.setForeground(phase == .active); if phase == .background { library.bookSharing.cancel() }; if phase == .active { readerI18n.refresh(); Task { await releases.check() } } }
         .alert(LM(library.errorTitle), isPresented: Binding(get: { library.error != nil && selectedBook == nil }, set: { if !$0 { library.error = nil } })) {
             Button(L("manage.done"), role: .cancel) { library.error = nil }
         } message: { Text(LM(library.error ?? "")) }
@@ -616,8 +620,8 @@ struct LibraryDesignView: View {
                 if library.books.isEmpty && search.isEmpty && !library.busy {
                     ContentUnavailableView {
                         Label(L("library.empty_state_title"), systemImage: "books.vertical")
-                    } description: { Text(L("library.empty_state_hint")) } actions: {
-                        Button(L("library.import_epub")) { importing = true }.buttonStyle(.borderedProminent)
+                    } description: { Text(L("ui.empty_hint")) } actions: {
+                        Button(L("ui.import")) { importing = true }.buttonStyle(.borderedProminent)
                     }
                 }
                 if !search.isEmpty && books.isEmpty && !library.busy {
@@ -679,9 +683,9 @@ struct LibraryDesignView: View {
                 }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
             }
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "epub") ?? .data]) { result in
+        .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "epub") ?? .data, UTType(filenameExtension: "txt") ?? .plainText], allowsMultipleSelection: true) { result in
             switch result {
-            case .success(let url): Task { await library.importBook(url) }
+            case .success(let urls): Task { await library.importBooks(urls) }
             case .failure(let error): library.fail(error, title: L("library.error_import_failed"))
             }
         }
