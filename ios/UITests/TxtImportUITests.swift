@@ -12,9 +12,19 @@ final class TxtImportUITests: XCTestCase {
             add(hierarchy)
         }
     }
+    private func launchApp() {
+        if app.state != .notRunning { app.terminate() }
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 20))
+        XCUIDevice.shared.press(.home)
+        let home = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        XCTAssertTrue(home.wait(for: .runningForeground, timeout: 20))
+        app.launch()
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+    }
     private func launch() {
         app.launchArguments = ["--verify-txt-import-ui", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
-        app.launch()
+        launchApp()
         XCTAssertTrue(app.buttons["txt-convert"].waitForExistence(timeout: 30))
         XCTAssertTrue(app.staticTexts["txt-count"].waitForExistence(timeout: 30))
     }
@@ -67,7 +77,7 @@ final class TxtImportUITests: XCTestCase {
     }
     func testNativeServiceSettingsAndLookupMissingConfiguration(){
         app.launchArguments=["--verify-parity-ui","-AppleLanguages","(en)","-AppleLocale","en_US"]
-        app.launch()
+        launchApp()
         XCTAssertTrue(app.buttons["parity-translate"].waitForExistence(timeout:20));app.buttons["parity-translate"].tap()
         XCTAssertTrue(app.staticTexts["Set a service URL in reading settings."].waitForExistence(timeout:10));shot("ios-native-translation-unconfigured")
         let settings=app.buttons["Dictionary & translation services"]
@@ -82,14 +92,14 @@ final class TxtImportUITests: XCTestCase {
     }
 
     func testNativeServiceRejectsUnsafeURLAndOffersRetry(){
-        app.launchArguments=["--verify-parity-ui","-AppleLanguages","(en)","-AppleLocale","en_US"];app.launch()
+        app.launchArguments=["--verify-parity-ui","-AppleLanguages","(en)","-AppleLocale","en_US"];launchApp()
         XCTAssertTrue(app.buttons["parity-invalid-service"].waitForExistence(timeout:20));app.buttons["parity-invalid-service"].tap()
         XCTAssertTrue(app.staticTexts["Query failed. Check the service settings or try again later."].waitForExistence(timeout:15))
         let retry=app.buttons["Retry"];XCTAssertTrue(retry.exists);retry.tap()
         XCTAssertTrue(app.staticTexts["Query failed. Check the service settings or try again later."].waitForExistence(timeout:15));shot("ios-native-service-retry")
     }
     func testContributionPreviewCanRemoveSampleBeforeSubmitting(){
-        app.launchArguments=["--verify-parity-ui","-AppleLanguages","(en)","-AppleLocale","en_US"];app.launch()
+        app.launchArguments=["--verify-parity-ui","-AppleLanguages","(en)","-AppleLocale","en_US"];launchApp()
         XCTAssertTrue(app.buttons["parity-samples"].waitForExistence(timeout:30));app.buttons["parity-samples"].tap()
         let sample=app.descendants(matching:.any).matching(identifier:"contribution-sample-0").firstMatch
         XCTAssertTrue(sample.waitForExistence(timeout:15));shot("ios-contribution-review")

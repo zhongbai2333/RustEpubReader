@@ -60,6 +60,9 @@ final class ReaderSelectionUITests:XCTestCase {
             if ready.evaluate(with:status) {inputReady=true;break}
             guard ProcessInfo.processInfo.systemUptime<deadline else{break}
             XCTContext.runActivity(named:"Input readiness probe \(probe)/3") {_ in status.tap()}
+            // XCTest may block while synthesizing the tap. Accept a received
+            // native acknowledgement before applying the remaining wait budget.
+            if ready.evaluate(with:status) {inputReady=true;break}
             let remaining=deadline-ProcessInfo.processInfo.systemUptime
             guard remaining>0 else{break}
             let received=XCTNSPredicateExpectation(predicate:ready,object:status)
@@ -72,8 +75,13 @@ final class ReaderSelectionUITests:XCTestCase {
         let points=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(raw.utf8)) as? [String:Any])
         let first=try XCTUnwrap(points["start"] as? [Double]),last=try XCTUnwrap(points["end"] as? [Double])
         XCTAssertEqual(first.count,2);XCTAssertEqual(last.count,2)
-        let start=paper.coordinate(withNormalizedOffset:CGVector(dx:first[0],dy:first[1]))
-        let end=paper.coordinate(withNormalizedOffset:CGVector(dx:last[0],dy:last[1]))
+        // Resolve the paper geometry before touch-down. Anchoring a held drag
+        // to a deep paper query can request a new accessibility snapshot while
+        // selection is active, stalling delivery and cancelling the touch.
+        let frame=paper.frame,appFrame=app.frame
+        let origin=app.coordinate(withNormalizedOffset:.zero)
+        let start=origin.withOffset(CGVector(dx:frame.minX-appFrame.minX+frame.width*first[0],dy:frame.minY-appFrame.minY+frame.height*first[1]))
+        let end=origin.withOffset(CGVector(dx:frame.minX-appFrame.minX+frame.width*last[0],dy:frame.minY-appFrame.minY+frame.height*last[1]))
         // Use a deliberate hold and slow drag, including a held endpoint. A
         // fast drag immediately followed by touch-up can be coalesced on a
         // loaded Simulator before UIKit delivers the selection's changed state.

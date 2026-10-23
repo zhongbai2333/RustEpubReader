@@ -51,6 +51,23 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 runtime.validate_ios_xctest(bad, runtime.IOS_SELECTION_TESTS, 3, "owned")
 
+    def test_xctest_timeout_keeps_its_failure_and_prints_the_native_log(self):
+        import contextlib
+        import io
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "native-ui.log"
+            failure = subprocess.TimeoutExpired(["xcodebuild"], 300)
+            def timeout(*args, **kwargs):
+                kwargs["stdout"].write(b"first native launch timed out")
+                raise failure
+            output = io.StringIO()
+            with patch.object(runtime.subprocess, "run", side_effect=timeout), contextlib.redirect_stdout(output):
+                with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                    runtime.run_ios_xctest(["xcodebuild"], path, 300)
+            self.assertIs(raised.exception, failure)
+            self.assertIn("first native launch timed out", output.getvalue())
+
     def test_phone_selection_never_chooses_a_tablet_or_incompatible_runtime(self):
         devices = [{"identifier": "pad", "productFamily": "iPad"},
                    {"identifier": "future", "productFamily": "iPhone", "minRuntimeVersion": 0x1C0000},

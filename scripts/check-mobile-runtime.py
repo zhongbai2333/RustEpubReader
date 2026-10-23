@@ -243,6 +243,19 @@ def ios_xctest_receipt(output, result, expected, iterations, identifier):
     return validate_ios_xctest(tree, expected, iterations, identifier)
 
 
+def run_ios_xctest(command, path, timeout):
+    with path.open("wb") as log:
+        try:
+            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+        except subprocess.SubprocessError:
+            log.flush()
+            print(path.read_text(errors="replace")[-16000:], flush=True)
+            raise
+    if result.returncode != 0:
+        print(path.read_text(errors="replace")[-16000:], flush=True)
+    return result
+
+
 def collect_ios_selection(args, identifier, bundle):
     # The collector installs once. A targetless runner controls that exact app
     # through XCUIApplication(bundleIdentifier:), without an IDE debug launch.
@@ -263,8 +276,9 @@ def collect_ios_selection(args, identifier, bundle):
                               "-destination", "id=" + identifier, "-parallel-testing-enabled", "NO",
                               "-only-testing:ReaderUITests/TxtImportUITests",
                               "-resultBundlePath", str(args.output / "platform-parity.xcresult")]
-            with (args.output / "platform-parity-ui.log").open("wb") as log:
-                parity = subprocess.run(parity_command, stdout=log, stderr=subprocess.STDOUT, timeout=max(300, args.timeout))
+            # Include cold XCTest setup and XCResult completion. Per-action
+            # assertions and the exact required case set remain unchanged.
+            parity = run_ios_xctest(parity_command, args.output / "platform-parity-ui.log", max(600, args.timeout))
             if parity.returncode != 0:
                 raise RuntimeError("Native TXT/service/contribution XCTest failed; inspect platform-parity-ui.log and XCResult")
             if shard != "all":
@@ -274,8 +288,7 @@ def collect_ios_selection(args, identifier, bundle):
                 "live_service_requests": False, "public_contributions": False}) + "\n")
         if shard in ("all", "selection", "motion"):
             # Every selected case still runs three times, without retry-on-failure.
-            with (args.output / "selection-ui.log").open("wb") as log:
-                result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
+            result = run_ios_xctest(command, args.output / "selection-ui.log", max(1200, args.timeout))
             if result.returncode != 0:
                 raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
             if shard != "all":

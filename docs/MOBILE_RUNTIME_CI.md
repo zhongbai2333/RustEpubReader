@@ -74,6 +74,16 @@ case set and all three successful repetitions; missing, skipped or failed cases
 fail the shard. The selection shard still requires fifteen independent native
 touch traces. Layout and corpus assertions are unchanged.
 
+UI launches wait for the previous process to exit and the Home screen to become
+foreground before launching and activating the reader. Input acknowledgements
+are checked immediately after a setup tap, including when XCTest delayed the
+tap itself. Held-drag endpoints are computed from the paper frame before
+touch-down and anchored to the app, avoiding deep paper lookups mid-gesture.
+The feature process budget includes cold runner setup and XCResult finalization
+(up to ten minutes); individual UI assertions keep their original deadlines.
+A failure still fails the suite, and its native log tail is printed in the job
+log even when result-bundle finalization times out.
+
 `ios-ci.py aggregate` rejects missing/failed shards, another source/build,
 changed installations, wrong device families/runtime versions, missing native
 input traces and incomplete drawing coverage. A successful earlier build from
