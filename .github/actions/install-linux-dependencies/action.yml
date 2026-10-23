@@ -21,7 +21,9 @@ runs:
               package_names=$(printf '%s\n' "${packages[@]}" | sort -u)
               versions=""
               for package in ${package_names}; do
-                candidate=$(apt-cache policy "$package" | awk '/Candidate:/ {print $2; exit}')
+                # Drain policy output: exiting awk early makes recent APT
+                # report a broken pipe as exit 100 under pipefail.
+                candidate=$(LC_ALL=C apt-cache policy "$package" | awk '/Candidate:/ {print $2}')
                 if [[ -z "$candidate" || "$candidate" == '(none)' ]]; then
                   echo "No install candidate for $package" >&2
                   exit 1

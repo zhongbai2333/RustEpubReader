@@ -95,6 +95,7 @@ jobs:
                   python3 scripts/test-i18n.py
                   python3 scripts/test-mobile-runtime.py
                   python3 scripts/test-ios-ci.py
+                  python3 scripts/test-ci-cache.py
                   python3 scripts/test-performance.py
                   python3 scripts/test-native-performance.py
                   python3 scripts/test-image-bridge.py

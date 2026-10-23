@@ -75,7 +75,9 @@ jobs:
             - name: Verify cargo-ndk
               shell: bash
               run: |
-                  "$RUNNER_TEMP/reader-cargo-ndk/bin/cargo-ndk" --version
+                  test -x "$RUNNER_TEMP/reader-cargo-ndk/bin/cargo-ndk"
+                  export PATH="$RUNNER_TEMP/reader-cargo-ndk/bin:$PATH"
+                  cargo ndk --version
                   echo "$RUNNER_TEMP/reader-cargo-ndk/bin" >> "$GITHUB_PATH"
 
             - name: Install native script binding toolchain
