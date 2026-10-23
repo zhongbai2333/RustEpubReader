@@ -169,7 +169,10 @@ absent setting in `finally`, including partial activation failure. iOS public
 XCTest opens Settings → Accessibility → Motion → Reduce Motion in its disposable
 simulator, enables the switch, checks all five native navigation/return modes,
 checks the displayed reader layers for geometric animations, and restores the
-original switch before exit. These are interaction/policy checks, not a motion
+original switch before exit. The diagnostic motion host first launches into an
+idle ready screen; XCTest starts the window-changing suite with a native button
+after launch completes. Each repetition requires its own run ID and all existing
+geometry assertions. These are interaction/policy checks, not a motion
 perception or physical accessibility acceptance claim. No physical-device system
 settings or existing preview simulator are changed.
 

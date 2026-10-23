@@ -237,28 +237,52 @@ struct ReaderMotionUITestHost:UIViewControllerRepresentable {
 }
 @MainActor final class ReaderMotionHostController:UIViewController {
     private let status=UILabel()
+    private let start=UIButton(type:.system)
+    private var prepared=false
     private var started=false
+    private var runID=""
     override func viewDidLoad() {
         super.viewDidLoad();view.backgroundColor = .white
         status.accessibilityIdentifier="motion-status";status.numberOfLines=0;status.isAccessibilityElement=true
-        status.text="Checking native reduced motion";status.textColor = .black
+        status.text="Preparing native reduced motion";status.textColor = .black
         view.addSubview(status)
+        start.accessibilityIdentifier="motion-start"
+        start.setTitle("Run native reduced motion",for:.normal);start.isEnabled=false
+        start.addTarget(self,action:#selector(startCheck),for:.touchUpInside)
+        view.addSubview(start)
     }
-    override func viewDidLayoutSubviews() {super.viewDidLayoutSubviews();status.frame=view.bounds.insetBy(dx:30,dy:80)}
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let safe=view.safeAreaInsets
+        status.frame=CGRect(x:30,y:safe.top+20,width:max(0,view.bounds.width-60),height:max(0,view.bounds.height-safe.top-safe.bottom-120))
+        start.frame=CGRect(x:30,y:view.bounds.height-safe.bottom-64,width:max(0,view.bounds.width-60),height:44)
+    }
     override func viewDidAppear(_ animated:Bool) {
         super.viewDidAppear(animated)
-        guard !started else{return};started=true
+        guard !prepared else{return};prepared=true
         guard ["local.reader.ui-files","local.reader.columns"].contains(Bundle.main.bundleIdentifier ?? "") else {status.text="Failed: diagnostic bundle required";return}
-        guard let window=view.window else {status.text="Failed: diagnostic window missing";return}
         do {
+            let args=CommandLine.arguments
+            guard let index=args.firstIndex(of:"--motion-run"),args.indices.contains(index+1),UUID(uuidString:args[index+1]) != nil else {throw CoreFailure(message:"Missing native motion run identity")}
+            runID=args[index+1]
             guard let encoded=ProcessInfo.processInfo.environment["READER_NAVIGATION_EPUB_BASE64"],let fixture=Data(base64Encoded:encoded),!fixture.isEmpty else {throw CoreFailure(message:"Missing navigation fixture from XCTest")}
             let documents=FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
             try FileManager.default.createDirectory(at:documents,withIntermediateDirectories:true)
             try fixture.write(to:documents.appendingPathComponent("reading-modes.epub"),options:.atomic)
         } catch {status.text="Failed: \(error)";return}
+        // XCTest's launch handshake must finish before this suite changes key
+        // windows. A fresh process stays idle until the admitted native tap.
+        status.text="Ready native reduced motion";start.isEnabled=true
+    }
+    @objc private func startCheck() {
+        guard prepared,!started else{return}
+        guard let window=view.window,window.isKeyWindow,window.windowScene?.activationState == .foregroundActive else {status.text="Failed: diagnostic window is not ready for input";return}
+        started=true;start.isEnabled=false;status.text="Checking native reduced motion"
         // The suite temporarily makes its own UIKit windows key. Keep this host
         // alive until it returns and explicitly refresh accessibility on iOS 26.
         ReadingModesRuntimeCheck.run(reducedMotion:true) {[self,window] report in
+            var report=report
+            report["ui_run_id"]=runID;report["ui_start_received"]=true
             let message = report["passed"] as? Bool == true ? "Passed native reduced motion" : "Failed native reduced motion"
             status.text=message;status.accessibilityLabel=message
             if let data=try? JSONSerialization.data(withJSONObject:report,options:.sortedKeys) {status.accessibilityValue=String(data:data,encoding:.utf8)}

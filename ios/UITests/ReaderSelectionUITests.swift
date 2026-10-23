@@ -147,15 +147,23 @@ final class ReaderSelectionUITests:XCTestCase {
         XCTAssertEqual(toggle.value as? String,"1")
         let setting=XCTAttachment(screenshot:settings.screenshot());setting.name="system-reduce-motion-enabled";setting.lifetime = .keepAlways;add(setting)
         let app=try readerApp()
-        app.launchArguments=["--verify-reduced-motion-ui","--book-share-preview","-reader.language","en"]
+        let runID=UUID().uuidString
+        app.launchArguments=["--verify-reduced-motion-ui","--motion-run",runID,"--book-share-preview","-reader.language","en"]
         launchAfterExit(app)
         let status=app.staticTexts["motion-status"]
         XCTAssertTrue(status.waitForExistence(timeout:30))
+        XCTAssertEqual(status.label,"Ready native reduced motion")
+        let start=app.buttons["motion-start"]
+        waitForTouchTarget(start)
+        let ready=XCTAttachment(screenshot:app.screenshot());ready.name="native-motion-host-ready";ready.lifetime = .keepAlways;add(ready)
+        start.tap()
         expectation(for:NSPredicate(format:"label == %@","Passed native reduced motion"),evaluatedWith:status)
         waitForExpectations(timeout:80)
         let raw=try XCTUnwrap(status.value as? String)
         let value=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(raw.utf8)) as? [String:Any])
         XCTAssertEqual(value["passed"] as? Bool,true)
+        XCTAssertEqual(value["ui_run_id"] as? String,runID)
+        XCTAssertEqual(value["ui_start_received"] as? Bool,true)
         XCTAssertEqual(value["system_reduce_motion"] as? Bool,true)
         XCTAssertEqual(value["reduced_motion_geometry_checks"] as? Int,15)
         let image=XCTAttachment(screenshot:app.screenshot());image.name="system-reduced-motion";image.lifetime = .keepAlways;add(image)
