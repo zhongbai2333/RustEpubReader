@@ -20,6 +20,12 @@ The iPad layout shard exercises four paging modes and five navigation modes,
 exact anchors/returns and accepted remote positions without a new local edit.
 The other shards cover UI features, selection and system Reduce Motion, as listed
 below. These checks do not test actual account synchronization.
+First boot and the initial Debug-app installation each have a separate ten-minute
+preparation budget; normal reader launches retain their three-minute command
+budget and native reports retain their own limits. No install or failed test is
+retried by the collector. Failure artifacts also retain host memory, process
+names, CPU and disk information to distinguish infrastructure stalls from UI
+assertions.
 
 An explicit `passed: true` report is required; missing, malformed, failed and stale
 reports cannot count as success. Output directories must be new so earlier runs

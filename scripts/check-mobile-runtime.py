@@ -474,6 +474,16 @@ def attach_ios_simulator(output, identifier):
 
 def capture_ios_failure(output, identifier, bundle):
     """Collect bounded diagnostics before the owned simulator is deleted."""
+    for name, command in (
+        ("host-memory.txt", ("vm_stat",)),
+        ("host-capacity.txt", ("sysctl", "hw.memsize", "hw.ncpu")),
+        ("host-processes.txt", ("ps", "-axo", "pid,ppid,etime,%cpu,%mem,rss,comm")),
+        ("host-disk.txt", ("df", "-h")),
+    ):
+        try:
+            (output / name).write_bytes(run(*command, timeout=10))
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            (output / (name + ".error.txt")).write_text(str(error) + "\n")
     predicate = 'process == "SpringBoard" OR process == "runningboardd" OR eventMessage CONTAINS[c] "' + bundle + '"'
     commands = [
         ("simulator-processes.txt", ("spawn", identifier, "launchctl", "list")),
@@ -859,7 +869,9 @@ def ios(args):
             ios_simctl(args.output, "bootstatus", identifier, "-b", timeout=600)
         prepare_ios_ui(args.output, identifier)
         results = {}
-        ios_simctl(args.output, "install", identifier, str(args.app))
+        # Cold installation verifies a large Debug bundle on a fresh hosted
+        # device. Keep its preparation budget separate from reader launches.
+        ios_simctl(args.output, "install", identifier, str(args.app), timeout=600)
         if ios_ui_requested(args):
             results["selection" if shard == "all" else shard] = collect_ios_selection(args, identifier, bundle)
         if shard in ("features", "selection", "motion"):
