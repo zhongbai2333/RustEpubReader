@@ -7,17 +7,20 @@ not install it; it must be signed for your account and device first.
 
 ## Download and verify
 
-Download the IPA and its matching `.ipa.sha256` file from the same GitHub Release.
-From a directory containing both files, verify the checksum on macOS:
+Download the IPA from GitHub Releases. To check the download before signing,
+calculate its SHA-256 on macOS:
 
 ```sh
-shasum -a 256 -c RustEpubReader-iOS-arm64-v2.0.2-unsigned.ipa.sha256
+shasum -a 256 RustEpubReader-iOS-arm64-v2.0.3-unsigned.ipa
 ```
 
-Replace `v2.0.2` with the downloaded version. Linux can use `sha256sum -c`.
+Replace `v2.0.3` with the downloaded version. Linux can use `sha256sum <ipa>`.
 Windows PowerShell can use `Get-FileHash -Algorithm SHA256 <ipa>` and compare the
-result with the checksum file. This checks the downloaded bytes; signing will
-change them, so the original checksum no longer applies after signing.
+result with the SHA-256 shown beside the IPA in the Release assets. On macOS or
+Linux, compare the command's output with that value as well. The separate checksum
+receipt and build information remain in Actions artifacts. This checks the
+downloaded bytes; signing will change them, so the original checksum no longer
+applies after signing.
 
 ## Sign and install
 

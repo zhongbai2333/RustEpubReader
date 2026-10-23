@@ -16,7 +16,7 @@
 | Android | Android 8.0 / API 26 及以上；按设备架构选择 APK |
 | iOS / iPadOS | 开发预览，最低 iOS 17；arm64 真机可使用 Release 中的未签名 IPA，自行签名后安装；也可通过 Xcode 构建 |
 
-按当前配置，发布流程会生成桌面安装包、Android APK 和 **iOS 未签名 IPA**。iOS IPA 需自行签名后安装，详见[签名说明](ios/UNSIGNED_IPA.md)。普通 CI 和 PR 构建产物上传到 Actions；Release 流程附带 IPA、SHA-256 校验文件和签名说明，iOS 模拟器应用和未签名真机归档保留在 Actions。尚未配置 TestFlight 或 App Store 发布流程。各系统的实际兼容性仍需分别验证，构建通过不等于完成真机验收。
+按当前配置，发布流程会生成桌面安装包、Android APK 和 **iOS 未签名 IPA**。iOS IPA 需自行签名后安装，详见 Release 正文的可折叠区或[签名说明](ios/UNSIGNED_IPA.md)。普通 CI 和 PR 构建产物上传到 Actions；Release 附件仅提供上述安装包，SHA-256 校验文件、构建信息、签名说明副本、iOS 模拟器应用和未签名真机归档保留在 Actions。尚未配置 TestFlight 或 App Store 发布流程。各系统的实际兼容性仍需分别验证，构建通过不等于完成真机验收。
 
 iOS 的环境光读取使用私有 IOHID 接口，Debug 和 Release 构建均包含该实现（模拟器不启用）。构建成功不代表已具备 App Store 分发条件，详见 [iOS 说明](ios/README.md)。
 

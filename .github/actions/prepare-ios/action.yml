@@ -1,5 +1,9 @@
 name: Prepare Apple build host
 description: Pin the Apple toolchain and restore existing Rust and Swift dependencies.
+inputs:
+    cache-scope:
+        description: Build role; host checks, simulator and device artifacts are separate.
+        required: true
 runs:
     using: composite
     steps:
@@ -14,22 +18,37 @@ runs:
           with:
               python-version: "3.12"
         - uses: dtolnay/rust-toolchain@stable
+          id: rust
           with:
               targets: aarch64-apple-ios,aarch64-apple-ios-sim
         - name: Preserve Rust toolchain for Xcode build phases
           shell: bash
           run: echo "READER_RUST_BIN=$(dirname "$(command -v cargo)")" >> "$GITHUB_ENV"
-        - name: Cache Rust and Swift packages
+        - name: Cache Rust package downloads
           uses: actions/cache@v4
           with:
               path: |
                   ~/.cargo/registry
                   ~/.cargo/git
+              key: ios-cargo-downloads-v2-${{ hashFiles('Cargo.lock') }}
+              restore-keys: |
+                  ios-cargo-downloads-v2-
+        - name: Cache Swift packages
+          if: inputs.cache-scope != 'host-checks'
+          uses: actions/cache@v4
+          with:
+              path: target/ios-ci/Packages
+              key: ios-spm-macos26-xcode26.4.1-v2-${{ hashFiles('ios/**/Package.resolved') }}
+              restore-keys: |
+                  ios-spm-macos26-xcode26.4.1-v2-
+        - name: Cache Rust build artifacts for this role
+          uses: actions/cache@v4
+          with:
+              path: |
                   target/debug
                   target/release
                   target/aarch64-apple-ios
                   target/aarch64-apple-ios-sim
-                  target/ios-ci/Packages
-              key: ios-arm64-macos26-xcode26.4.1-${{ hashFiles('Cargo.lock', 'ios/**/Package.resolved') }}
+              key: ios-rust-v2-arm64-macos26-xcode26.4.1-${{ inputs.cache-scope }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
               restore-keys: |
-                  ios-arm64-macos26-xcode26.4.1-
+                  ios-rust-v2-arm64-macos26-xcode26.4.1-${{ inputs.cache-scope }}-${{ steps.rust.outputs.cachekey }}-

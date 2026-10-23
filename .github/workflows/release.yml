@@ -135,7 +135,8 @@ jobs:
                         body += "\n";
                       }
                       if (compareUrl) body += `**Full Changelog**: ${compareUrl}\n`;
-                      body += `\n### iOS installation\n\nThe iOS \`*-unsigned.ipa\` requires signing with your own identity and matching provisioning profile before installation. Embedded frameworks must also be re-signed. See the [signing instructions](https://github.com/${owner}/${repo}/blob/${encodeURIComponent(tag)}/ios/UNSIGNED_IPA.md). TestFlight and App Store distribution are not configured.\n`;
+                      const signingGuide = require('fs').readFileSync('ios/UNSIGNED_IPA.md', 'utf8').replace(/^# [^\n]+\n+/, '');
+                      body += `\n<details>\n<summary>iOS installation and signing</summary>\n\n${signingGuide}\n</details>\n`;
                       return body;
 
             - name: Create GitHub Release
@@ -149,6 +150,3 @@ jobs:
                       release-assets/release-desktop-*/RustEpubReader-*
                       release-assets/release-android-apk/RustEpubReader-Android-*.apk
                       release-assets/release-ios-arm64/RustEpubReader-iOS-*-unsigned.ipa
-                      release-assets/release-ios-arm64/RustEpubReader-iOS-*-unsigned.ipa.sha256
-                      release-assets/release-ios-arm64/RustEpubReader-iOS-SIGNING.md
-                      release-assets/release-ios-arm64/BUILD-INFO.txt

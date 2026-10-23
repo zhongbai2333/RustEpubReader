@@ -58,8 +58,9 @@ or execute UI cases.
 
 Normal CI, `run-build` PR builds and release builds reuse this workflow; it also
 supports manual dispatch. Logs and build provenance are uploaded. GitHub Releases
-attach the unsigned IPA, checksum, signing instructions and build information;
-simulator applications and device archives remain in Actions.
+attach the unsigned IPA and include signing instructions in the release notes.
+Checksum receipts, build information, simulator applications and device archives
+remain in Actions.
 
 Native UI automation runs locally. The `ReaderUITests` target and collector
 retain the TXT/service/contribution cases, five selection modes with three

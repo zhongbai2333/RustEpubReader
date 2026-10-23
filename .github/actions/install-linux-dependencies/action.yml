@@ -1,0 +1,57 @@
+name: Install cached Linux dependencies
+description: Reuse verified Debian package downloads while installing through APT.
+inputs:
+    packages:
+        description: Space-separated Ubuntu package names.
+        required: true
+runs:
+    using: composite
+    steps:
+        - name: Resolve current package versions
+          id: packages
+          shell: bash
+          env:
+              PACKAGES: ${{ inputs.packages }}
+          run: |
+              set -euo pipefail
+              read -ra packages <<< "$PACKAGES"
+              test "${#packages[@]}" -gt 0
+              sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+              . /etc/os-release
+              package_names=$(printf '%s\n' "${packages[@]}" | sort -u)
+              versions=""
+              for package in ${package_names}; do
+                candidate=$(apt-cache policy "$package" | awk '/Candidate:/ {print $2; exit}')
+                if [[ -z "$candidate" || "$candidate" == '(none)' ]]; then
+                  echo "No install candidate for $package" >&2
+                  exit 1
+                fi
+                versions+="$package=$candidate"$'\n'
+              done
+              names_hash=$(printf '%s' "$package_names" | sha256sum | cut -d' ' -f1)
+              # Include the dependency plan, not just meta-package versions:
+              # libclang-dev may stay unchanged while libclang-*-dev changes.
+              plan=$(sudo env LC_ALL=C apt-get --print-uris --download-only --yes install "${packages[@]}")
+              versions_hash=$(printf '%s\n%s' "$versions" "$plan" | sha256sum | cut -d' ' -f1)
+              echo "prefix=apt-v1-${ID}-${VERSION_ID}-$(dpkg --print-architecture)-${names_hash}" >> "$GITHUB_OUTPUT"
+              echo "versions=$versions_hash" >> "$GITHUB_OUTPUT"
+              mkdir -p "$RUNNER_TEMP/reader-apt-archives/partial"
+        - name: Restore downloaded Debian packages
+          uses: actions/cache@v4
+          with:
+              path: ${{ runner.temp }}/reader-apt-archives/*.deb
+              key: ${{ steps.packages.outputs.prefix }}-${{ steps.packages.outputs.versions }}
+              restore-keys: |
+                  ${{ steps.packages.outputs.prefix }}-
+        - name: Install dependencies using cached downloads
+          shell: bash
+          env:
+              PACKAGES: ${{ inputs.packages }}
+          run: |
+              set -euo pipefail
+              read -ra packages <<< "$PACKAGES"
+              sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+                -o Dir::Cache::archives="$RUNNER_TEMP/reader-apt-archives" \
+                -o APT::Keep-Downloaded-Packages=true \
+                -o Binary::apt-get::APT::Keep-Downloaded-Packages=true \
+                install -y "${packages[@]}"

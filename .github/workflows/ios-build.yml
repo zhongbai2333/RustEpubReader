@@ -37,6 +37,8 @@ jobs:
               with:
                   ref: ${{ inputs.ref || github.sha }}
             - uses: ./.github/actions/prepare-ios
+              with:
+                  cache-scope: host-checks
             - name: Verify shared core and native layout / OAuth
               run: |
                   python3 scripts/test-mobile-runtime.py
@@ -63,6 +65,8 @@ jobs:
               with:
                   ref: ${{ inputs.ref || github.sha }}
             - uses: ./.github/actions/prepare-ios
+              with:
+                  cache-scope: simulator
             - name: Resolve pinned Swift dependencies
               run: |
                   mkdir -p target/ios-ci/logs
@@ -114,6 +118,8 @@ jobs:
               with:
                   ref: ${{ inputs.ref || github.sha }}
             - uses: ./.github/actions/prepare-ios
+              with:
+                  cache-scope: device
             - name: Resolve pinned Swift dependencies
               run: |
                   mkdir -p target/ios-ci/logs

@@ -64,13 +64,15 @@ jobs:
                   python3 scripts/test-bump-version.py
 
             - name: Install Linux dependencies
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-                    libxkbcommon-dev libxkbcommon-x11-0 libgtk-3-dev libglib2.0-dev libatk1.0-dev \
-                    libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri libglx-mesa0 libasound2-dev perl
+              uses: ./.github/actions/install-linux-dependencies
+              with:
+                  packages: >-
+                      libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+                      libxkbcommon-dev libxkbcommon-x11-0 libgtk-3-dev libglib2.0-dev libatk1.0-dev
+                      libgl1-mesa-dev libegl1-mesa-dev libgl1-mesa-dri libglx-mesa0 libasound2-dev perl
 
             - name: Install Rust
+              id: rust
               uses: dtolnay/rust-toolchain@stable
               with:
                   components: rustfmt, clippy
@@ -81,11 +83,10 @@ jobs:
                   path: |
                       ~/.cargo/registry
                       ~/.cargo/git
-                      target
-                  key: ${{ runner.os }}-cargo-ci-${{ hashFiles('Cargo.lock') }}
+                      target/debug
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-ci-v2-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
                   restore-keys: |
-                      ${{ runner.os }}-cargo-ci-
-                      ${{ runner.os }}-cargo-
+                      ${{ runner.os }}-${{ runner.arch }}-cargo-ci-v2-${{ steps.rust.outputs.cachekey }}-
 
             - name: Validate shared translations
               run: |
@@ -143,6 +144,7 @@ jobs:
               uses: actions/checkout@v4
 
             - name: Install Rust
+              id: rust
               uses: dtolnay/rust-toolchain@stable
 
             - name: Cache core test artifacts
@@ -151,10 +153,10 @@ jobs:
                   path: |
                       ~/.cargo/registry
                       ~/.cargo/git
-                      target
-                  key: ${{ runner.os }}-core-safety-${{ hashFiles('Cargo.lock') }}
+                      target/debug
+                  key: ${{ runner.os }}-${{ runner.arch }}-core-safety-v2-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
                   restore-keys: |
-                      ${{ runner.os }}-core-safety-
+                      ${{ runner.os }}-${{ runner.arch }}-core-safety-v2-${{ steps.rust.outputs.cachekey }}-
 
             # Windows packaging alone cannot exercise replacement, recovery,
             # backup rollback or annotation tombstone semantics on NTFS.
@@ -186,7 +188,9 @@ jobs:
                   distribution: temurin
 
             - name: Install native script binding toolchain
-              run: sudo apt-get update && sudo apt-get install -y libclang-dev
+              uses: ./.github/actions/install-linux-dependencies
+              with:
+                  packages: libclang-dev
 
             - name: Setup Android SDK
               uses: android-actions/setup-android@v3

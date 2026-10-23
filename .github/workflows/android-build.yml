@@ -49,15 +49,39 @@ jobs:
                   distribution: temurin
 
             - name: Install Rust Android targets
+              id: rust
               uses: dtolnay/rust-toolchain@stable
               with:
                   targets: armv7-linux-androideabi,aarch64-linux-android,x86_64-linux-android
 
+            - name: Identify Android build tool host
+              id: tool-host
+              shell: bash
+              run: |
+                  . /etc/os-release
+                  echo "platform=${ID}-${VERSION_ID}-$(uname -m)" >> "$GITHUB_OUTPUT"
+
+            - name: Cache cargo-ndk executable
+              id: ndk-tool-cache
+              uses: actions/cache@v4
+              with:
+                  path: ${{ runner.temp }}/reader-cargo-ndk/bin/cargo-ndk
+                  key: cargo-ndk-4.1.2-${{ steps.tool-host.outputs.platform }}
+
             - name: Install cargo-ndk
-              run: cargo install cargo-ndk --locked
+              if: steps.ndk-tool-cache.outputs.cache-hit != 'true'
+              run: cargo install cargo-ndk --version '=4.1.2' --locked --root "$RUNNER_TEMP/reader-cargo-ndk"
+
+            - name: Verify cargo-ndk
+              shell: bash
+              run: |
+                  "$RUNNER_TEMP/reader-cargo-ndk/bin/cargo-ndk" --version
+                  echo "$RUNNER_TEMP/reader-cargo-ndk/bin" >> "$GITHUB_PATH"
 
             - name: Install native script binding toolchain
-              run: sudo apt-get update && sudo apt-get install -y libclang-dev
+              uses: ./.github/actions/install-linux-dependencies
+              with:
+                  packages: libclang-dev
 
             - name: Setup Android SDK
               uses: android-actions/setup-android@v3
@@ -87,9 +111,9 @@ jobs:
                       target/armv7-linux-androideabi
                       target/aarch64-linux-android
                       target/x86_64-linux-android
-                  key: ${{ runner.os }}-cargo-android-v2-${{ hashFiles('Cargo.lock') }}
+                  key: ${{ runner.os }}-${{ runner.arch }}-cargo-android-v3-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
                   restore-keys: |
-                      ${{ runner.os }}-cargo-android-v2-
+                      ${{ runner.os }}-${{ runner.arch }}-cargo-android-v3-${{ steps.rust.outputs.cachekey }}-
 
             - name: Cache Gradle
               uses: actions/cache@v4

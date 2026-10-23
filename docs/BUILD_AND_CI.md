@@ -9,10 +9,30 @@
 | `android-build.yml`: reusable | Three per-ABI Release APKs; publishing secrets are optional, otherwise development signing |
 | `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift logic checks, IPA packaging regressions, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive and IPA with SHA-256 receipt |
 | `pr-review.yml`: `run-build` label | Reuses all three builds for the PR head SHA |
-| `release.yml`: `v*` tag or manual tag | Requires all three builds; publishes desktop/Android assets and the unsigned iOS IPA, checksum, signing instructions and build information. iOS simulator/archive artifacts remain in Actions |
+| `release.yml`: `v*` tag or manual tag | Requires all three builds; publishes desktop/Android packages and the unsigned iOS IPA; signing instructions appear in the release notes. Checksums, build information and iOS simulator/archive artifacts remain in Actions |
 
 Both `ios/**` and `ios-bridge/**` trigger CI. Shared Swift scheme and
 `Package.resolved` belong in Git; local Xcode user state and runtime data do not.
+
+## Build caches
+
+Actions restores Cargo downloads and compiled dependencies, Gradle downloads,
+Swift packages and the pinned `cargo-ndk` executable. Rust build caches are
+separate for each host architecture, compiler and build role or target. The
+iOS host checks, simulator and device builds share package downloads but keep
+their compiled Rust artifacts separate. Cache paths exclude test reports,
+archives, signing keys and user data.
+
+Linux dependency setup caches downloaded `.deb` files. APT still refreshes its
+signed package index, resolves current dependencies and installs them normally;
+the cache avoids downloading unchanged packages again. Cache keys include the
+Ubuntu version, architecture, requested packages and resolved dependency plan.
+
+Cache misses, eviction and dependency or toolchain updates can require a fresh
+download or compilation. Checks and packaging always run, including on a cache
+hit. The first run after a cache-key change populates the new cache; compare
+later runs before claiming a speed improvement. See GitHub's
+[cache matching and scope rules](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
 
 ## Linux desktop dependencies
 
@@ -123,7 +143,10 @@ Build logs upload separately even if a build fails. No Apple credentials are
 required for these build checks or unsigned IPA packaging. The packager preserves
 embedded frameworks and executable permissions; it rejects simulator/wrong-CPU
 executables, app signing metadata and invalid ZIP/checksum data. The publisher
-verifies the downloaded IPA before attaching it to a Release. Developer signing,
+verifies the downloaded IPA before attaching it to a Release. Only application
+packages become Release attachments; signing instructions appear in a collapsible
+section of the release notes. Checksum receipts and build information remain in
+Actions alongside the archive. Developer signing,
 provisioning and store submission are not configured.
 
 The Apple workflow runs native logic checks, simulator compilation and unsigned
