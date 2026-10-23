@@ -3,6 +3,15 @@ import XCTest
 final class TxtImportUITests: XCTestCase {
     private let app = XCUIApplication(bundleIdentifier: ProcessInfo.processInfo.environment["READER_UI_TARGET_BUNDLE"] ?? "local.reader.txt")
     override func setUpWithError() throws { continueAfterFailure = false }
+    override func tearDownWithError() throws {
+        if (testRun?.failureCount ?? 0) > 0 {
+            shot("txt-parity-failure")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "txt-parity-failure-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+    }
     private func launch() {
         app.launchArguments = ["--verify-txt-import-ui", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
@@ -18,17 +27,21 @@ final class TxtImportUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["txt-count"].label.contains("4")); shot("txt-preview")
         let first = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "txt-toggle-")).firstMatch
         XCTAssertTrue(first.waitForExistence(timeout: 10)); first.tap()
-        XCTAssertTrue(app.buttons["txt-convert"].waitForExistence(timeout: 10))
-        // Search the original source and select a line independently of its format.
-        app.buttons["txt-add-heading"].tap()
-        let search = app.searchFields.firstMatch
-        XCTAssertTrue(search.waitForExistence(timeout: 10)); search.tap(); search.typeText("§")
-        let source = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "txt-source-")).firstMatch
-        XCTAssertTrue(source.waitForExistence(timeout: 15)); shot("txt-source-search"); source.tap()
         let convert = app.buttons["txt-convert"]
         let enabled = NSPredicate(format: "enabled == true")
         expectation(for: enabled, evaluatedWith: convert)
         waitForExpectations(timeout: 20)
+        // Search the original source and select a line independently of its format.
+        app.buttons["txt-add-heading"].tap()
+        let search = app.searchFields.firstMatch
+        expectation(for: NSPredicate { _, _ in search.exists && search.isHittable }, evaluatedWith: search)
+        waitForExpectations(timeout: 10)
+        search.tap(); search.typeText("§")
+        let source = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "txt-source-", "§")).firstMatch
+        XCTAssertTrue(source.waitForExistence(timeout: 15)); shot("txt-source-search"); source.tap()
+        expectation(for: enabled, evaluatedWith: convert)
+        waitForExpectations(timeout: 20)
+        XCTAssertTrue(app.staticTexts["txt-count"].label.contains("4"))
         convert.tap()
         XCTAssertTrue(app.staticTexts["txt-imported-count"].waitForExistence(timeout: 30))
         XCTAssertEqual(app.staticTexts["txt-imported-count"].label, "1")

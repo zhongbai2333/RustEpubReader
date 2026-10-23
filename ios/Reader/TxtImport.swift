@@ -277,7 +277,7 @@ private struct TxtSourceLinesView: View {
               footer: { if rows.count > 80 { Text(L("txt.search_limit")) } }
         }
         .navigationTitle(L("txt.add_heading")).navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $query, prompt: L("txt.search_source"))
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: L("txt.search_source"))
         .task(id: query) {
             searching = true; error = nil
             do {
