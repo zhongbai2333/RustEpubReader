@@ -49,16 +49,20 @@ with Xcode 26.4.1 selected explicitly. Rustup installs both iOS target standard
 libraries; the build phase preserves that toolchain instead of preferring
 Homebrew Rust. The shared scheme and pinned `Package.resolved` must be committed.
 
-The workflow runs core/bridge tests and seven host check groups (layout, OAuth,
-appearance, reading mode, speech, contents and localization). It builds the
-`ReaderUITests` scheme for simulator testing and runs the native runtime gate,
-including selection and Reduce Motion. The collector runs `TxtImportUITests`
-once before the repeated selection iterations to detect feature failures sooner;
-both suites control the same admitted installation.
-`BackupFilesUITests` remains separate. This is the current configuration, not a
-hosted pass for uncommitted changes. The workflow also builds an
-ad-hoc signed arm64 simulator app and archives an **unsigned arm64 Release** for
-physical iPhone/iPad, then packages an **unsigned IPA** with a SHA-256 receipt.
+The workflow runs three build/check jobs independently: core/bridge tests plus
+seven host check groups, one ad-hoc signed simulator build, and the unsigned
+arm64 Release archive/IPA. The simulator build and its targetless XCTest runner
+are compiled once, packaged with executable permissions, and admitted by source
+and content hashes on each test host.
+
+Five runtime jobs use separate hosts and disposable simulators: iPad
+layout/navigation/corpus, iPad TXT/service/contribution features, the same five
+features on iPhone, iPad selection, and iPad system Reduce Motion. Selection runs
+three repetitions for each of the five modes; system Reduce Motion also runs
+three repetitions. No failed repetition is retried into a pass. Every expected
+case/repetition must appear as passed in its XCResult. The final job requires
+all five receipts and both build outputs before publishing the usual artifact
+bundle. `BackupFilesUITests` remains separate.
 Normal CI, `run-build` PR builds and release builds reuse this workflow; it also
 supports manual dispatch. Logs and build provenance are uploaded. GitHub Releases
 attach the unsigned IPA, checksum, signing instructions and build information;

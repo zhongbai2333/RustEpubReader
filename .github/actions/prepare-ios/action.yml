@@ -1,0 +1,35 @@
+name: Prepare Apple build host
+description: Pin the Apple toolchain and restore existing Rust and Swift dependencies.
+runs:
+    using: composite
+    steps:
+        - name: Verify Apple build environment
+          shell: bash
+          run: |
+              test "$(uname -m)" = arm64
+              xcodebuild -version
+              xcrun --sdk iphoneos --show-sdk-version
+              xcrun --sdk iphonesimulator --show-sdk-version
+        - uses: actions/setup-python@v5
+          with:
+              python-version: "3.12"
+        - uses: dtolnay/rust-toolchain@stable
+          with:
+              targets: aarch64-apple-ios,aarch64-apple-ios-sim
+        - name: Preserve Rust toolchain for Xcode build phases
+          shell: bash
+          run: echo "READER_RUST_BIN=$(dirname "$(command -v cargo)")" >> "$GITHUB_ENV"
+        - name: Cache Rust and Swift packages
+          uses: actions/cache@v4
+          with:
+              path: |
+                  ~/.cargo/registry
+                  ~/.cargo/git
+                  target/debug
+                  target/release
+                  target/aarch64-apple-ios
+                  target/aarch64-apple-ios-sim
+                  target/ios-ci/Packages
+              key: ios-arm64-macos26-xcode26.4.1-${{ hashFiles('Cargo.lock', 'ios/**/Package.resolved') }}
+              restore-keys: |
+                  ios-arm64-macos26-xcode26.4.1-

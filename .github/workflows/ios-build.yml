@@ -20,55 +20,27 @@ name: iOS Build
 permissions:
     contents: read
 
+env:
+    DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    BUILD_VERSION: ${{ inputs.version || github.sha }}
+
 jobs:
-    build-ios:
-        name: Swift checks / simulator / unsigned device IPA
+    native-checks:
+        name: Apple core and Swift checks
         runs-on: macos-26
-        timeout-minutes: 60
+        timeout-minutes: 45
         defaults:
             run:
                 shell: bash
-        env:
-            DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
-            BUILD_VERSION: ${{ inputs.version || github.sha }}
         steps:
-            - name: Checkout
-              uses: actions/checkout@v4
+            - uses: actions/checkout@v4
               with:
-                  ref: ${{ inputs.ref || github.ref }}
-
-            - name: Verify Apple build environment
-              run: |
-                  test "$(uname -m)" = arm64
-                  xcodebuild -version
-                  xcrun --sdk iphoneos --show-sdk-version
-                  xcrun --sdk iphonesimulator --show-sdk-version
-
-            - name: Install Rust iOS targets
-              uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: aarch64-apple-ios,aarch64-apple-ios-sim
-
-            - name: Preserve Rust toolchain for Xcode build phases
-              run: echo "READER_RUST_BIN=$(dirname "$(command -v cargo)")" >> "$GITHUB_ENV"
-
-            - name: Cache Rust and Swift packages
-              uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.cargo/registry
-                      ~/.cargo/git
-                      target/debug
-                      target/release
-                      target/aarch64-apple-ios
-                      target/aarch64-apple-ios-sim
-                      target/ios-ci/Packages
-                  key: ios-arm64-macos26-xcode26.4.1-${{ hashFiles('Cargo.lock', 'ios/**/Package.resolved') }}
-                  restore-keys: |
-                      ios-arm64-macos26-xcode26.4.1-
-
+                  ref: ${{ inputs.ref || github.sha }}
+            - uses: ./.github/actions/prepare-ios
             - name: Verify shared core and native layout / OAuth
               run: |
+                  python3 scripts/test-mobile-runtime.py
+                  python3 scripts/test-ios-ci.py
                   python3 -m unittest discover -s ios/Tests -p test_unsigned_ipa.py
                   cargo test --locked -p reader_ios -p reader_core --features reader_core/github-sync
                   ios/scripts/check-layout.sh
@@ -79,6 +51,18 @@ jobs:
                   ios/scripts/check-contents.sh
                   ios/scripts/check-i18n.sh
 
+    simulator-build:
+        name: Build shared simulator tests
+        runs-on: macos-26
+        timeout-minutes: 45
+        defaults:
+            run:
+                shell: bash
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref || github.sha }}
+            - uses: ./.github/actions/prepare-ios
             - name: Resolve pinned Swift dependencies
               run: |
                   mkdir -p target/ios-ci/logs
@@ -97,16 +81,56 @@ jobs:
                     -derivedDataPath target/ios-ci/Simulator \
                     CODE_SIGN_IDENTITY=- ARCHS=arm64 READER_APP_BUNDLE_ID=local.reader.columns build-for-testing 2>&1 | tee target/ios-ci/logs/simulator.log
 
-            - name: Run native iPad reading smoke checks
+            - name: Bind and package simulator test products
               run: |
-                  # Complete runtime preparation before the first app launch.
-                  # bootstatus alone does not exercise the UI launch service.
-                  xcrun simctl runtime dyld_shared_cache update --all
-                  READER_UI_MANIFEST="$(python3 -c 'import glob; paths=glob.glob("target/ios-ci/Simulator/Build/Products/ReaderUITests_*.xctestrun"); assert len(paths)==1, paths; print(paths[0])')"
-                  python3 scripts/check-mobile-runtime.py ios \
-                    --app target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
-                    --timeout 240 --output target/ios-ci/runtime --with-corpus --with-selection --show-simulator --ios-runtime-version 26.4 \
-                    --xctestrun "$READER_UI_MANIFEST"
+                  READER_UI_MANIFEST="$(python3 -c 'import glob; p=glob.glob("target/ios-ci/Simulator/Build/Products/ReaderUITests_*.xctestrun"); assert len(p)==1,p; print(p[0])')"
+                  python3 scripts/ios-ci.py pack \
+                    --products target/ios-ci/Simulator/Build/Products \
+                    --manifest "$READER_UI_MANIFEST" --output simulator-transport
+                  mkdir -p simulator-assets
+                  ditto -c -k --sequesterRsrc --keepParent \
+                    target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
+                    simulator-assets/RustEpubReader-iOS-Simulator.zip
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-tests
+                  path: simulator-transport/*
+                  overwrite: true
+                  if-no-files-found: error
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-products
+                  path: simulator-assets/*
+                  overwrite: true
+                  if-no-files-found: error
+            - name: Preserve build logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-logs-simulator
+                  path: target/ios-ci/logs/*.log
+                  overwrite: true
+                  if-no-files-found: ignore
+
+    device-build:
+        name: Archive and verify unsigned IPA
+        runs-on: macos-26
+        timeout-minutes: 45
+        defaults:
+            run:
+                shell: bash
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref || github.sha }}
+            - uses: ./.github/actions/prepare-ios
+            - name: Resolve pinned Swift dependencies
+              run: |
+                  mkdir -p target/ios-ci/logs
+                  xcodebuild -resolvePackageDependencies \
+                    -project ios/RustEpubReader.xcodeproj -scheme ReaderPreview \
+                    -clonedSourcePackagesDirPath target/ios-ci/Packages \
+                    -onlyUsePackageVersionsFromResolvedFile 2>&1 | tee target/ios-ci/logs/packages.log
 
             - name: Archive unsigned iPhone / iPad Release
               run: |
@@ -129,35 +153,148 @@ jobs:
               run: |
                   mkdir -p ios-assets
                   ditto -c -k --sequesterRsrc --keepParent \
-                    target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
-                    ios-assets/RustEpubReader-iOS-Simulator.zip
-                  ditto -c -k --sequesterRsrc --keepParent \
                     target/ios-ci/ReaderPreview.xcarchive ios-assets/RustEpubReader-iOS-UnsignedArchive.zip
                   printf 'Source: %s\nLabel: %s\n' "$(git rev-parse HEAD)" "$BUILD_VERSION" > ios-assets/BUILD-INFO.txt
                   xcodebuild -version >> ios-assets/BUILD-INFO.txt
                   rustc --version >> ios-assets/BUILD-INFO.txt
                   cp ios/UNSIGNED_IPA.md ios-assets/RustEpubReader-iOS-SIGNING.md
-                  printf '\nSimulator: arm64, ad-hoc signed, Debug.\nDevice archive and IPA: arm64, Release, unsigned application. The IPA requires your own signing identity and matching provisioning profile, including re-signing embedded frameworks, before installation. See RustEpubReader-iOS-SIGNING.md. No TestFlight / App Store upload.\n' >> ios-assets/BUILD-INFO.txt
+                  printf '\nSimulator: built separately as arm64, ad-hoc signed, Debug.\nDevice archive and IPA: arm64, Release, unsigned application. The IPA requires your own signing identity and matching provisioning profile, including re-signing embedded frameworks, before installation. See RustEpubReader-iOS-SIGNING.md. No TestFlight / App Store upload.\n' >> ios-assets/BUILD-INFO.txt
 
-            - name: Upload iOS IPA and supporting artifacts
-              uses: actions/upload-artifact@v4
+            - uses: actions/upload-artifact@v4
               with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-arm64
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-device-products
                   path: ios-assets/*
+                  overwrite: true
                   if-no-files-found: error
-
-            - name: Upload build logs
+            - name: Preserve build logs
               if: always()
               uses: actions/upload-artifact@v4
               with:
-                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-logs
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-logs-device
                   path: target/ios-ci/logs/*.log
+                  overwrite: true
                   if-no-files-found: ignore
 
-            - name: Upload native runtime reports and screenshots
+    runtime:
+        name: Runtime ${{ matrix.name }}
+        needs: simulator-build
+        runs-on: macos-26
+        timeout-minutes: 40
+        strategy:
+            fail-fast: false
+            # Separate VMs; never share GUI focus, simulator settings or a library.
+            max-parallel: 5
+            matrix:
+                include:
+                    - { name: ipad-selection, shard: selection, family: ipad }
+                    - { name: ipad-motion, shard: motion, family: ipad }
+                    - { name: ipad-layout, shard: layout, family: ipad }
+                    - { name: ipad-features, shard: features, family: ipad }
+                    - { name: iphone-features, shard: features, family: iphone }
+        defaults:
+            run:
+                shell: bash
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref || github.sha }}
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+            - uses: actions/download-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-tests
+                  path: simulator-transport
+            - name: Restore and verify the shared simulator build
+              run: |
+                  python3 scripts/ios-ci.py unpack --transport simulator-transport \
+                    --products target/ios-ci/Simulator/Build/Products
+            - name: Run isolated native shard
+              run: |
+                  xcrun simctl runtime dyld_shared_cache update --all
+                  READER_UI_MANIFEST="$(python3 -c 'import json; print("target/ios-ci/Simulator/Build/Products/"+json.load(open("simulator-transport/build.json"))["manifest"])')"
+                  python3 scripts/check-mobile-runtime.py ios \
+                    --app target/ios-ci/Simulator/Build/Products/Debug-iphonesimulator/ReaderPreview.app \
+                    --timeout 240 --output target/ios-ci/runtime --with-corpus --show-simulator \
+                    --ios-shard "${{ matrix.shard }}" --ios-device-family "${{ matrix.family }}" \
+                    --ios-runtime-version 26.4 --xctestrun "$READER_UI_MANIFEST" \
+                    --build-record simulator-transport/build.json
+            - name: Preserve machine-readable runtime receipt
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-receipt-${{ matrix.name }}
+                  path: target/ios-ci/runtime/*.json
+                  overwrite: true
+                  if-no-files-found: warn
+            - name: Preserve runtime logs, screenshots and XCResults
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-runtime-${{ matrix.name }}
+                  path: target/ios-ci/runtime/*
+                  overwrite: true
+                  if-no-files-found: warn
+
+    verify-results:
+        # Keep the existing final check name for callers and branch protection.
+        name: Swift checks / simulator / unsigned device IPA
+        needs: [native-checks, simulator-build, device-build, runtime]
+        if: ${{ always() }}
+        runs-on: ubuntu-latest
+        steps:
+            - name: Require every build and every matrix job
+              env:
+                  JOB_RESULTS: ${{ toJSON(needs) }}
+              run: |
+                  python3 - <<'PY'
+                  import json, os
+                  results=json.loads(os.environ["JOB_RESULTS"])
+                  assert set(results)=={"native-checks","simulator-build","device-build","runtime"}
+                  assert all(value["result"]=="success" for value in results.values()),results
+                  PY
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ inputs.ref || github.sha }}
+            - uses: actions/download-artifact@v4
+              with:
+                  pattern: ${{ inputs.artifact-prefix || 'ios-build' }}-receipt-*
+                  path: apple-reports
+            - uses: actions/download-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-tests
+                  path: simulator-transport
+            - name: Verify complete coverage and identical source/build identities
+              run: |
+                  python3 scripts/ios-ci.py aggregate --reports apple-reports \
+                    --build simulator-transport/build.json \
+                    --prefix "${{ inputs.artifact-prefix || 'ios-build' }}" --output parallel-summary.json
+            - uses: actions/download-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-simulator-products
+                  path: ios-assets
+            - uses: actions/download-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-device-products
+                  path: ios-assets
+            - name: Verify the transported IPA and checksum
+              run: |
+                  python3 -c 'import pathlib,subprocess; expected="Source: "+subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(); assert pathlib.Path("ios-assets/BUILD-INFO.txt").read_text().splitlines()[0]==expected'
+                  for ipa in ios-assets/*-unsigned.ipa; do
+                    test -f "$ipa"
+                    python3 ios/scripts/package-unsigned-ipa.py verify "$ipa" --checksum "$ipa.sha256"
+                  done
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ inputs.artifact-prefix || 'ios-build' }}-arm64
+                  path: ios-assets/*
+                  overwrite: true
+                  if-no-files-found: error
+            - name: Preserve aggregate acceptance report
               if: always()
               uses: actions/upload-artifact@v4
               with:
                   name: ${{ inputs.artifact-prefix || 'ios-build' }}-runtime
-                  path: target/ios-ci/runtime/*
+                  path: parallel-summary.json
+                  overwrite: true
                   if-no-files-found: ignore

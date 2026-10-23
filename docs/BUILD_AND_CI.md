@@ -7,7 +7,7 @@
 | `ci.yml`: main/dev pushes, PRs, manual | Rust fmt / locked metadata / strict Clippy / workspace tests; native Windows core safety tests; Android JVM tests and Release lint; all three platform builds |
 | `desktop-build.yml`: reusable | Windows x64/arm64 ZIP, Linux x64/arm64 ZIP, macOS Intel/Apple Silicon DMG |
 | `android-build.yml`: reusable | Three per-ABI Release APKs; publishing secrets are optional, otherwise development signing |
-| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift checks, IPA packaging regressions, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive and IPA with SHA-256 receipt |
+| `ios-build.yml`: reusable or manual | Rust core/bridge tests, native Swift checks, five isolated runtime shards, IPA packaging regressions, ad-hoc signed arm64 simulator Debug app, unsigned arm64 device Release archive and IPA with SHA-256 receipt |
 | `pr-review.yml`: `run-build` label | Reuses all three builds for the PR head SHA |
 | `release.yml`: `v*` tag or manual tag | Requires all three builds; publishes desktop/Android assets and the unsigned iOS IPA, checksum, signing instructions and build information. iOS simulator/archive artifacts remain in Actions |
 
@@ -169,11 +169,20 @@ executables, app signing metadata and invalid ZIP/checksum data. The publisher
 verifies the downloaded IPA before attaching it to a Release. Developer signing,
 provisioning and store submission are not configured. The project has host Swift checks, Rust tests and an isolated `ReaderUITests`
 UI-test target containing selection, system Reduce Motion, Files and TXT cases.
-The hosted collector runs `TxtImportUITests` once before the repeated
-`ReaderSelectionUITests` iterations, so feature failures stop the gate earlier.
-Both suites control the same admitted app installation. `BackupFilesUITests`
-remains separate and is not executed by that gate. This describes the current collector configuration, not a hosted result
-for uncommitted changes.
+The Apple workflow runs native logic checks, simulator compilation and unsigned
+Release packaging as independent jobs. One pinned simulator build is transported
+with its source, executable, runner and manifest hashes to five isolated runtime
+jobs: iPad layout/corpus, iPad features, iPhone features, iPad selection and iPad
+system Reduce Motion. The five feature cases run once on each device family;
+each of the five selection cases and the system Reduce Motion case still runs
+three times, without retry-on-failure. XCTest results must contain every required
+case and repetition. Each job owns its simulator, installation and output folder.
+
+A final job requires every build and runtime job, revalidates the five receipts
+against the same source/build identity, and verifies the transported IPA before
+uploading the existing `*-arm64` artifact. Intermediate build artifacts alone do
+not pass the release gate. `BackupFilesUITests` remains a separate local suite.
+Workflow configuration and local passes do not establish a hosted result.
 Compilation does not validate physical page-turn gestures, background behavior
 or App Store acceptance.
 

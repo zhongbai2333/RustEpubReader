@@ -13,18 +13,19 @@ reader reopening after activity recreation, explicit close, and continuous mode.
 The workflow boots an API 35 x86_64 tablet with KVM. Native checks are not bundled
 into the published Release APK.
 
-iOS creates its own iPad Simulator, choosing a device type whose supported system
-range includes the installed runtime. It installs the debug simulator app, runs
-column and navigation checks, collects results, then shuts down and deletes only
-that newly created simulator. The tests exercise four paging modes and five
-navigation modes, exact anchors/returns and accepted remote positions without a
-new local edit. This does not test actual account synchronization.
+Each iOS runtime job creates its own iPhone or iPad Simulator, choosing a device
+type compatible with the selected runtime. It installs the shared debug build,
+executes its assigned checks, then shuts down and deletes only that new simulator.
+The iPad layout shard exercises four paging modes and five navigation modes,
+exact anchors/returns and accepted remote positions without a new local edit.
+The other shards cover UI features, selection and system Reduce Motion, as listed
+below. These checks do not test actual account synchronization.
 
 An explicit `passed: true` report is required; missing, malformed, failed and stale
 reports cannot count as success. Output directories must be new so earlier runs
 remain distinct. Android Cargo caches are limited to build directories and do not
 retain smoke reports or emulator state. `scripts/test-mobile-runtime.py` tests
-report acceptance, missing-result timeout and compatible iPad selection.
+report acceptance, missing-result timeout and compatible device selection.
 
 Local reproduction (build the isolated app first):
 
@@ -49,14 +50,43 @@ The simulator build explicitly sets `READER_APP_BUNDLE_ID=local.reader.columns`;
 release archives keep their normal bundle identifier. The iOS runner refuses a
 non-diagnostic bundle before creating a simulator. The separate Files UI target
 uses `local.reader.ui-files`, also allowed by the owned support-panel harness.
-The collector runs the five `TxtImportUITests` cases once before the repeated
-`ReaderSelectionUITests` suite, stopping early on feature failures. Both use the
-same admitted installation. The five feature cases cover title
-exclusion/source selection/conversion, invalid rules, service settings, failure
-retry, and removing a contribution sample without submitting it. It retains a
-separate log and XCResult and fails the gate if the additional suite fails.
-`BackupFilesUITests` remains separate and is not executed by this collector.
-Local passes and configuration changes do not establish a hosted run. See the [platform capability audit](PLATFORM_PARITY.md).
+The Apple workflow compiles the simulator app and targetless XCTest runner once.
+`ios-ci.py pack` records the source SHA, workflow run/attempt, collector hash,
+app/runner/manifest hashes and Xcode version. A tar archive preserves executable
+bits and framework symlinks. Each runtime host checks that identity before
+installing the app; the collector also checks that XCTest leaves the admitted
+installation and input artifacts unchanged.
+
+The runtime matrix uses five separate hosts, each with its own simulator and
+report directory:
+
+| Shard | Device | Coverage |
+| --- | --- | --- |
+| `ipad-layout` | iPad | Single column, navigation and native typography/script corpus |
+| `ipad-features` | iPad | All five TXT/service/contribution cases |
+| `iphone-features` | iPhone | The same five feature cases at phone size |
+| `ipad-selection` | iPad | All five selection modes, three repetitions each |
+| `ipad-motion` | iPad | System Reduce Motion and restoration, three repetitions |
+
+XCTest runs serially inside each host. GUI focus, Settings state, app data and
+report files are never shared between hosts. `xcresulttool` must report the exact
+case set and all three successful repetitions; missing, skipped or failed cases
+fail the shard. The selection shard still requires fifteen independent native
+touch traces. Layout and corpus assertions are unchanged.
+
+`ios-ci.py aggregate` rejects missing/failed shards, another source/build,
+changed installations, wrong device families/runtime versions, missing native
+input traces and incomplete drawing coverage. A successful earlier build from
+the same workflow run can be reused when rerunning failed jobs; artifacts are
+replaced by name, and all receipts must still match that build. Final artifact
+collection also requires native logic checks and Release packaging to succeed.
+
+The original `--with-selection` command remains available for a complete serial
+local run. `--ios-shard layout|features|selection|motion` and
+`--ios-device-family ipad|iphone` select isolated CI portions. `--build-record`
+requires an admitted transported build. `BackupFilesUITests` remains separate.
+Local passes and configuration changes do not establish a hosted result. See the
+[platform capability audit](PLATFORM_PARITY.md).
 
 Both workflows now enable `--with-corpus`. The committed typography and script
 fixtures are rendered under all three style policies at widths320/640. Native

@@ -201,36 +201,86 @@ def ios_installed_target(args, identifier, bundle):
     return dict(paths, binary_sha256=checksum, binary_inode=binary.stat().st_ino)
 
 
+IOS_FEATURE_TESTS = {
+    "TxtImportUITests/" + name + "()" for name in (
+        "testPreviewExclusionManualAdditionAndConversion", "testInvalidRuleIsVisibleAndCanBeCorrected",
+        "testNativeServiceSettingsAndLookupMissingConfiguration", "testNativeServiceRejectsUnsafeURLAndOffersRetry",
+        "testContributionPreviewCanRemoveSampleBeforeSubmitting")}
+IOS_SELECTION_TESTS = {"ReaderSelectionUITests/" + name + "()" for name in (
+    "testNoAnimationSelection", "testCurlSelection", "testSlideSelection", "testCoverSelection", "testScrollSelection")}
+IOS_MOTION_TESTS = {"ReaderSelectionUITests/testSystemReducedMotionNavigation()"}
+
+
+def validate_ios_xctest(tree, expected, iterations, identifier):
+    devices = tree.get("devices", [])
+    if len(devices) != 1 or devices[0].get("deviceId") != identifier:
+        raise RuntimeError("XCTest did not use the owned simulator")
+    cases = {}
+    def visit(nodes):
+        for node in nodes:
+            if node.get("nodeType") == "Test Case":
+                key = node.get("nodeIdentifier")
+                if key in cases or node.get("result") != "Passed":
+                    raise RuntimeError("Duplicate or failed XCTest case")
+                repetitions = [child for child in node.get("children", []) if child.get("nodeType") == "Repetition"]
+                if iterations > 1:
+                    if len(repetitions) != iterations or {r.get("nodeIdentifier") for r in repetitions} != {str(i) for i in range(1, iterations + 1)} or any(r.get("result") != "Passed" for r in repetitions):
+                        raise RuntimeError("Incomplete or failed XCTest repetitions")
+                elif repetitions:
+                    raise RuntimeError("Unexpected XCTest repetition configuration")
+                cases[key] = iterations
+            else:
+                visit(node.get("children", []))
+    visit(tree.get("testNodes", []))
+    if set(cases) != expected:
+        raise RuntimeError("XCTest cases differ from the required shard coverage")
+    return {"passed": True, "cases": cases, "device_id": identifier}
+
+
+def ios_xctest_receipt(output, result, expected, iterations, identifier):
+    tree = json.loads(run("xcrun", "xcresulttool", "get", "test-results", "tests", "--path", str(result), "--format", "json"))
+    (output / (result.stem + "-tests.json")).write_text(json.dumps(tree) + "\n")
+    return validate_ios_xctest(tree, expected, iterations, identifier)
+
+
 def collect_ios_selection(args, identifier, bundle):
     # The collector installs once. A targetless runner controls that exact app
     # through XCUIApplication(bundleIdentifier:), without an IDE debug launch.
     manifest = ios_selection_manifest(args)
     before = ios_installed_target(args, identifier, bundle)
+    shard = getattr(args, "ios_shard", "all")
     command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest), "-destination", "id=" + identifier,
                "-parallel-testing-enabled", "NO", "-test-iterations", "3", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
+    if shard == "selection":
+        command += ["-skip-testing:ReaderUITests/ReaderSelectionUITests/testSystemReducedMotionNavigation"]
+    elif shard == "motion":
+        command[command.index("-only-testing:ReaderUITests/ReaderSelectionUITests")] = "-only-testing:ReaderUITests/ReaderSelectionUITests/testSystemReducedMotionNavigation"
     execution_failed = False
+    receipts = {}
     try:
-        # Fail fast on the shorter feature suite before repeated reading checks.
-        # Same admitted installation; synthetic roots and no live API contribution.
-        parity_command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest),
-                          "-destination", "id=" + identifier, "-parallel-testing-enabled", "NO",
-                          "-only-testing:ReaderUITests/TxtImportUITests",
-                          "-resultBundlePath", str(args.output / "platform-parity.xcresult")]
-        with (args.output / "platform-parity-ui.log").open("wb") as log:
-            parity = subprocess.run(parity_command, stdout=log, stderr=subprocess.STDOUT,
-                                    timeout=max(300, args.timeout))
-        if parity.returncode != 0:
-            raise RuntimeError("Native TXT/service/contribution XCTest failed; inspect platform-parity-ui.log and XCResult")
-        (args.output / "platform-parity-ui.json").write_text(json.dumps({
-            "passed": True, "suite": "TxtImportUITests",
-            "live_service_requests": False, "public_contributions": False}) + "\n")
-        with (args.output / "selection-ui.log").open("wb") as log:
-            # Repeat all six cases three times, without retry-on-failure. Any
-            # failed iteration fails the suite. Keep per-case assertions bounded
-            # and allow cold runner setup and Settings restoration to complete.
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
-        if result.returncode != 0:
-            raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
+        if shard in ("all", "features"):
+            parity_command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest),
+                              "-destination", "id=" + identifier, "-parallel-testing-enabled", "NO",
+                              "-only-testing:ReaderUITests/TxtImportUITests",
+                              "-resultBundlePath", str(args.output / "platform-parity.xcresult")]
+            with (args.output / "platform-parity-ui.log").open("wb") as log:
+                parity = subprocess.run(parity_command, stdout=log, stderr=subprocess.STDOUT, timeout=max(300, args.timeout))
+            if parity.returncode != 0:
+                raise RuntimeError("Native TXT/service/contribution XCTest failed; inspect platform-parity-ui.log and XCResult")
+            if shard != "all":
+                receipts["features"] = ios_xctest_receipt(args.output, args.output / "platform-parity.xcresult", IOS_FEATURE_TESTS, 1, identifier)
+            (args.output / "platform-parity-ui.json").write_text(json.dumps({
+                "passed": True, "suite": "TxtImportUITests",
+                "live_service_requests": False, "public_contributions": False}) + "\n")
+        if shard in ("all", "selection", "motion"):
+            # Every selected case still runs three times, without retry-on-failure.
+            with (args.output / "selection-ui.log").open("wb") as log:
+                result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
+            if result.returncode != 0:
+                raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
+            if shard != "all":
+                expected = IOS_SELECTION_TESTS if shard == "selection" else IOS_MOTION_TESTS
+                receipts[shard] = ios_xctest_receipt(args.output, args.output / "selection.xcresult", expected, 3, identifier)
     except BaseException:
         execution_failed = True
         raise
@@ -263,11 +313,17 @@ def collect_ios_selection(args, identifier, bundle):
             raise inspection_error
     if before != after:
         raise RuntimeError("XCTest replaced the admitted target app or data container")
-    rows = [validate_report((args.output / ("selection-ui-" + mode + ".json")).read_bytes()) for mode in ("none", "curl", "slide", "cover", "scroll")]
-    selection = validate_selection({"passed": True, "cases": rows}, "ios")
-    selection["platform_parity"] = validate_report((args.output / "platform-parity-ui.json").read_bytes())
-    selection["input_readiness"] = validate_ios_input_runs(args.output)
-    selection["reduced_motion"] = validate_reduced_motion(validate_report((args.output / "reduced-motion-verification.json").read_bytes()), "ios")
+    selection = {"passed": True}
+    if shard in ("all", "selection"):
+        rows = [validate_report((args.output / ("selection-ui-" + mode + ".json")).read_bytes()) for mode in ("none", "curl", "slide", "cover", "scroll")]
+        selection = validate_selection({"passed": True, "cases": rows}, "ios")
+        selection["input_readiness"] = validate_ios_input_runs(args.output)
+    if shard in ("all", "features"):
+        selection["platform_parity"] = validate_report((args.output / "platform-parity-ui.json").read_bytes())
+    if shard in ("all", "motion"):
+        selection["reduced_motion"] = validate_reduced_motion(validate_report((args.output / "reduced-motion-verification.json").read_bytes()), "ios")
+    if receipts:
+        selection["xctest"] = receipts
     return selection
 
 
@@ -437,6 +493,24 @@ def compatible_tablet(types, version, requested=None):
     if compatible:
         return compatible[0]["identifier"]
     raise ValueError("No iPad device type supports the selected Simulator runtime")
+
+
+def compatible_phone(types, version):
+    parts = ([int(x) for x in version.split(".")] + [0, 0])[:3]
+    encoded = (parts[0] << 16) | (parts[1] << 8) | parts[2]
+    compatible = [d for d in types if d.get("productFamily") == "iPhone"
+                  and d.get("minRuntimeVersion", 0) <= encoded <= d.get("maxRuntimeVersion", 0)]
+    for model in ("iPhone-17", "iPhone-16", "iPhone-16e"):
+        for device in compatible:
+            if device["identifier"] == "com.apple.CoreSimulator.SimDeviceType." + model:
+                return device["identifier"]
+    if not compatible:
+        raise ValueError("No iPhone device type supports the selected Simulator runtime")
+    return compatible[0]["identifier"]
+
+
+def ios_ui_requested(args):
+    return getattr(args, "with_selection", False) or getattr(args, "ios_shard", "all") in ("features", "selection", "motion")
 
 
 def select_ios_runtime(runtimes, requested=None):
@@ -750,14 +824,17 @@ def ios(args):
     bundle = info["CFBundleIdentifier"]
     if bundle not in ("local.reader.columns", "local.reader.ui-files"):
         raise ValueError("Runtime checks require an isolated iOS diagnostic bundle")
-    if getattr(args, "with_selection", False):
+    shard = getattr(args, "ios_shard", "all")
+    if ios_ui_requested(args):
         ios_selection_inputs(args.app, args.xctestrun)
     runtimes = json.loads(run("xcrun", "simctl", "list", "runtimes", "-j"))["runtimes"]
     runtime = select_ios_runtime(runtimes, getattr(args,"ios_runtime_version",None))
     types = json.loads(run("xcrun", "simctl", "list", "devicetypes", "-j"))["devicetypes"]
-    device_type = compatible_tablet(types, runtime["version"])
+    device_type = (compatible_phone if getattr(args, "ios_device_family", "ipad") == "iphone" else compatible_tablet)(types, runtime["version"])
+    args.ios_runtime = {"version": runtime["version"], "device_type": device_type}
     identifier = ios_simctl(args.output, "create", "ReaderCI-" + str(uuid.uuid4()),
                             device_type, runtime["identifier"]).decode().strip()
+    args.ios_runtime["simulator_id"] = identifier
     completed = False
     try:
         ios_simctl(args.output, "boot", identifier)
@@ -770,8 +847,11 @@ def ios(args):
         prepare_ios_ui(args.output, identifier)
         results = {}
         ios_simctl(args.output, "install", identifier, str(args.app))
-        if getattr(args, "with_selection", False):
-            results["selection"] = collect_ios_selection(args, identifier, bundle)
+        if ios_ui_requested(args):
+            results["selection" if shard == "all" else shard] = collect_ios_selection(args, identifier, bundle)
+        if shard in ("features", "selection", "motion"):
+            completed = True
+            return results
         container = Path(ios_simctl(args.output, "get_app_container", identifier, bundle, "data").decode().strip())
         documents, caches = container / "Documents", container / "Library/Caches"
         documents.mkdir(parents=True, exist_ok=True)
@@ -828,6 +908,9 @@ def main():
     parser.add_argument("--with-selection", action="store_true", help="Native selection gestures, persisted scalar ranges, and real system Reduce Motion checks")
     parser.add_argument("--xctestrun", type=Path, help="Pinned ReaderUITests manifest, required for iOS selection")
     parser.add_argument("--show-simulator", action="store_true", help="Attach the selected Xcode Simulator UI to this run's owned iPad")
+    parser.add_argument("--ios-shard", choices=("all", "layout", "features", "selection", "motion"), default="all")
+    parser.add_argument("--ios-device-family", choices=("ipad", "iphone"), default="ipad")
+    parser.add_argument("--build-record", type=Path, help="Admitted cross-host simulator build identity")
     parser.add_argument("--ios-runtime-version", help="Require an installed iOS runtime version (major.minor or major.minor.patch)")
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--output", type=Path, required=True)
@@ -842,20 +925,34 @@ def main():
         parser.error("--ios-runtime-version is only supported for iOS simulators")
     if args.platform == "android" and args.tests is None:
         parser.error("--tests is required for Android")
-    ui_runner = ios_selection_inputs(args.app, args.xctestrun) if args.with_selection and args.platform == "ios" else None
+    if args.platform != "ios" and (args.ios_shard != "all" or args.ios_device_family != "ipad" or args.build_record):
+        parser.error("iOS shards, device families and build records require iOS")
+    if args.platform == "ios" and args.ios_shard != "all" and args.with_selection:
+        parser.error("Select either an iOS shard or the complete --with-selection gate")
+    ui_runner = ios_selection_inputs(args.app, args.xctestrun) if args.platform == "ios" and (ios_ui_requested(args) or args.build_record) else None
     args.output.mkdir(parents=True, exist_ok=False)
     summary = {"platform": args.platform, "passed": False, "run_id": str(uuid.uuid4()),
                "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                "artifact_sha256": artifact_hash(args.app),
                "tests_sha256": artifact_hash(args.tests) if args.tests else None,
                "fixture_sha256": hashlib.sha256((ROOT / "ios/Tests/fixtures/native-reading-modes.epub").read_bytes()).hexdigest()}
-    if args.with_selection:
+    if args.platform == "ios":
+        summary.update(ios_shard=args.ios_shard, ios_device_family=args.ios_device_family)
+    if args.with_selection or args.ios_shard in ("selection", "motion"):
         summary["selection_fixture_sha256"] = hashlib.sha256((ROOT / "core/tests/fixtures/native-typography.epub").read_bytes()).hexdigest()
     if ui_runner is not None:
         summary["ui_runner_sha256"] = artifact_hash(ui_runner)
         summary["xctestrun_sha256"] = hashlib.sha256(args.xctestrun.read_bytes()).hexdigest()
     if args.with_corpus:
         summary["corpus_fixtures"] = {case["name"]: hashlib.sha256((ROOT / "core/tests/fixtures" / (case["name"] + ".epub")).read_bytes()).hexdigest() for case in CORPUS_CASES}
+    if args.build_record:
+        record = json.loads(args.build_record.read_text())
+        expected = {"source_sha": run("git", "rev-parse", "HEAD").decode().strip(),
+                    "collector_sha256": summary["collector_sha256"], "app_sha256": summary["artifact_sha256"],
+                    "ui_runner_sha256": summary["ui_runner_sha256"], "xctestrun_sha256": summary["xctestrun_sha256"]}
+        if any(record.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("Cross-host runtime inputs differ from the admitted build")
+        summary.update(source_sha=record["source_sha"], build_record_sha256=artifact_hash(args.build_record))
     try:
         summary["checks"] = android(args) if args.platform == "android" else ios(args)
         summary["passed"] = True
@@ -863,6 +960,8 @@ def main():
         summary["error"] = str(error)
         raise
     finally:
+        if args.platform == "ios":
+            summary["ios_runtime"] = getattr(args, "ios_runtime", None)
         try:
             summary["artifacts_unchanged"] = artifact_hash(args.app) == summary["artifact_sha256"] and (args.tests is None or artifact_hash(args.tests) == summary["tests_sha256"])
             if ui_runner is not None:
