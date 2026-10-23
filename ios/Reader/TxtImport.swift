@@ -265,12 +265,7 @@ private struct TxtSourceLinesView: View {
                 if searching { ProgressView() }
                 if let error { Text(error).foregroundStyle(.red) }
                 ForEach(Array(rows.prefix(80))) { row in
-                    Button { model.add(row); dismiss() } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(row.title).foregroundStyle(Color(uiColor: .label)).lineLimit(3)
-                            Text(row.excerpt).font(.footnote).foregroundStyle(Color(uiColor: .secondaryLabel)).lineLimit(2)
-                        }.padding(.vertical, 4)
-                    }.accessibilityIdentifier("txt-source-\(row.id)")
+                    TxtSourceLineButton(row: row) { model.add(row); dismiss() }
                 }
                 if !searching && rows.isEmpty && error == nil { Text(L("txt.no_matches")).foregroundStyle(.secondary) }
             } header: { Text(L("txt.add_hint")).textCase(nil) }
@@ -292,3 +287,21 @@ private struct TxtSourceLinesView: View {
     }
 }
 
+private struct TxtSourceLineButton: View {
+    let row: TxtChapterPreview
+    let select: () -> Void
+    // Read this action below .searchable so it closes the active search session
+    // before the source picker pops and restores the import toolbar.
+    @Environment(\.dismissSearch) private var dismissSearch
+    var body: some View {
+        Button {
+            dismissSearch()
+            select()
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(row.title).foregroundStyle(Color(uiColor: .label)).lineLimit(3)
+                Text(row.excerpt).font(.footnote).foregroundStyle(Color(uiColor: .secondaryLabel)).lineLimit(2)
+            }.padding(.vertical, 4)
+        }.accessibilityIdentifier("txt-source-\(row.id)")
+    }
+}

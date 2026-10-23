@@ -169,10 +169,10 @@ executables, app signing metadata and invalid ZIP/checksum data. The publisher
 verifies the downloaded IPA before attaching it to a Release. Developer signing,
 provisioning and store submission are not configured. The project has host Swift checks, Rust tests and an isolated `ReaderUITests`
 UI-test target containing selection, system Reduce Motion, Files and TXT cases.
-The hosted collector runs `ReaderSelectionUITests` across its repeated selection
-iterations, then runs `TxtImportUITests` once against the same admitted app
-installation. `BackupFilesUITests` remains separate and is not executed by that
-gate. This describes the current collector configuration, not a hosted result
+The hosted collector runs `TxtImportUITests` once before the repeated
+`ReaderSelectionUITests` iterations, so feature failures stop the gate earlier.
+Both suites control the same admitted app installation. `BackupFilesUITests`
+remains separate and is not executed by that gate. This describes the current collector configuration, not a hosted result
 for uncommitted changes.
 Compilation does not validate physical page-turn gestures, background behavior
 or App Store acceptance.

@@ -52,8 +52,9 @@ Homebrew Rust. The shared scheme and pinned `Package.resolved` must be committed
 The workflow runs core/bridge tests and seven host check groups (layout, OAuth,
 appearance, reading mode, speech, contents and localization). It builds the
 `ReaderUITests` scheme for simulator testing and runs the native runtime gate,
-including selection and Reduce Motion. After the repeated selection iterations,
-the collector runs `TxtImportUITests` once against the same admitted installation;
+including selection and Reduce Motion. The collector runs `TxtImportUITests`
+once before the repeated selection iterations to detect feature failures sooner;
+both suites control the same admitted installation.
 `BackupFilesUITests` remains separate. This is the current configuration, not a
 hosted pass for uncommitted changes. The workflow also builds an
 ad-hoc signed arm64 simulator app and archives an **unsigned arm64 Release** for

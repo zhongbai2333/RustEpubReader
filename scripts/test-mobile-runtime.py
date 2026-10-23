@@ -552,10 +552,12 @@ class SelectionTests(unittest.TestCase):
             root=Path(directory);output=root/"output";output.mkdir()
             current=root/"new-container";cache=current/"Library/Caches";cache.mkdir(parents=True)
             ran=False
+            suites=[]
             def execute(*args,**kwargs):
                 nonlocal ran
                 ran=True
                 command=args[0]
+                suites.append(next(arg for arg in command if arg.startswith("-only-testing:")))
                 if "-only-testing:ReaderUITests/TxtImportUITests" in command:
                     self.assertGreaterEqual(kwargs["timeout"],300)
                     self.assertNotIn("-test-iterations",command)
@@ -576,6 +578,7 @@ class SelectionTests(unittest.TestCase):
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
             with patch.object(runtime.subprocess,"run",side_effect=execute),patch.object(runtime,'ios_installed_target',return_value=state),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 value=runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
+            self.assertEqual(suites,["-only-testing:ReaderUITests/TxtImportUITests","-only-testing:ReaderUITests/ReaderSelectionUITests"])
             self.assertTrue(value["passed"]);self.assertEqual(len(list(output.glob("selection-ui-*.json"))),5)
             self.assertEqual(json.loads((output/"selection-gesture-slide.json").read_text())["events"],[{"state":1},{"state":3}])
             self.assertTrue(json.loads((output/'xctest-installation.json').read_text())['unchanged'])
@@ -610,9 +613,12 @@ class SelectionTests(unittest.TestCase):
             root=Path(directory);cache=root/'Library/Caches';cache.mkdir(parents=True)
             args=SimpleNamespace(output=root,xctestrun=root/'owned',timeout=1)
             state={'data':str(root),'app':'/owned.app'}
-            with patch.object(runtime.subprocess,'run',side_effect=[SimpleNamespace(returncode=0),SimpleNamespace(returncode=1)]),patch.object(runtime,'ios_installed_target',return_value=state),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
+            with patch.object(runtime.subprocess,'run',return_value=SimpleNamespace(returncode=1)) as execute,patch.object(runtime,'ios_installed_target',return_value=state),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 with self.assertRaisesRegex(RuntimeError,'Native TXT/service/contribution XCTest failed'):
                     runtime.collect_ios_selection(args,'owned-device','local.reader.columns')
+            execute.assert_called_once()
+            self.assertIn("-only-testing:ReaderUITests/TxtImportUITests",execute.call_args.args[0])
+            self.assertFalse((root/'selection-ui.log').exists())
             self.assertFalse((root/'platform-parity-ui.json').exists())
             self.assertTrue(json.loads((root/'xctest-installation.json').read_text())['unchanged'])
 
@@ -724,7 +730,7 @@ class FailureEvidenceTests(unittest.TestCase):
             failed_run=cache/f"selection-run-{str(uuid.uuid4()).upper()}-cover.json"
             failed_run.write_text('{"events":[],"focus":{"confirmed":false}}')
             args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
-            with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=1)),patch.object(runtime,'ios_installed_target',return_value={'data':str(root/'container'),'app':'/owned.app'}),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
+            with patch.object(runtime.subprocess,"run",side_effect=[SimpleNamespace(returncode=0),SimpleNamespace(returncode=1)]),patch.object(runtime,'ios_installed_target',return_value={'data':str(root/'container'),'app':'/owned.app'}),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                 with self.assertRaisesRegex(RuntimeError,"Native selection XCTest failed"):
                     runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
             self.assertTrue((output/"reduced-motion-verification.json").is_file())
@@ -740,7 +746,7 @@ class FailureEvidenceTests(unittest.TestCase):
                 args=SimpleNamespace(output=output,xctestrun=root/"owned.xctestrun",timeout=1)
                 shutdown=RuntimeError("Simulator is Shutdown")
                 installed={'data':str(root/'container'),'app':'/owned.app'}
-                with patch.object(runtime.subprocess,"run",return_value=SimpleNamespace(returncode=returncode)),patch.object(runtime,'ios_installed_target',side_effect=[installed,shutdown]),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
+                with patch.object(runtime.subprocess,"run",side_effect=[SimpleNamespace(returncode=0),SimpleNamespace(returncode=returncode)]),patch.object(runtime,'ios_installed_target',side_effect=[installed,shutdown]),patch.object(runtime,'ios_selection_manifest',return_value=root/'selection-inputs.xctestrun'):
                     expected="Native selection XCTest failed" if returncode else "Simulator is Shutdown"
                     with self.assertRaisesRegex(RuntimeError,expected):runtime.collect_ios_selection(args,"owned-device","local.reader.columns")
                 admission=json.loads((output/"xctest-installation.json").read_text())

@@ -49,8 +49,9 @@ The simulator build explicitly sets `READER_APP_BUNDLE_ID=local.reader.columns`;
 release archives keep their normal bundle identifier. The iOS runner refuses a
 non-diagnostic bundle before creating a simulator. The separate Files UI target
 uses `local.reader.ui-files`, also allowed by the owned support-panel harness.
-The collector selects `ReaderSelectionUITests` explicitly, then runs the five
-`TxtImportUITests` cases once against the same admitted installation: title
+The collector runs the five `TxtImportUITests` cases once before the repeated
+`ReaderSelectionUITests` suite, stopping early on feature failures. Both use the
+same admitted installation. The five feature cases cover title
 exclusion/source selection/conversion, invalid rules, service settings, failure
 retry, and removing a contribution sample without submitting it. It retains a
 separate log and XCResult and fails the gate if the additional suite fails.

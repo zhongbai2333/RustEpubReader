@@ -210,13 +210,7 @@ def collect_ios_selection(args, identifier, bundle):
                "-parallel-testing-enabled", "NO", "-test-iterations", "3", "-only-testing:ReaderUITests/ReaderSelectionUITests", "-resultBundlePath", str(args.output / "selection.xcresult")]
     execution_failed = False
     try:
-        with (args.output / "selection-ui.log").open("wb") as log:
-            # Repeat all six cases three times, without retry-on-failure. Any
-            # failed iteration fails the suite. Keep per-case assertions bounded
-            # and allow cold runner setup and Settings restoration to complete.
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
-        if result.returncode != 0:
-            raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
+        # Fail fast on the shorter feature suite before repeated reading checks.
         # Same admitted installation; synthetic roots and no live API contribution.
         parity_command = ["xcodebuild", "test-without-building", "-xctestrun", str(manifest),
                           "-destination", "id=" + identifier, "-parallel-testing-enabled", "NO",
@@ -230,6 +224,13 @@ def collect_ios_selection(args, identifier, bundle):
         (args.output / "platform-parity-ui.json").write_text(json.dumps({
             "passed": True, "suite": "TxtImportUITests",
             "live_service_requests": False, "public_contributions": False}) + "\n")
+        with (args.output / "selection-ui.log").open("wb") as log:
+            # Repeat all six cases three times, without retry-on-failure. Any
+            # failed iteration fails the suite. Keep per-case assertions bounded
+            # and allow cold runner setup and Settings restoration to complete.
+            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=max(1200, args.timeout))
+        if result.returncode != 0:
+            raise RuntimeError("Native selection XCTest failed; inspect selection-ui.log and XCResult")
     except BaseException:
         execution_failed = True
         raise
