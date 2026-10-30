@@ -1,6 +1,7 @@
 //! Library management, book cataloging, and metadata parsing.
 pub mod access;
 pub mod archive;
+pub mod categories;
 pub mod covers;
 mod types;
 pub use types::*;
@@ -56,6 +57,8 @@ fn bytes_hash(data: &[u8]) -> String {
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Library {
     pub books: Vec<BookEntry>,
+    #[serde(default)]
+    pub classification: categories::Classification,
     /// O(1) lookup: path → index in `books`. Rebuilt on load/mutation.
     #[serde(skip)]
     path_index: HashMap<String, usize>,

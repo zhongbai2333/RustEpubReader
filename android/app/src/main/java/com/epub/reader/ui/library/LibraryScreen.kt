@@ -52,6 +52,10 @@ import kotlinx.coroutines.withContext
 @Composable
 fun LibraryScreen(
     books: List<BookEntry>,
+    classification: com.zhongbai233.epub.reader.model.BookClassification = com.zhongbai233.epub.reader.model.BookClassification(),
+    categoriesBusy: Boolean = false,
+    categoriesError: String? = null,
+    onCategoryAction: (org.json.JSONObject, () -> Unit) -> Unit = { _, _ -> },
     active: Boolean = true,
     query: String = "",
     searchActive: Boolean = false,
@@ -85,6 +89,12 @@ fun LibraryScreen(
     reduceShelfMotion: Boolean = false,
 ) {
     val langVersion = I18n.version
+    var categoryFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var categoryTargets by remember { mutableStateOf<List<String>?>(null) }
+    var categoryLayoutActive by remember { mutableStateOf(false) }
+    LaunchedEffect(classification.categories) { if (categoryFilter?.let { it.isNotEmpty() && classification.categories.none { c -> c.id == it } } == true) categoryFilter = null }
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(categoryTargets) { if (categoryTargets != null) gridState.animateScrollToItem(0) }
     var managing by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf(listOf<String>()) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -92,6 +102,7 @@ fun LibraryScreen(
     var renaming by remember { mutableStateOf<BookEntry?>(null) }
     var renameTitle by remember { mutableStateOf("") }
     LaunchedEffect(books.map { it.uri }) { selected = selected.filter { uri -> books.any { it.uri == uri } } }
+    BackHandler(enabled = categoryTargets != null) { categoryTargets = null }
     BackHandler(enabled = managing) { managing = false; selected = emptyList() }
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -112,7 +123,7 @@ fun LibraryScreen(
         shelfOrder.resolve(ranked.map {it.uri},sortTitle,shelfRevision).withIndex().associate {it.value to it.index}
     }
     val searchTerm = query.trim()
-    val filtered = remember(ranked, ranks, searchTerm) { ranked.sortedBy {ranks[it.uri] ?: Int.MAX_VALUE}.filter {it.title.contains(searchTerm,ignoreCase=true)} }
+    val filtered = remember(ranked, ranks, searchTerm, categoryFilter, classification) { ranked.sortedBy {ranks[it.uri] ?: Int.MAX_VALUE}.filter {it.title.contains(searchTerm,ignoreCase=true) && classification.matches(it.id, categoryFilter)} }
     val recent = remember(shelfBooks) { shelfBooks.sortedWith(compareBy({ -it.lastOpened }, { it.title })).firstOrNull()?.takeIf { it.lastOpened > 0 } }
     val libraryHeader: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -204,6 +215,7 @@ fun LibraryScreen(
             ),
         ) {
             LazyVerticalGrid(
+                state = gridState,
                 columns = if (listMode) GridCells.Fixed(1) else GridCells.Adaptive(144.dp),
                 contentPadding = PaddingValues(
                     start = ReaderGeometry.PageInset,
@@ -215,7 +227,11 @@ fun LibraryScreen(
                 verticalArrangement = Arrangement.spacedBy(if (listMode) 8.dp else ReaderGeometry.SectionGap),
             ) {
                 item(span = { GridItemSpan(maxLineSpan) }) { libraryHeader() }
-                if (!managing && query.isEmpty() && recent != null)
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    BookCategoriesSection(classification, categoryFilter, { value -> categoryFilter = value; selected = emptyList(); categoryTargets = null }, categoryTargets, categoriesBusy, categoriesError, onCategoryAction,
+                        reduceMotion = reduceShelfMotion, onPanelActivity = { categoryLayoutActive = it }) { categoryTargets = null }
+                }
+                if (!managing && query.isEmpty() && categoryFilter == null && recent != null)
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Card(
                             colors =
@@ -261,16 +277,6 @@ fun LibraryScreen(
                             }
                         }
                     }
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            I18n.t("ui.all_books"),
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-
-                    }
-                }
                 if (filtered.isEmpty())
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Column(
@@ -285,10 +291,10 @@ fun LibraryScreen(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                I18n.t(if (books.isEmpty() && query.isBlank()) "library.empty" else "ui.no_results"),
+                                I18n.t(if (categoryFilter != null && query.isBlank()) "category.empty" else if (books.isEmpty() && query.isBlank()) "library.empty" else "ui.no_results"),
                                 style = MaterialTheme.typography.titleMedium,
                             )
-                            if (books.isEmpty() && query.isBlank()) {
+                            if (books.isEmpty() && query.isBlank() && categoryFilter == null) {
                                 Text(I18n.t("ui.empty_hint"))
                                 Button(
                                     onClick = onOpenFilePicker,
@@ -297,14 +303,16 @@ fun LibraryScreen(
                                 ) {
                                     Text(I18n.t("ui.import"))
                                 }
-                            } else
+                            } else {
+                                if (categoryFilter != null && query.isBlank()) Text(I18n.t("category.empty_hint"))
                                 TextButton(
-                                    onClick = { onQueryChange("") },
+                                    onClick = { onQueryChange(""); categoryFilter = null },
                                     shape = ReaderGeometry.Shape,
                                     contentPadding = ReaderGeometry.ButtonPadding,
                                 ) {
-                                    Text(I18n.t("ui.clear_search"))
+                                    Text(I18n.t(if (categoryFilter != null) "category.clear" else "ui.clear_search"))
                                 }
+                            }
                         }
                     }
                 if (managing) item(span = { GridItemSpan(maxLineSpan) }) {
@@ -315,6 +323,7 @@ fun LibraryScreen(
                             TextButton(onClick = { selected = emptyList() }) { Text(I18n.t("manage.clear")) }
                         }
                         Row {
+                            TextButton(onClick = { categoryLayoutActive = true; categoryTargets = books.filter { it.uri in selected }.map { it.id } }, enabled = selected.isNotEmpty()) { Text(I18n.t("category.assign")) }
                             TextButton(onClick = { shareTargets = selected.toList() }, enabled = selected.isNotEmpty()) { Text(I18n.t("manage.share")) }
                             TextButton(onClick = { confirmDelete = true }, enabled = selected.isNotEmpty(), ) { Text(I18n.t("archive.action")) }
                         }
@@ -333,10 +342,12 @@ fun LibraryScreen(
                         managing, entry.uri in selected,
                         listMode = listMode,
                         onShare = { shareTargets = listOf(entry.uri) },
+                        onClassify = { categoryLayoutActive = true; categoryTargets = listOf(entry.id) },
                         onRename = { renaming = entry; renameTitle = entry.title },
                         onBounds = { onCoverBounds(entry.uri, it) },
-                        modifier = Modifier.zIndex(if(entry.uri == promotedUri) 1f else 0f).animateItem(fadeInSpec = null, fadeOutSpec = null,
-                            placementSpec = if (reduceShelfMotion) null else tween(380)),
+                        modifier = Modifier.zIndex(if(entry.uri == promotedUri) 1f else 0f).then(
+                            if (reduceShelfMotion || categoryLayoutActive) Modifier
+                            else Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null, placementSpec = tween(380))),
                     )
                 }
             }
@@ -381,6 +392,7 @@ private fun BookCard(
     onBounds: (Rect) -> Unit = {},
     onShare: () -> Unit = {},
     onRename: () -> Unit = {},
+    onClassify: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val bitmap by
@@ -405,7 +417,7 @@ private fun BookCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (managing) Checkbox(checked = selected, onCheckedChange = { onClick() })
-                else BookActionsMenu(onShare, onRename, onDelete)
+                else BookActionsMenu(onShare, onRename, onDelete, onClassify)
             }
             HorizontalDivider(Modifier.padding(start = 64.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
         }
@@ -452,7 +464,7 @@ private fun BookCard(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).clickable(onClick = onClick),
             )
-            BookActionsMenu(onShare, onRename, onDelete)
+            BookActionsMenu(onShare, onRename, onDelete, onClassify)
         }
         Text(
             entry.lastChapterTitle ?: I18n.tf1("ui.chapter", "${entry.lastChapter+1}"),
@@ -465,13 +477,14 @@ private fun BookCard(
 }
 
 @Composable
-private fun BookActionsMenu(onShare: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+private fun BookActionsMenu(onShare: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit, onClassify: () -> Unit) {
     var more by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { more = true }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.MoreHoriz, I18n.t("ui.more"), Modifier.size(20.dp)) }
         DropdownMenu(more, { more = false }) {
             DropdownMenuItem(text = { Text(I18n.t("book.share")) }, onClick = { more = false; onShare() })
             DropdownMenuItem(text = { Text(I18n.t("book.rename")) }, onClick = { more = false; onRename() })
+            DropdownMenuItem(text = { Text(I18n.t("category.assign")) }, onClick = { more = false; onClassify() })
             HorizontalDivider()
             DropdownMenuItem(text = { Text(I18n.t("archive.action")) }, onClick = { more = false; onDelete() })
         }

@@ -1448,6 +1448,17 @@ impl ReaderApp {
         let primary_down = ui.ctx().input(|i| i.pointer.primary_down());
         let primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
         let primary_released = ui.ctx().input(|i| i.pointer.primary_released());
+        let press_pos = ui.ctx().input(|i| {
+            i.events.iter().find_map(|event| match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    ..
+                } => Some(*pos),
+                _ => None,
+            })
+        });
 
         // Helper: find which block a screen position falls into and return (block_idx, char_offset)
         let hit_test = |pos: egui::Pos2| -> Option<(usize, usize)> {
@@ -1477,11 +1488,11 @@ impl ReaderApp {
 
         if let Some(pos) = pointer_pos {
             const DRAG_THRESHOLD: f32 = 5.0;
-
             if primary_pressed && !over_toolbar && !tts_context_menu_open {
-                if let Some((block_idx, char_idx)) = hit_test(pos) {
+                let origin = press_pos.unwrap_or(pos);
+                if let Some((block_idx, char_idx)) = hit_test(origin) {
                     // Record press origin; don't create TextSelection yet
-                    self.sel_press_origin = Some((pos, block_idx, char_idx));
+                    self.sel_press_origin = Some((origin, block_idx, char_idx));
                     // Clear any existing finalized selection or highlight popup
                     if self.text_selection.as_ref().is_some_and(|s| !s.is_dragging) {
                         self.text_selection = None;
@@ -1495,7 +1506,10 @@ impl ReaderApp {
                     self.text_selection = None;
                     self.clicked_highlight_id = None;
                 }
-            } else if primary_down && !over_toolbar && !tts_context_menu_open {
+            }
+            // Press, motion and release can arrive in one rendered frame.
+            // Retain the event's press origin and finalize that drag as well.
+            if (primary_down || primary_released) && !over_toolbar && !tts_context_menu_open {
                 // If we have a pending press origin but no selection yet, check threshold
                 if let Some((origin, block_idx, char_idx)) = self.sel_press_origin {
                     if (pos - origin).length() >= DRAG_THRESHOLD {

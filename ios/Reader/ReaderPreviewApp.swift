@@ -74,6 +74,7 @@ struct AppHome: View {
     }
     @State private var destination: Int? = 0
     @State private var libraryQuery = ""
+    @State private var shelfCategoryFilter: String?
     @State private var librarySearching = false
     @AppStorage("library.sort-title") private var shelfSortTitle = false
     @AppStorage("library.list") private var shelfListMode = false
@@ -116,7 +117,7 @@ struct AppHome: View {
                 } detail: {
                     NavigationStack {
                         if destination == 1 { SyncDesignView(account: account, nearby: nearby) }
-                        else { LibraryDesignView(library: library, account: account, releases: releases, shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode, shelfOrder: sharedShelfOrder, bottomSearch: false, open: openBook, openSync: { destination = 1 }) }
+                        else { LibraryDesignView(library: library, account: account, releases: releases, shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode, categoryFilter: $shelfCategoryFilter, shelfOrder: sharedShelfOrder, bottomSearch: false, open: openBook, openSync: { destination = 1 }) }
                     }
                 }
             } else if #available(iOS 26.0, *) {
@@ -125,7 +126,7 @@ struct AppHome: View {
                 ZStack {
                     NavigationStack {
                         LibraryDesignView(library: library, account: account, releases: releases,
-                            shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode, shelfOrder: sharedShelfOrder, bottomSearch: true,
+                            shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode, categoryFilter: $shelfCategoryFilter, shelfOrder: sharedShelfOrder, bottomSearch: true,
                             open: openBook, openSync: { destination = 1 })
                     }.opacity(destination == 1 ? 0 : 1)
                      .allowsHitTesting(destination != 1).accessibilityHidden(destination == 1)
@@ -368,7 +369,7 @@ struct AppHome: View {
     private func nativeLibrary(visible: Bool) -> some View {
         NavigationStack {
             LibraryDesignView(library: library, account: account, releases: releases,
-                shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode,
+                shelfRevision: shelfRevision, search: $libraryQuery, sortByTitle: $shelfSortTitle, listMode: $shelfListMode, categoryFilter: $shelfCategoryFilter,
                 shelfOrder: sharedShelfOrder, bottomSearch: true,
                 open: openBook, openSync: { destination = 1 })
         }.transformPreference(BookCoverFrames.self) { frames in
@@ -521,6 +522,7 @@ struct LibraryDesignView: View {
     @Binding var search: String
     @Binding var sortByTitle: Bool
     @Binding var listMode: Bool
+    @Binding var categoryFilter: String?
     var shelfOrder: StableShelfOrder
     var bottomSearch: Bool = false
     let open: (LibraryEntry, String) -> Void
@@ -537,6 +539,7 @@ struct LibraryDesignView: View {
     @State private var bookShareSelection: BookShareSelection?
     @State private var renaming: LibraryEntry?
     @State private var renameTitle = ""
+    @State private var categoryTargets: BookShareSelection?
     private var books: [LibraryEntry] {
         #if READER_PERFORMANCE_CHECK
         ShelfProbeMetrics.shared.ranked()
@@ -545,13 +548,15 @@ struct LibraryDesignView: View {
         let ranked=sortByTitle ? library.recentBooks.sorted {$0.title.localizedCompare($1.title) == .orderedAscending} : library.recentBooks
         let ranks=Dictionary(uniqueKeysWithValues:shelfOrder.resolve(ranked.map(\.id),byTitle:sortByTitle,revision:shelfRevision).enumerated().map {($1,$0)})
         return ranked.sorted {(ranks[$0.id] ?? Int.max) < (ranks[$1.id] ?? Int.max)}
-            .filter {searchTerm.isEmpty || $0.title.localizedCaseInsensitiveContains(searchTerm)}
+            .filter {library.classification.matches($0.id, filter: categoryFilter) && (searchTerm.isEmpty || $0.title.localizedCaseInsensitiveContains(searchTerm))}
     }
-    var body: some View {
+    private var shelfContent: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 if account.syncing { SyncProgressContent(account: account) }
-                if !managing && search.isEmpty, let book = library.books.first(where: { $0.id == library.recent }) {
+                categorySelector
+                if !managing && search.isEmpty && categoryFilter == nil, let book = library.books.first(where: { $0.id == library.recent }) {
                     Button { open(book, "recent:" + book.id) } label: {
                         HStack(spacing: 16) {
                             BookCover(book: book, covers: library.covers, compact: true).frame(width: 62, height: 88).bookCoverFrame("recent:" + book.id)
@@ -574,11 +579,12 @@ struct LibraryDesignView: View {
                                 Button(L("manage.clear")) { selected.removeAll() }
                             }.font(.subheadline)
                             HStack {
+                                Button(L("category.assign"), systemImage: "folder") { categoryTargets = BookShareSelection(ids: Array(selected)) }
                                 Button(L("manage.share"), systemImage: "square.and.arrow.up") { bookShareSelection = BookShareSelection(ids: books.filter { selected.contains($0.id) }.map(\.id)) }
                                 Button(L("archive.action"), systemImage: "archivebox") { confirmingArchive = true }
                             }.disabled(selected.isEmpty || library.busy).buttonStyle(.bordered)
                         }
-                    } else { Text(L("ui.all_books")).font(.headline) }
+                    }
                     LazyVGrid(columns: listMode ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 145, maximum: 220), spacing: 20)], alignment: .leading, spacing: listMode ? 8 : 24) {
                         ForEach(books) { book in
                             Button { if managing { if !selected.insert(book.id).inserted { selected.remove(book.id) } } else { open(book, "shelf:" + book.id) } } label: {
@@ -608,6 +614,7 @@ struct LibraryDesignView: View {
                                     Menu {
                                         Button(L("book.share"), systemImage: "square.and.arrow.up") { bookShareSelection = BookShareSelection(ids: [book.id]) }
                                         Button(L("book.rename"), systemImage: "pencil") { renameTitle = book.title; renaming = book }
+                                        Button(L("category.assign"), systemImage: "folder") { categoryTargets = BookShareSelection(ids: [book.id]) }
                                         Divider()
                                         Button(L("archive.action"), systemImage: "archivebox") { selected = [book.id]; confirmingArchive = true }
                                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
@@ -617,20 +624,26 @@ struct LibraryDesignView: View {
                         }
                     }.animation(reduceShelfMotion ? nil : .easeInOut(duration: 0.38), value: shelfRevision)
                 }
-                if library.books.isEmpty && search.isEmpty && !library.busy {
+                if library.books.isEmpty && search.isEmpty && categoryFilter == nil && !library.busy {
                     ContentUnavailableView {
                         Label(L("library.empty_state_title"), systemImage: "books.vertical")
                     } description: { Text(L("ui.empty_hint")) } actions: {
                         Button(L("ui.import")) { importing = true }.buttonStyle(.borderedProminent)
                     }
                 }
-                if !search.isEmpty && books.isEmpty && !library.busy {
-                    ContentUnavailableView { Label(L("ui.no_results"), systemImage: "magnifyingglass") }
-                    Button { search = "" } label: { Text(L("ui.clear_search")).frame(minHeight: 44) }.frame(maxWidth: .infinity)
+                if (!search.isEmpty || categoryFilter != nil) && books.isEmpty && !library.busy {
+                    ContentUnavailableView { Label(L(categoryFilter != nil && search.isEmpty ? "category.empty" : "ui.no_results"), systemImage: "magnifyingglass") }
+                    if search.isEmpty { Text(L("category.empty_hint")).font(.subheadline).foregroundStyle(.secondary) }
+                    Button { search = ""; categoryFilter = nil } label: { Text(L(categoryFilter != nil ? "category.clear" : "ui.clear_search")).frame(minHeight: 44) }.frame(maxWidth: .infinity)
                 }
                 if library.busy { ProgressView().frame(maxWidth: .infinity).accessibilityLabel(L("common.processing_book")) }
             }.padding(20)
         }
+        .onChange(of: categoryTargets?.ids) { _, ids in if ids != nil { withAnimation(reduceShelfMotion ? nil : .smooth(duration: 0.32)) { proxy.scrollTo("library-categories", anchor: .top) } } }
+        }
+    }
+    var body: some View {
+        shelfContent
         .scrollDismissesKeyboard(.interactively)
         .background(Color(uiColor: .systemGroupedBackground))
         .contentMargins(.bottom, 12, for: .scrollContent)
@@ -684,10 +697,7 @@ struct LibraryDesignView: View {
             }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "epub") ?? .data, UTType(filenameExtension: "txt") ?? .plainText], allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls): Task { await library.importBooks(urls) }
-            case .failure(let error): library.fail(error, title: L("library.error_import_failed"))
-            }
+            handleLibraryImport(result)
         }
         .sheet(item: $bookShareSelection) { selection in BookShareView(library: library, account: account, ids: selection.ids) }
         .alert(L("book.rename"), isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
@@ -702,7 +712,18 @@ struct LibraryDesignView: View {
             Button(L("share.cancel"), role: .cancel) {}
         } message: { Text(L("archive.note")) }
         .onDisappear {if !bottomSearch {shelfOrder.reset()}}
+        .onChange(of: categoryFilter) { _, _ in selected.removeAll() }
+        .onChange(of: library.classification.categories.map(\.id)) { _, ids in if let id = categoryFilter, !id.isEmpty, !ids.contains(id) { categoryFilter = nil } }
         .onChange(of: library.books.map(\.id)) { _, ids in selected.formIntersection(ids) }
+    }
+    private func handleLibraryImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls): Task { await library.importBooks(urls) }
+        case .failure(let error): library.fail(error, title: L("library.error_import_failed"))
+        }
+    }
+    private var categorySelector: some View {
+        LibraryCategorySection(library: library, filter: $categoryFilter, targets: $categoryTargets).id("library-categories")
     }
     private var libraryHeading: some View {
         VStack(alignment: .leading, spacing: 2) {

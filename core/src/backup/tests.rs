@@ -11,6 +11,70 @@ use std::{
 
 const EPUB: &[u8] = include_bytes!("../../../ios/Tests/fixtures/native-reading-modes.epub");
 #[test]
+fn classifications_remap_book_identity_and_merge_idempotently() {
+    use crate::library::categories::command;
+    use serde_json::json;
+    let (source, id) = populated();
+    let root = source.path().to_str().unwrap();
+    let created = command(root, &json!({"action":"create","name":"Fiction"})).unwrap();
+    let category = created["categories"][0]["id"].as_str().unwrap();
+    command(root, &json!({"action":"assign","id":category,"books":[id]})).unwrap();
+    command(root, &json!({"action":"create","name":"Empty category"})).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let path = output.path().join("categories.readerbackup");
+    export(root, &path).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let destination = target.path().to_str().unwrap();
+    // Existing identical content has a different installation-local UUID.
+    let local = Library::default()
+        .add_or_update_from_bytes(destination, "Local".into(), EPUB, 0, None)
+        .unwrap();
+    let existing = command(destination, &json!({"action":"create","name":"fiction"})).unwrap();
+    let local_category = existing["categories"][0]["id"].as_str().unwrap();
+    for _ in 0..2 {
+        restore(destination, &path).unwrap();
+    }
+    let library = Library::load_from(destination).unwrap();
+    assert_eq!(library.books.len(), 1);
+    assert_eq!(library.classification.categories.len(), 2);
+    assert!(library
+        .classification
+        .matches(&local.id, Some(local_category)));
+    assert!(!library.classification.assignments.contains_key(&id));
+    assert!(std::path::Path::new(&local.path).exists());
+}
+
+#[test]
+fn legacy_backup_without_categories_keeps_destination_classification() {
+    use crate::library::categories::command;
+    use serde_json::json;
+    let (source, _) = populated();
+    let output = tempfile::tempdir().unwrap();
+    let path = output.path().join("legacy.readerbackup");
+    export(source.path().to_str().unwrap(), &path).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let root = target.path().to_str().unwrap();
+    let local = Library::default()
+        .add_or_update_from_bytes(root, "Local".into(), EPUB, 0, None)
+        .unwrap();
+    let category = command(root, &json!({"action":"create","name":"Kept"})).unwrap()["categories"]
+        [0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    command(
+        root,
+        &json!({"action":"assign","id":category,"books":[local.id]}),
+    )
+    .unwrap();
+    restore(root, &path).unwrap();
+    assert!(Library::load_from(root)
+        .unwrap()
+        .classification
+        .matches(&local.id, Some(&category)));
+}
+
+#[test]
 fn a_foreign_uuid_collision_never_overwrites_the_existing_original() {
     let (source, foreign_id) = populated();
     let output = tempfile::tempdir().unwrap();

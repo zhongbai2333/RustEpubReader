@@ -5,6 +5,7 @@ pub(crate) mod appearance_linkage;
 pub(crate) mod appearance_transition;
 pub(crate) mod backup;
 pub mod book_share;
+pub(crate) mod categories;
 pub mod csc_contribute;
 pub mod csc_settings;
 pub mod export_dialog;

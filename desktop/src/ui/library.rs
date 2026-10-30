@@ -5,6 +5,7 @@ enum LibraryListAction {
     Open(String, usize),
     Share(String),
     Rename(String, String),
+    Classify(String),
     Remove(String),
 }
 impl ReaderApp {
@@ -164,6 +165,12 @@ impl ReaderApp {
                                 ));
                                 ui.memory_mut(|m| m.close_popup());
                             }
+                            if design::menu_item(ui, self.i18n.t("category.assign"), false, false)
+                                .clicked()
+                            {
+                                action = Some(LibraryListAction::Classify(entry.id.clone()));
+                                ui.memory_mut(|m| m.close_popup());
+                            }
                             if design::menu_item(ui, self.i18n.t("archive.action"), false, false)
                                 .clicked()
                             {
@@ -195,42 +202,9 @@ impl ReaderApp {
         let mut action_remove_path = None;
         let mut action_export_path = None;
         let mut action_rename = None;
+        let mut action_classify = None;
         let mut action_open_dialog = false;
         let p = Palette::new(self.dark_mode);
-        self.library_selected
-            .retain(|id| self.library.books.iter().any(|e| &e.id == id));
-        let mut sorted = self.library.sorted_indices_by_recent();
-        let recent = sorted
-            .iter()
-            .copied()
-            .find(|&i| self.library.books[i].last_opened > 0);
-        if self.library_sort_title {
-            sorted.sort_by_key(|&i| self.library.books[i].title.to_lowercase());
-        }
-        let stable = self.book_presentation.shelf_order.resolve(
-            sorted
-                .iter()
-                .map(|&i| self.library.books[i].id.clone())
-                .collect(),
-            self.library_sort_title,
-        );
-        let ranks: std::collections::HashMap<_, _> = stable
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (id.as_str(), i))
-            .collect();
-        sorted.sort_by_key(|&i| {
-            ranks
-                .get(self.library.books[i].id.as_str())
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
-        sorted.retain(|&i| {
-            self.library.books[i]
-                .title
-                .to_lowercase()
-                .contains(&self.library_query.to_lowercase())
-        });
         let ctx = ui.ctx().clone();
         self.book_presentation.covers.clear();
         self.shelf_covers
@@ -387,6 +361,50 @@ impl ReaderApp {
                         .on_hover_text(self.i18n.t("library.display"));
                 });
                 design::section_gap(ui);
+                self.category_filter(ui);
+                // Inline category actions may reload a catalog changed by sync/archive.
+                // Resolve display indices only after that reload.
+                self.library_selected
+                    .retain(|id| self.library.books.iter().any(|e| &e.id == id));
+                let mut sorted = self.library.sorted_indices_by_recent();
+                sorted.retain(|&i| {
+                    self.library.classification.matches(
+                        &self.library.books[i].id,
+                        self.category_ui.filter.as_deref(),
+                    )
+                });
+                let recent = sorted
+                    .iter()
+                    .copied()
+                    .find(|&i| self.library.books[i].last_opened > 0);
+                if self.library_sort_title {
+                    sorted.sort_by_key(|&i| self.library.books[i].title.to_lowercase());
+                }
+                let stable = self.book_presentation.shelf_order.resolve(
+                    sorted
+                        .iter()
+                        .map(|&i| self.library.books[i].id.clone())
+                        .collect(),
+                    self.library_sort_title,
+                );
+                let ranks: std::collections::HashMap<_, _> = stable
+                    .iter()
+                    .enumerate()
+                    .map(|(i, id)| (id.as_str(), i))
+                    .collect();
+                sorted.sort_by_key(|&i| {
+                    ranks
+                        .get(self.library.books[i].id.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX)
+                });
+                sorted.retain(|&i| {
+                    self.library.books[i]
+                        .title
+                        .to_lowercase()
+                        .contains(&self.library_query.to_lowercase())
+                });
+                design::block_gap(ui);
                 if self.library_manage {
                     ui.horizontal_wrapped(|ui| {
                         ui.strong(
@@ -399,6 +417,17 @@ impl ReaderApp {
                         }
                         if ui.button(self.i18n.t("manage.clear")).clicked() {
                             self.library_selected.clear();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.library_selected.is_empty(),
+                                egui::Button::new(self.i18n.t("category.assign")),
+                            )
+                            .clicked()
+                        {
+                            self.begin_classification(
+                                self.library_selected.iter().cloned().collect(),
+                            );
                         }
                         if ui
                             .add_enabled(
@@ -444,7 +473,10 @@ impl ReaderApp {
                 };
                 let scroll = area.show(ui, |ui| {
                     content_clip = ui.clip_rect();
-                    if self.library_query.is_empty() && !self.library_manage {
+                    if self.library_query.is_empty()
+                        && !self.library_manage
+                        && self.category_ui.filter.is_none()
+                    {
                         if let Some(idx) = recent {
                             let e = &self.library.books[idx];
                             egui::Frame::default()
@@ -513,13 +545,25 @@ impl ReaderApp {
                     if sorted.is_empty() {
                         ui.add_space(56.);
                         ui.vertical_centered(|ui| {
-                            ui.heading(self.i18n.t(if self.library.books.is_empty() {
-                                "library.empty"
-                            } else {
-                                "ui.no_results"
-                            }));
-                            if self.library.books.is_empty() {
+                            ui.heading(self.i18n.t(
+                                if self.category_ui.filter.is_some()
+                                    && self.library_query.is_empty()
+                                {
+                                    "category.empty"
+                                } else if self.library.books.is_empty() {
+                                    "library.empty"
+                                } else {
+                                    "ui.no_results"
+                                },
+                            ));
+                            if self.library.books.is_empty() && self.category_ui.filter.is_none() {
                                 ui.label(self.i18n.t("ui.empty_hint"));
+                            }
+                            if self.category_ui.filter.is_some() {
+                                ui.label(self.i18n.t("category.empty_hint"));
+                                if ui.button(self.i18n.t("category.clear")).clicked() {
+                                    self.category_ui.filter = None;
+                                }
                             }
                             if !self.library_query.is_empty()
                                 && ui.button(self.i18n.t("ui.clear_search")).clicked()
@@ -528,7 +572,19 @@ impl ReaderApp {
                             }
                         });
                     } else {
-                        ui.strong(self.i18n.t("ui.all_books"));
+                        let heading = match self.category_ui.filter.as_deref() {
+                            None => self.i18n.t("ui.all_books"),
+                            Some("") => self.i18n.t("category.uncategorized"),
+                            Some(id) => self
+                                .library
+                                .classification
+                                .categories
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map(|c| c.name.as_str())
+                                .unwrap_or(self.i18n.t("ui.all_books")),
+                        };
+                        ui.strong(heading);
                         design::block_gap(ui);
                         if self.library_list_mode {
                             if let Some(action) =
@@ -540,6 +596,9 @@ impl ReaderApp {
                                     }
                                     LibraryListAction::Share(path) => {
                                         action_export_path = Some(path)
+                                    }
+                                    LibraryListAction::Classify(id) => {
+                                        self.begin_classification(vec![id])
                                     }
                                     LibraryListAction::Rename(id, title) => {
                                         action_rename = Some((id, title))
@@ -799,6 +858,20 @@ impl ReaderApp {
                                                                 }
                                                                 if design::menu_item(
                                                                     ui,
+                                                                    self.i18n.t("category.assign"),
+                                                                    false,
+                                                                    false,
+                                                                )
+                                                                .clicked()
+                                                                {
+                                                                    action_classify =
+                                                                        Some(e.id.clone());
+                                                                    ui.memory_mut(|m| {
+                                                                        m.close_popup()
+                                                                    });
+                                                                }
+                                                                if design::menu_item(
+                                                                    ui,
                                                                     self.i18n.t("archive.action"),
                                                                     false,
                                                                     true,
@@ -895,6 +968,9 @@ impl ReaderApp {
         }
         if action_open_dialog {
             self.open_file_dialog();
+        }
+        if let Some(id) = action_classify {
+            self.begin_classification(vec![id]);
         }
         if let Some(path) = action_remove_path {
             self.push_feedback_log(format!("[Library] remove book: {}", path));

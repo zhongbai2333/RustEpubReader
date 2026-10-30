@@ -326,6 +326,7 @@ fn dispatch_inner(v: Value) -> Result<Value, String> {
                 }
                 "remove" => annotations::remove(root, &v),
                 "archive" => reader_core::library::archive::dispatch(root, &v),
+                "categories" => reader_core::library::categories::command(root, &v),
                 "rename" => {
                     let mut library = Library::load_from(root)?;
                     let renamed =

@@ -53,6 +53,25 @@ pub fn stop() {
 fn current(epoch: u64) -> bool {
     SESSION.lock().unwrap_or_else(|e| e.into_inner()).epoch == epoch
 }
+fn commit_pairings(
+    root: &str,
+    epoch: u64,
+    store: &PeerStore,
+    baseline: &PeerStore,
+) -> Result<(), String> {
+    let session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    if session.epoch != epoch {
+        return Err("Nearby sync cancelled".into());
+    }
+    let _guard = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let bytes = std::fs::read(PathBuf::from(root).join("peers.json"))
+        .map_err(|_| "Cannot read nearby identity")?;
+    let mut live: PeerStore =
+        serde_json::from_slice(&bytes).map_err(|_| "Cannot read nearby identity")?;
+    live.merge_pairings_since(store, baseline);
+    live.save(root);
+    Ok(())
+}
 fn identity(root: &str) -> Result<PeerStore, String> {
     let store = PeerStore::load(root);
     if store.private_key_pem.is_empty()
@@ -177,15 +196,6 @@ fn apply(
         snapshot.root.to_str().unwrap(),
         &store.device_id,
     )?;
-    // Pairing updates are written only by a current generation.
-    for paired in &store.paired {
-        live.add_paired(
-            paired.device_id.clone(),
-            paired.device_name.clone(),
-            paired.pairing_uuid.clone(),
-            paired.remote_public_key_pem.clone(),
-        );
-    }
     let mut journal = SyncJournal::load(root, device);
     let mut offer = None;
     let notices = reader_core::sharing::apply_received_progress(root, store)?;
@@ -284,6 +294,8 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
                             }
                             let stage = snapshot.root.to_string_lossy().into_owned();
                             let books = snapshot.root.join("books").to_string_lossy().into_owned();
+                            let pairing_baseline =
+                                store.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             let outcome = handle_client(
                                 &mut stream,
                                 &stage,
@@ -292,7 +304,13 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
                                 store.clone(),
                                 &[],
                             );
-                            let result = if outcome.is_ok() {
+                            let pairing_result = commit_pairings(
+                                &root,
+                                epoch,
+                                &store.lock().unwrap_or_else(|e| e.into_inner()),
+                                &pairing_baseline,
+                            );
+                            let result = if outcome.is_ok() && pairing_result.is_ok() {
                                 apply(
                                     &root,
                                     &device,
@@ -356,6 +374,7 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
             register(epoch, &stream)?;
             stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
             let stage = snapshot.root.to_str().unwrap();
+            let pairing_baseline = snapshot.store.clone();
             let (mut stream, key, mut send, mut receive) = connect_with_stream(
                 stream,
                 &mut snapshot.store,
@@ -363,6 +382,9 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
                 peer_id,
                 if peer_id.is_some() { None } else { Some(pin) },
             )?;
+            // Authentication is complete even if a later book download fails.
+            // Keep its fresh PIN/UUID so retry can use the paired-device path.
+            commit_pairings(root, epoch, &snapshot.store, &pairing_baseline)?;
             auto_sync_session(
                 &mut stream,
                 &key,
@@ -399,6 +421,44 @@ pub fn dispatch(root: &str, device: &str, v: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod activity_tests {
     use super::*;
+    #[test]
+    fn authenticated_pair_survives_transfer_failure_but_not_cancellation() {
+        let _serial = crate::TEST_SESSION_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        stop();
+        let epoch = SESSION.lock().unwrap_or_else(|e| e.into_inner()).epoch;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut baseline = PeerStore::default();
+        baseline.add_paired(
+            "peer".into(),
+            "Reader".into(),
+            "old".into(),
+            "old-key".into(),
+        );
+        baseline.save(root);
+        let mut authenticated = baseline.clone();
+        authenticated.add_paired(
+            "peer".into(),
+            "Reader".into(),
+            "renewed".into(),
+            "new-key".into(),
+        );
+        commit_pairings(root, epoch, &authenticated, &baseline).unwrap();
+        // No book/progress apply follows, representing an interrupted transfer.
+        let path = dir.path().join("peers.json");
+        let persisted: PeerStore = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.find_paired("peer").unwrap().pairing_uuid,
+            "renewed"
+        );
+        assert!(persisted.progress.is_empty());
+        stop();
+        assert!(commit_pairings(root, epoch, &baseline, &authenticated).is_err());
+        let unchanged: PeerStore = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(unchanged.find_paired("peer"), persisted.find_paired("peer"));
+    }
     #[test]
     fn staged_nearby_activity_uses_logical_identity_and_preserves_live_writes() {
         let live = tempfile::tempdir().unwrap();

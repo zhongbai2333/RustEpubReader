@@ -88,7 +88,33 @@ pub(super) fn restore_checked(
         package::admit(&mut zip, book, &path, &scratch.0.join("chapter-index"))?;
         extracted.insert(book.hash.clone(), path);
     }
-    let library = Library::read_snapshot(root)?;
+    let mut library = Library::read_snapshot(root)?;
+    let mut category_ids = BTreeMap::new();
+    for incoming in &manifest.classification.categories {
+        let local = if let Some(local) = library
+            .classification
+            .categories
+            .iter()
+            .find(|c| c.name.to_lowercase() == incoming.name.to_lowercase())
+        {
+            local.id.clone()
+        } else {
+            let mut category = incoming.clone();
+            if library
+                .classification
+                .categories
+                .iter()
+                .any(|c| c.id == category.id)
+            {
+                category.id = uuid::Uuid::new_v4().to_string();
+            }
+            let id = category.id.clone();
+            library.classification.categories.push(category);
+            id
+        };
+        category_ids.insert(incoming.id.clone(), local);
+    }
+    library.classification.validate()?;
     let mut archive = ArchiveStore::load(root)?;
     let mut catalog: BTreeMap<_, _> = library
         .books
@@ -187,6 +213,18 @@ pub(super) fn restore_checked(
             if let Some(staged) = extracted.get(&book.hash) {
                 updates.push((format!("books/{id}.epub"), staged.clone()));
             }
+        }
+        if let Some(category) = manifest
+            .classification
+            .assignments
+            .get(&book.config.id)
+            .and_then(|id| category_ids.get(id))
+        {
+            library
+                .classification
+                .assignments
+                .entry(id.clone())
+                .or_insert_with(|| category.clone());
         }
         let local_entry = entry(&config);
         let active = lifecycle.map_or(book.active, |s| s == BookState::Active);

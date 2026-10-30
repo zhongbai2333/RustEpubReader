@@ -17,6 +17,8 @@ class Library(private val context: Context, loadImmediately: Boolean = true) {
     private val dataDir: String
         get() = context.filesDir.absolutePath
 
+    var classification = BookClassification(); private set
+
     var books: MutableList<BookEntry> = mutableListOf()
         private set
 
@@ -30,6 +32,9 @@ class Library(private val context: Context, loadImmediately: Boolean = true) {
         val payload = checkNotNull(RustBridge.loadLibrary(dataDir)) { "Unable to read library" }
         // Parse before publishing: failed loads retain the currently displayed shelf.
         val loaded = json.decodeFromString<List<BookEntry>>(payload).toMutableList()
+        val reply = org.json.JSONObject(RustBridge.bookCategories(dataDir, "{}") ?: error("Missing categories"))
+        check(reply.getBoolean("ok")) { reply.optString("error") }
+        classification = BookClassification.parse(reply.getJSONObject("result"))
         books = loaded
     }
 

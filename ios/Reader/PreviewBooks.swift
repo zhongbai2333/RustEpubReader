@@ -163,6 +163,7 @@ struct SyncMeter: Decodable {
     }
     @Published var anchors: [String: ReadingAnchor] = [:]
     @Published var archived: [ArchivedEntry] = []
+    @Published var classification = BookClassification()
     @Published var busy = false
     @Published var error: String?
     @Published var errorTitle = L("common.error_operation_failed")
@@ -198,6 +199,7 @@ struct SyncMeter: Decodable {
         do {
             let loaded = try await store.library(); books = loaded
             archived = try await store.archiveList()
+            classification = try await store.categories()
             anchors = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0.anchor) })
         } catch { fail(error, title: L("library.error_read_failed")) }
     }

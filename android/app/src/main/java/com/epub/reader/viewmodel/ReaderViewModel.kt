@@ -85,6 +85,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     // ---- ���״̬ ----
     val books = mutableStateListOf<BookEntry>()
+    var classification by mutableStateOf(com.zhongbai233.epub.reader.model.BookClassification()); private set
+    var categoriesBusy by mutableStateOf(false); private set
+    var categoriesError by mutableStateOf<String?>(null); private set
     var archivedBooks by mutableStateOf<List<JSONObject>>(emptyList())
         private set
     var githubSyncMeter by mutableStateOf<JSONObject?>(null)
@@ -654,6 +657,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     // ---- ������ ----
 
     private fun loadLibrary() {
+        classification = library.classification
         reloadArchive()
 
         val sorted = library.sortedIndicesByRecent().map { library.books[it] }
@@ -706,6 +710,25 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun renameBook(uri: String, title: String) {
         try { library.rename(uri, title); loadLibrary() }
         catch (error: Exception) { errorMessage = error.message ?: I18n.t("common.error_unknown") }
+    }
+
+    fun categoriesAction(request: JSONObject, done: () -> Unit = {}) {
+        if (categoriesBusy) return
+        categoriesBusy = true; categoriesError = null
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val response = JSONObject(RustBridge.bookCategories(dataDir, request.toString()) ?: error("Missing category result"))
+                    check(response.getBoolean("ok")) { response.optString("error") }
+                    library.reload()
+                }
+                loadLibrary(); done()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                val message = failure.message.orEmpty()
+                categoriesError = if (message.startsWith("category.error_")) I18n.t(message) else message
+            } finally { categoriesBusy = false }
+        }
     }
 
     private fun reloadArchive() {

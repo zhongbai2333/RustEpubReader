@@ -21,7 +21,7 @@ import Foundation
             try await Task.sleep(for: .milliseconds(500))
             report["pause_during_preparation"] = speech.state == .paused
             speech.resume()
-            report["resume_player"] = speech.state == .playing
+            report["resume_player"] = await wait { speech.state == .playing }
             speech.pause(); speech.next()
             try await Task.sleep(for: .milliseconds(350))
             report["skip_image_and_remain_paused"] = speech.highlight?.start.block == 2 && speech.state == .paused
@@ -45,6 +45,26 @@ import Foundation
             failed.start(at: .init(chapter: 0))
             report["online_failure_no_silent_fallback"] = await wait { failed.state == .failed && failed.source == .online }
             failed.stop()
+            let source = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("speech-source.epub")
+            if FileManager.default.fileExists(atPath: source.path) {
+                let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("SpeechChapterCheck")
+                let client = CoreClient(root: root.path, device: "speech-chapter-check")
+                let entry: LibraryEntry = try client.call("import", ["path": source.path])
+                let lazyBook: PreviewBook = try client.call("open", ["id": entry.id])
+                guard lazyBook.loadsChapters else { throw CoreFailure(message: "Expected chapter-backed speech source") }
+                let lazy = ReadingSpeech(book: lazyBook, defaults: preferences) { _, _, _ in .init(data: wav) }
+                lazy.prepareText(at: .init(chapter: 0))
+                report["chapter_backed_play_enabled"] = lazy.startingIndex(at: .init(chapter: 0)) != nil
+                lazy.start(at: .init(chapter: 0)); lazy.pause()
+                try await Task.sleep(for: .milliseconds(100))
+                let before = lazy.units.map(\.text)
+                lazy.prepareText(at: .init(chapter: lazyBook.chapters.count - 1))
+                report["panel_preserves_active_speech"] = lazy.units.map(\.text) == before && lazy.state == .paused
+                report["chapter_backed_cache_bounded"] = (lazyBook.chapterSource?.residentCount ?? 0) <= 2
+                lazy.stop()
+            }
         } catch { report["state_check_error"] = safeError(error) }
         do {
             let online = try await EdgeSpeech.synthesize(text: "春江潮水连海平，海上明月共潮生。", voice: "zh-CN-XiaoxiaoNeural", rate: 1)

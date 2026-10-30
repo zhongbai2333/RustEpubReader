@@ -88,6 +88,7 @@ struct ReadingSpeechPanel: View {
         }
         .navigationTitle(L("toolbar.tts")).navigationBarTitleDisplayMode(.inline)
         .onAppear { speed = speech.rate }
+        .task(id: current.chapter) { speech.prepareText(at: current) }
         .task(id: speech.source) { if speech.source == .system { await speech.prepareSystemVoices() } }
         .onChange(of: speech.rate) { _, value in speed = value }
     }

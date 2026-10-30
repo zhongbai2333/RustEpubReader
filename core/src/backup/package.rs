@@ -111,6 +111,7 @@ pub fn export(root: &str, destination: &Path) -> Result<BackupSummary, String> {
         created_at: crate::now_secs(),
         books: Vec::new(),
         lifecycles: archive.states(),
+        classification: library.classification.clone(),
         activity: Default::default(),
     };
     let mut paths = BTreeMap::new();
@@ -187,6 +188,11 @@ pub fn export(root: &str, destination: &Path) -> Result<BackupSummary, String> {
         budget.claim(&publication)?;
         manifest.books.push(publication);
     }
+    manifest
+        .classification
+        .assignments
+        .retain(|id, _| manifest.books.iter().any(|book| &book.config.id == id));
+    budget.claim(&manifest.classification)?;
     manifest.books.sort_by(|a, b| a.hash.cmp(&b.hash));
     manifest.activity =
         crate::reading_activity::portable(root, manifest.books.iter().map(|book| &book.config))?;

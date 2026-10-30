@@ -2,6 +2,7 @@ import Foundation
 
 enum ReaderErrors {
     static func display(_ raw: String) -> String {
+        if raw.hasPrefix("category.error_") { return L(raw) }
         for (code, key) in [("TXT_INVALID_REGEX", "txt.error_regex"), ("TXT_PATTERN_NO_MATCH", "txt.error_no_match"), ("TXT_ENCODING_FAILED", "txt.error_encoding"), ("TXT_TOO_LARGE", "txt.error_size"), ("TXT_EMPTY", "txt.error_empty"), ("TXT_INVALID_SELECTION", "txt.error_selection")] {
             if raw.contains(code) { return L(key) }
         }

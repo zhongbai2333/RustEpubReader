@@ -320,6 +320,7 @@ private fun MainContent(vm: ReaderViewModel, shareLink: String? = null, consumeS
                         SyncScreen(vm, onLibrary = { homeTab = 0 }, onSearch = { homeTab = 0; librarySearching = true })
                     } else {
                         LibraryScreen(
+                            classification = vm.classification, categoriesBusy = vm.categoriesBusy, categoriesError = vm.categoriesError, onCategoryAction = vm::categoriesAction,
                             active = book == null && !bookMotion.active && !showLibrarySettings,
                             query = libraryQuery, searchActive = librarySearching,
                             onQueryChange = { libraryQuery = it }, onSearchActiveChange = { librarySearching = it },

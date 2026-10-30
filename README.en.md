@@ -34,6 +34,10 @@ EPUB styles, media, and scripts have documented limits. Shared text coordinates 
 
 Platform-specific entries and unfinished integrations are listed in the [platform capability audit](docs/PLATFORM_PARITY.md). A visible configuration field does not by itself establish a working feature.
 
+### Book categories
+
+Desktop, Android and iOS support device-local, single-level categories. Create, rename or delete categories, assign individual or selected books, and combine category filters with search, sorting and grid/list views. Categories are included in local backups; they are not synchronized through GitHub or LAN sharing.
+
 ## Sync and sharing
 
 **Multi-platform sync** is for your own devices: local-network pairing and GitHub private repositories can synchronize EPUB files, reading progress, and daily per-device reading/listening time. GitHub sync requires authorization and separate enablement. Updated clients also synchronize bookmarks, highlights and notes through that channel. Concurrent note edits are retained and explicit deletions propagate; see [annotation sync](docs/ANNOTATION_SYNC.md). A newer accepted remote position automatically moves the open reader; the bottom-left return button goes back to the previous position.

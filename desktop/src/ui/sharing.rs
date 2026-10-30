@@ -596,6 +596,7 @@ impl ReaderApp {
 
         std::thread::spawn(move || {
             let mut store_snapshot = store_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let pairing_baseline = store_snapshot.clone();
             let pin_opt = if pin.is_empty() {
                 None
             } else {
@@ -644,7 +645,7 @@ impl ReaderApp {
                             store_arc
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .merge_session(&store_snapshot, &data_dir);
+                                .merge_session_since(&store_snapshot, &pairing_baseline, &data_dir);
                             // Signal main thread to reload library from disk
                             // (auto_sync_session already saved downloaded books to library.json)
                             library_reload.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -670,7 +671,7 @@ impl ReaderApp {
                             store_arc
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .merge_session(&store_snapshot, &data_dir);
+                                .merge_session_since(&store_snapshot, &pairing_baseline, &data_dir);
                             *status.lock().unwrap_or_else(|e| e.into_inner()) =
                                 reader_core::i18n::format_template(&sync_fail_tpl, &[&e], &[]);
                         }
@@ -682,7 +683,7 @@ impl ReaderApp {
                     store_arc
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .merge_session(&store_snapshot, &data_dir);
+                        .merge_session_since(&store_snapshot, &pairing_baseline, &data_dir);
                     *status.lock().unwrap_or_else(|e| e.into_inner()) =
                         reader_core::i18n::format_template(&connect_fail_tpl, &[&e], &[]);
                 }

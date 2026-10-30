@@ -1513,16 +1513,19 @@ fun ReaderScreen(
                         return@SelectionFloatingMenu
                     }
 
-                    // ONLY trigger native copy fallback when dictionary/translate/correct/copy
-                    // explicitly need text
-                    copyCallback?.invoke()
-                    val textFromClipboard = clipboardManager.getText()?.text ?: ""
-                    currentSelectedText = textFromClipboard
+                    // Native pagination owns its selection, so it has no platform
+                    // copy callback. Read that range before clearing the handles;
+                    // the system clipboard may be empty or contain unrelated text.
+                    val selected = textSelection?.let { getSelectedText(it) }
+                    currentSelectedText = if (selected != null) selected else {
+                        copyCallback?.invoke()
+                        clipboardManager.getText()?.text.orEmpty()
+                    }
                     hideSelectionMenu()
 
                     when (action) {
                         SelectionAction.COPY -> {
-                            // Already copied to clipboard
+                            if (selected != null) clipboardManager.setText(AnnotatedString(selected))
                             clearSelectionUi()
                         }
                         SelectionAction.HIGHLIGHT,

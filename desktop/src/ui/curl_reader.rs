@@ -1284,6 +1284,53 @@ mod integration_tests {
     fn pos(app: &ReaderApp) -> (usize, usize, usize) {
         (app.current_chapter, app.current_page, app.current_block)
     }
+    #[test]
+    fn coalesced_body_drag_selects_text_instead_of_becoming_a_click() {
+        let (_dir, mut app, ctx) = setup();
+        app.scroll_mode = true;
+        let size = egui::vec2(1000., 800.);
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.render_reader(ui));
+            },
+        );
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(text) if text.galley.text().len() > 100 => Some(text),
+                _ => None,
+            })
+            .expect("visible paragraph");
+        let point = |offset| {
+            let cursor = text.galley.from_ccursor(egui::text::CCursor::new(offset));
+            let rect = text.galley.pos_from_cursor(&cursor);
+            text.pos + rect.center().to_vec2()
+        };
+        let (from, to) = (point(2), point(12));
+        frame(
+            &mut app,
+            &ctx,
+            1.,
+            size,
+            vec![
+                egui::Event::PointerMoved(from),
+                pointer_button(from, true),
+                egui::Event::PointerMoved(to),
+                pointer_button(to, false),
+            ],
+            true,
+        );
+        let selection = app.text_selection.as_ref().expect("completed selection");
+        assert!(!selection.is_dragging);
+        assert_eq!(selection.normalized_range(), (0, 2, 0, 12));
+        assert_eq!(app.current_chapter, 0);
+    }
     fn pointer_button(pos: Pos2, pressed: bool) -> egui::Event {
         egui::Event::PointerButton {
             pos,

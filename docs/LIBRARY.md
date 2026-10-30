@@ -16,6 +16,26 @@
 - List rows register their actual small cover frames for the existing book transition. Existing lazy thumbnail workers/caches are reused. Desktop skips invisible rows; Android/iOS retain lazy shelf containers. Changing the display does not trigger a full-book metadata/cover scan.
 - Desktop display selection sits beside sort. Mobile choices remain in More. iOS uses native toolbar/Menu/Picker and native search, retaining system glass. Missing iOS list covers use a small book glyph rather than squeezing a duplicate title into the thumbnail; actual covers and grid placeholders keep their existing behavior.
 
+## Categories
+
+All three clients support device-local, single-level categories, with at most one
+category per book. The category strip filters the existing shelf alongside search,
+sort and grid/list display. Create, rename, assignment and delete confirmation
+expand within the library page. Individual book actions and multi-selection both
+provide assignment; deleting a category leaves its books uncategorized and keeps
+their files and reading data.
+
+Category identifiers are stable across renaming. Assignments use local book UUIDs
+and survive archive/restore. Categories are included in local backups, with UUIDs
+remapped during restore; they are not part of GitHub or LAN synchronization. See
+[backup merge rules](BACKUPS.md#merge-rules).
+
+Mobile category panels animate expansion, collapse and inline editing. iOS 26+
+uses system Liquid Glass for the strip, management control and panel; earlier iOS
+versions use a material background. Reduced motion and transparency settings are
+respected. Android uses Material surfaces and disables independent shelf-placement
+animation while the panel changes height so books follow its layout directly.
+
 ## Mobile navigation and search
 
 - Two home destinations sit together at the lower left; the search action sits independently at the lower right. Search expands into a bottom input bar and filters local book titles.

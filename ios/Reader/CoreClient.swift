@@ -47,6 +47,7 @@ actor CoreStore {
     init(client: CoreClient) { self.client = client }
     func closed() throws { let _: [String: Bool] = try client.call("closed") }
     func library() throws -> [LibraryEntry] { try client.call("library") }
+    func categories(_ fields: [String:Any] = [:]) throws -> BookClassification { try client.call("categories", fields) }
     func backup(action: String, path: String, expected: String?=nil) throws -> LibraryBackupSummary {
         var fields: [String:Any] = ["action":action,"path":path]
         if let expected {fields["expected_manifest"]=expected}

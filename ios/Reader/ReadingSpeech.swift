@@ -69,7 +69,7 @@ enum SpeechSource: String { case online, system }
     private let voiceCatalog: SystemVoiceCatalog
     private var pendingVoiceLoads = 0
     private var audioSessionActive = false
-    private(set) var units: [SpeechTextUnit] = []
+    @Published private(set) var units: [SpeechTextUnit] = []
     var audible: Bool { state == .playing && player?.isPlaying == true }
     private var player: AVAudioPlayer?
     private var load: Task<Void, Never>?
@@ -192,6 +192,13 @@ enum SpeechSource: String { case online, system }
             next += direction
         }
         units=[]
+    }
+
+    func prepareText(at anchor: ReadingAnchor) {
+        // The chapter catalogue has no body until requested. Prepare only the
+        // current chapter before the panel decides whether Play is available.
+        guard !hasSession, book.loadsChapters, speechChapter != anchor.chapter else { return }
+        prepareChapter(anchor.chapter)
     }
 
     func startingIndex(at anchor: ReadingAnchor) -> Int? {

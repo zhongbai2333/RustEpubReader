@@ -999,6 +999,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
             e.into_inner()
         })
         .clone();
+    let pairing_baseline = store.clone();
     let pin_opt = if pin_str.is_empty() {
         None
     } else {
@@ -1022,7 +1023,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
             store_arc
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .merge_session(&store, &data_dir);
+                .merge_session_since(&store, &pairing_baseline, &data_dir);
             match auto_sync_session(
                 &mut stream,
                 &aes_key,
@@ -1042,7 +1043,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
                     store_arc
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .merge_session(&store, &data_dir);
+                        .merge_session_since(&store, &pairing_baseline, &data_dir);
                     let json =
                         serde_json::to_string(&fetched_books).unwrap_or_else(|_| "[]".into());
                     jni_string_or_null!(env, &json)
@@ -1053,7 +1054,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_connectAndListBook
                     store_arc
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .merge_session(&store, &data_dir);
+                        .merge_session_since(&store, &pairing_baseline, &data_dir);
                     let json = serde_json::json!({"error": e, "phase": "sync"});
                     jni_string_or_null!(env, json.to_string())
                 }
@@ -1114,6 +1115,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_requestBookFromPee
             e.into_inner()
         })
         .clone();
+    let pairing_baseline = store.clone();
     let pin_opt = if pin_str.is_empty() {
         None
     } else {
@@ -1130,7 +1132,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_requestBookFromPee
             store_arc
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .merge_session(&store, &data_dir);
+                .merge_session_since(&store, &pairing_baseline, &data_dir);
             use reader_core::sharing::crypto;
             if crypto::write_encrypted_message(
                 &mut stream,
@@ -1223,6 +1225,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
             e.into_inner()
         })
         .clone();
+    let pairing_baseline = store.clone();
     let pin_opt = if pin_str.is_empty() {
         None
     } else {
@@ -1239,7 +1242,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
             store_arc
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .merge_session(&store, &data_dir);
+                .merge_session_since(&store, &pairing_baseline, &data_dir);
             match auto_sync_session(
                 &mut stream,
                 &aes_key,
@@ -1255,7 +1258,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
                     store_arc
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .merge_session(&store, &data_dir);
+                        .merge_session_since(&store, &pairing_baseline, &data_dir);
                     let json = serde_json::json!({"ok": true});
                     jni_string_or_null!(env, json.to_string())
                 }
@@ -1264,7 +1267,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
                     store_arc
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .merge_session(&store, &data_dir);
+                        .merge_session_since(&store, &pairing_baseline, &data_dir);
                     let json = serde_json::json!({"ok": false, "error": e, "phase": "sync"});
                     jni_string_or_null!(env, json.to_string())
                 }
@@ -1274,7 +1277,7 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_syncProgressWithPe
             store_arc
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .merge_session(&store, &data_dir);
+                .merge_session_since(&store, &pairing_baseline, &data_dir);
             let json = serde_json::json!({"ok": false, "error": e, "phase": "connect"});
             jni_string_or_null!(env, json.to_string())
         }
@@ -2185,6 +2188,30 @@ pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_bookArchive(
             .into();
         let value = serde_json::from_str(&input).map_err(|_| "Invalid archive request")?;
         reader_core::library::archive::dispatch(&root, &value)
+    })();
+    let value = match result {
+        Ok(v) => serde_json::json!({"ok":true,"result":v}),
+        Err(e) => serde_json::json!({"ok":false,"error":e}),
+    };
+    env.new_string(value.to_string())
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zhongbai233_epub_reader_RustBridge_bookCategories(
+    mut env: JNIEnv,
+    _class: JClass,
+    root: JString,
+    request: JString,
+) -> jstring {
+    let result = (|| {
+        let root: String = env.get_string(&root).map_err(|_| "Invalid storage")?.into();
+        let input: String = env
+            .get_string(&request)
+            .map_err(|_| "Invalid archive request")?
+            .into();
+        let value = serde_json::from_str(&input).map_err(|_| "Invalid archive request")?;
+        reader_core::library::categories::command(&root, &value)
     })();
     let value = match result {
         Ok(v) => serde_json::json!({"ok":true,"result":v}),

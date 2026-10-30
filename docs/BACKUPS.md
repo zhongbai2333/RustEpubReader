@@ -12,7 +12,8 @@ Version 1 is an **unencrypted** ZIP (`.readerbackup`):
 - `manifest.json`: format identifier, schema version, creation time, typed
   publication configurations, active/archive states and reading-activity source
   components. Publication paths are empty. Causal annotation identifiers and
-  deletion revisions are preserved.
+  deletion revisions are preserved. An optional `classification` field carries
+  local categories and assignments; it is omitted when empty.
 - `books/<sha256>.epub`: one original for each included content hash. A cloud-only
   archived record may have no locally available original; that absence is explicit.
 
@@ -45,6 +46,12 @@ recent reopening. Older packages without a revision fall back to their historica
 other book configuration follows `updated_at`. These clocks cannot correct an
 incorrectly set device clock. Annotation merging uses causal revisions instead of
 wall time.
+
+Categories merge by case-insensitive name. Foreign category and book UUIDs are
+mapped to local identities, and existing local assignments take precedence.
+Empty categories are retained. Older packages without classification metadata
+leave local categories intact. Packages containing classification metadata require
+a client with category support; older clients reject the unknown manifest field.
 
 Lifecycle events retain their original revision and event identity. Newer local
 archive/delete events win over an old package. Incoming newer archive/delete

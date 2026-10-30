@@ -248,6 +248,76 @@ mod tests {
     }
     #[cfg(not(feature = "keychain"))]
     #[test]
+    fn encrypted_lan_downloads_every_missing_book_in_one_session() {
+        use crate::sharing::{auto_sync_session, connect_to_peer, handle_client};
+        use std::sync::{Arc, Mutex};
+        let (server_dir, _, _) = fixture();
+        let server_root = server_dir.path().to_str().unwrap();
+        let mut library = Library::load_from(server_root).unwrap();
+        for label in ["second", "third"] {
+            let mut zip = zip::ZipWriter::new_append(std::io::Cursor::new(EPUB.to_vec())).unwrap();
+            zip.set_comment(label).unwrap();
+            let bytes = zip.finish().unwrap().into_inner();
+            library
+                .add_or_update_from_bytes(server_root, label.into(), &bytes, 0, None)
+                .unwrap();
+        }
+        let expected: std::collections::BTreeSet<_> = library
+            .books
+            .iter()
+            .map(|book| crate::epub::EpubBook::file_hash(&book.path).unwrap())
+            .collect();
+        assert_eq!(expected.len(), 3);
+        let client_dir = tempfile::tempdir().unwrap();
+        let client_root = client_dir.path().to_str().unwrap();
+        let server = PeerStore::load(server_root);
+        let server_id = server.device_id.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let root = server_root.to_owned();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            handle_client(
+                &mut stream,
+                &root,
+                &format!("{root}/books"),
+                "1234",
+                Arc::new(Mutex::new(server)),
+                &[],
+            )
+        });
+        let mut client = PeerStore::load(client_root);
+        let (mut stream, key, mut sent, mut received) = connect_to_peer(
+            &address,
+            &mut client,
+            client_root,
+            Some(&server_id),
+            Some("1234"),
+        )
+        .unwrap();
+        let result = auto_sync_session(
+            &mut stream,
+            &key,
+            &mut sent,
+            &mut received,
+            &mut client,
+            client_root,
+            client_dir.path().join("books").to_str().unwrap(),
+            &[],
+        );
+        drop(stream);
+        worker.join().unwrap().unwrap();
+        assert!(result.is_ok(), "Multi-book download failed: {result:?}");
+        let downloaded: std::collections::BTreeSet<_> = Library::load_from(client_root)
+            .unwrap()
+            .books
+            .iter()
+            .map(|book| crate::epub::EpubBook::file_hash(&book.path).unwrap())
+            .collect();
+        assert_eq!(downloaded, expected);
+    }
+    #[cfg(not(feature = "keychain"))]
+    #[test]
     fn encrypted_lan_transfers_the_exact_revision_and_commits_validated_progress() {
         use crate::sharing::{auto_sync_session, connect_to_peer, handle_client, start_server};
         use std::sync::{Arc, Mutex};

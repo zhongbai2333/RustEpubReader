@@ -9,7 +9,7 @@ use super::crypto;
 use super::protocol::*;
 use crate::{base64_decode, base64_encode, now_secs};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PairedDevice {
     pub device_id: String,
     pub device_name: String,
@@ -246,6 +246,32 @@ impl PeerStore {
             }
         }
         self.save(root);
+    }
+
+    /// Commit authenticated pairing changes relative to the connection's
+    /// original snapshot. A concurrent unpair or newer pairing wins over a
+    /// late network result, even when both operations share a timestamp.
+    pub fn merge_session_since(&mut self, session: &Self, baseline: &Self, root: &str) {
+        self.merge_progress_versioned(&session.progress, &session.progress_versions);
+        self.merge_pairings_since(session, baseline);
+        self.save(root);
+    }
+
+    pub fn merge_pairings_since(&mut self, session: &Self, baseline: &Self) {
+        for peer in &session.paired {
+            match (
+                self.paired
+                    .iter()
+                    .position(|p| p.device_id == peer.device_id),
+                baseline.find_paired(&peer.device_id),
+            ) {
+                (None, None) => self.paired.push(peer.clone()),
+                (Some(index), Some(original)) if &self.paired[index] == original => {
+                    self.paired[index] = peer.clone();
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Reconcile persisted edits, without treating a reopen as a new locator edit.
@@ -735,6 +761,9 @@ fn handle_encrypted_session(
                     return Err("Failed to persist received book".into());
                 }
             }
+            // A download acknowledgement completes one book, not the session.
+            // The client may request more missing books before sending Goodbye.
+            Message::BookReceived { .. } => {}
             Message::SyncProgress {
                 entries,
                 activity,
@@ -1278,6 +1307,62 @@ fn validate_received_book(
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn session_commits_repair_without_overwriting_concurrent_pairing_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut baseline = PeerStore::default();
+        baseline.add_paired(
+            "peer".into(),
+            "Reader".into(),
+            "old".into(),
+            "old-key".into(),
+        );
+        let mut session = baseline.clone();
+        session.add_paired(
+            "peer".into(),
+            "Reader".into(),
+            "new".into(),
+            "new-key".into(),
+        );
+        let mut live = baseline.clone();
+        live.merge_session_since(&session, &baseline, root);
+        assert_eq!(live.find_paired("peer").unwrap().pairing_uuid, "new");
+        let saved: PeerStore =
+            serde_json::from_slice(&std::fs::read(dir.path().join("peers.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved.find_paired("peer").unwrap().remote_public_key_pem,
+            "new-key"
+        );
+
+        let mut removed = baseline.clone();
+        removed.remove_paired("peer");
+        removed.merge_session_since(&session, &baseline, root);
+        assert!(!removed.is_paired("peer"));
+
+        let mut concurrent = baseline.clone();
+        concurrent.add_paired(
+            "peer".into(),
+            "Reader".into(),
+            "concurrent".into(),
+            "other-key".into(),
+        );
+        concurrent.merge_session_since(&session, &baseline, root);
+        assert_eq!(
+            concurrent.find_paired("peer").unwrap().pairing_uuid,
+            "concurrent"
+        );
+
+        session.add_paired(
+            "second".into(),
+            "Other".into(),
+            "fresh".into(),
+            "key".into(),
+        );
+        live.merge_session_since(&session, &baseline, root);
+        assert!(live.is_paired("second"));
+    }
 
     /// Test the full pairing flow: client sends correct PIN, server accepts.
     #[test]

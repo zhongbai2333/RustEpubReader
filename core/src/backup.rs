@@ -60,6 +60,11 @@ struct Manifest {
     created_at: u64,
     books: Vec<Publication>,
     lifecycles: BTreeMap<String, BookLifecycle>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::library::categories::Classification::is_empty"
+    )]
+    classification: crate::library::categories::Classification,
     #[serde(default)]
     activity: crate::reading_activity::PortableActivity,
 }
@@ -123,6 +128,15 @@ impl Manifest {
         }
         if total > MAX_TOTAL || self.lifecycles.iter().any(|(h, l)| !l.valid(h)) {
             return Err("Invalid or oversized library backup".into());
+        }
+        self.classification.validate()?;
+        if self
+            .classification
+            .assignments
+            .keys()
+            .any(|id| !ids.contains(id))
+        {
+            return Err("Invalid backup classification".into());
         }
         crate::reading_activity::validate_portable(&self.activity)?;
         Ok(())
