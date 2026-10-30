@@ -12,74 +12,6 @@ pub struct CategoryUi {
     failure: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn category_save_after_external_archive_keeps_shelf_indices_valid() {
-        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        let mut library = reader_core::library::Library::default();
-        library
-            .add_or_update_from_bytes(root, "Kept".into(), b"kept", 0, None)
-            .unwrap();
-        let removed = library
-            .add_or_update_from_bytes(root, "Archived".into(), b"archived", 0, None)
-            .unwrap();
-        let mut app = ReaderApp::from_data_dir(root.into());
-        app.category_ui.managing = true;
-        app.category_ui.draft = Some((String::new(), "Fiction".into()));
-        let confirm = app.i18n.t("error.ok").to_owned();
-        let ctx = egui::Context::default();
-        let input = |events| egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1100., 800.),
-            )),
-            focused: true,
-            events,
-            ..Default::default()
-        };
-        let output = ctx.run(input(vec![]), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.render_library(ui));
-        });
-        let button = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == confirm => {
-                    Some(text.pos + text.galley.rect.center().to_vec2())
-                }
-                _ => None,
-            })
-            .expect("inline category confirmation button");
-        // The displayed snapshot still has two books when another writer hides one.
-        library.hide_by_path(root, &removed.path).unwrap();
-        assert_eq!(app.library.books.len(), 2);
-        let click = |pressed| egui::Event::PointerButton {
-            pos: button,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: Default::default(),
-        };
-        let _ = ctx.run(
-            input(vec![
-                egui::Event::PointerMoved(button),
-                click(true),
-                click(false),
-            ]),
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.render_library(ui));
-            },
-        );
-        assert_eq!(app.library.classification.categories.len(), 1);
-        assert_eq!(app.library.books.len(), 1);
-        assert_eq!(app.library.books[0].title, "Kept");
-    }
-}
-
 impl ReaderApp {
     pub(super) fn begin_classification(&mut self, books: Vec<String>) {
         self.category_ui.targets = books;
@@ -251,5 +183,73 @@ impl ReaderApp {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn category_save_after_external_archive_keeps_shelf_indices_valid() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut library = reader_core::library::Library::default();
+        library
+            .add_or_update_from_bytes(root, "Kept".into(), b"kept", 0, None)
+            .unwrap();
+        let removed = library
+            .add_or_update_from_bytes(root, "Archived".into(), b"archived", 0, None)
+            .unwrap();
+        let mut app = ReaderApp::from_data_dir(root.into());
+        app.category_ui.managing = true;
+        app.category_ui.draft = Some((String::new(), "Fiction".into()));
+        let confirm = app.i18n.t("error.ok").to_owned();
+        let ctx = egui::Context::default();
+        let input = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100., 800.),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        };
+        let output = ctx.run(input(vec![]), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.render_library(ui));
+        });
+        let button = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == confirm => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .expect("inline category confirmation button");
+        // The displayed snapshot still has two books when another writer hides one.
+        library.hide_by_path(root, &removed.path).unwrap();
+        assert_eq!(app.library.books.len(), 2);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: button,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let _ = ctx.run(
+            input(vec![
+                egui::Event::PointerMoved(button),
+                click(true),
+                click(false),
+            ]),
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.render_library(ui));
+            },
+        );
+        assert_eq!(app.library.classification.categories.len(), 1);
+        assert_eq!(app.library.books.len(), 1);
+        assert_eq!(app.library.books[0].title, "Kept");
     }
 }
